@@ -3,6 +3,7 @@ package editor
 import (
 	"bytes"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -106,8 +107,8 @@ func (m *Model) NextMatch(dir int) bool {
 			pick = 0
 		}
 	} else {
-		for i := len(ms) - 1; i >= 0; i-- {
-			if ms[i][1] < head {
+		for i, match := range slices.Backward(ms) {
+			if match[1] < head {
 				pick = i
 				break
 			}

@@ -178,6 +178,9 @@ func New(path string, data []byte) Model {
 	if path != "" {
 		if fi, err := os.Stat(path); err == nil && fi.IsDir() {
 			root = path
+		} else if isBinary(data) {
+			root = filepath.Dir(path)
+			m.lastMsg = filepath.Base(path) + " is a binary file"
 		} else {
 			root = filepath.Dir(path)
 			m.docs = append(m.docs, newDoc(path, data))
@@ -722,7 +725,7 @@ func (m Model) tabRanges() []struct{ start, end, closeX int } {
 	out := make([]struct{ start, end, closeX int }, len(m.docs))
 	x := 0
 	for i, d := range m.docs {
-		label := m.tabLabel(i, d)
+		label := m.tabLabel(d)
 		w := lipgloss.Width(label)
 		out[i] = struct{ start, end, closeX int }{x, x + w, x + w - 2}
 		x += w
@@ -730,7 +733,7 @@ func (m Model) tabRanges() []struct{ start, end, closeX int } {
 	return out
 }
 
-func (m Model) tabLabel(i int, d *doc) string {
+func (m Model) tabLabel(d *doc) string {
 	dirty := " "
 	if d.ed.Dirty {
 		dirty = "●"
@@ -741,7 +744,7 @@ func (m Model) tabLabel(i int, d *doc) string {
 func (m Model) renderTabBar() string {
 	var sb strings.Builder
 	for i, d := range m.docs {
-		label := m.tabLabel(i, d)
+		label := m.tabLabel(d)
 		if i == m.active {
 			sb.WriteString(tabActiveStyle.Render(label))
 		} else {
@@ -1085,15 +1088,17 @@ func (m Model) sideSwitcherRanges() [2]struct{ start, end int } {
 // styles.
 func (m Model) sideSwitcher() string {
 	ranges := m.sideSwitcherRanges()
-	row := strings.Repeat(" ", ranges[0].start)
+	var row strings.Builder
+	row.WriteString(strings.Repeat(" ", ranges[0].start))
 	for i, r := range ranges {
 		st := tabStyle.Faint(true)
 		if (i == 1) == m.gitView {
 			st = tabActiveStyle
 		}
-		row += st.Render(centerCell(sideButtons[i], r.end-r.start))
+		row.WriteString(st.Render(centerCell(sideButtons[i], r.end-r.start)))
 	}
-	return row + strings.Repeat(" ", max(0, m.side.Width-ranges[1].end))
+	row.WriteString(strings.Repeat(" ", max(0, m.side.Width-ranges[1].end)))
+	return row.String()
 }
 
 // centerCell pads s to exactly w cells, label centered. ponytail: rune==cell

@@ -44,7 +44,7 @@ func TestEditsAgainstReference(t *testing.T) {
 	check(t, b, ref)
 
 	pieces := []string{"x", "\n", "ab\ncd", "\n\n", "long line without newline", ""}
-	for i := 0; i < 2000; i++ {
+	for range 2000 {
 		if rng.Intn(2) == 0 || b.Len() == 0 {
 			off := rng.Intn(b.Len() + 1)
 			text := []byte(pieces[rng.Intn(len(pieces))])
@@ -75,7 +75,7 @@ func TestPosOffsetRoundTrip(t *testing.T) {
 
 func bigFile(lines int) []byte {
 	var sb bytes.Buffer
-	for i := 0; i < lines; i++ {
+	for i := range lines {
 		fmt.Fprintf(&sb, "line %06d: the quick brown fox jumps over the lazy dog\n", i)
 	}
 	return sb.Bytes()
@@ -84,8 +84,7 @@ func bigFile(lines int) []byte {
 func BenchmarkInsert50k(b *testing.B) {
 	buf := New(bigFile(50_000))
 	mid := buf.Len() / 2
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		buf.Insert(mid, []byte("x"))
 	}
 }
@@ -93,8 +92,7 @@ func BenchmarkInsert50k(b *testing.B) {
 func BenchmarkInsertNewline200k(b *testing.B) {
 	buf := New(bigFile(200_000))
 	mid := buf.Len() / 2
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		buf.Insert(mid, []byte("\n"))
 	}
 }

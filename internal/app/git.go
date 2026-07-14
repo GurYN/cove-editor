@@ -359,7 +359,19 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
 		m.lastMsg = msg.err.Error()
 	} else {
-		m.lastMsg = firstLine(msg.out)
+		// git's raw chatter ("remote:", progress lines) makes a poor status
+		// message — say what happened instead.
+		low := strings.ToLower(msg.out)
+		switch {
+		case strings.Contains(low, "up to date") || strings.Contains(low, "up-to-date"):
+			m.lastMsg = "already up to date"
+		case strings.Contains(low, "set up to track"):
+			m.lastMsg = "published branch " + m.gitSnap.Branch + " to origin"
+		case msg.op == "push":
+			m.lastMsg = "pushed " + m.gitSnap.Branch
+		default:
+			m.lastMsg = "pulled " + m.gitSnap.Branch
+		}
 	}
 	m.refreshGit()
 	if msg.op == "pull" {
@@ -539,7 +551,9 @@ func (m Model) gitPanelView() string {
 		case i == m.gitSel:
 			sb.WriteString(gitSelStyle.Faint(true).Render(plain))
 		default:
-			sb.WriteString(" " + st.Render(letter) + gitPad(" "+r.fs.Path, w-2))
+			sb.WriteString(" ")
+			sb.WriteString(st.Render(letter))
+			sb.WriteString(gitPad(" "+r.fs.Path, w-2))
 		}
 	}
 	return sb.String()

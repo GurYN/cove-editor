@@ -3,7 +3,7 @@ package syntax
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -16,7 +16,7 @@ import (
 func goSource(funcs int) []byte {
 	var sb bytes.Buffer
 	sb.WriteString("package main\n\nimport \"fmt\"\n\n")
-	for i := 0; i < funcs; i++ {
+	for i := range funcs {
 		fmt.Fprintf(&sb, "// handler %d does a thing\nfunc handler%d(x int) string {\n\tif x > %d {\n\t\treturn \"big\"\n\t}\n\treturn fmt.Sprintf(\"%%d\", x)\n}\n\n", i, i, i)
 	}
 	return sb.Bytes()
@@ -81,7 +81,7 @@ func TestKeystrokeLatencyWithSyntax(t *testing.T) {
 	m.Go(25_000, 0)
 
 	const n = 300
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		samples := make([]time.Duration, n)
 		for i := range samples {
 			start := time.Now()
@@ -92,7 +92,7 @@ func TestKeystrokeLatencyWithSyntax(t *testing.T) {
 				t.Fatal("empty frame")
 			}
 		}
-		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		slices.Sort(samples)
 		p50, p99 := samples[n/2], samples[n*99/100]
 		t.Logf("keystroke->frame with syntax p50=%s p99=%s (%d lines)", p50, p99, m.Buf.LineCount())
 		if p99 > 16*time.Millisecond {
@@ -115,7 +115,7 @@ func TestExpandSelection(t *testing.T) {
 	// one of the steps.
 	lo, hi := inner, inner
 	sawLiteral := false
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		nlo, nhi, ok := h.Expand(src, lo, hi)
 		if !ok {
 			break

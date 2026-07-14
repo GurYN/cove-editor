@@ -6,6 +6,7 @@ package editor
 
 import (
 	"bytes"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -545,8 +546,7 @@ func (m *Model) DiagCounts() (int, int, int) {
 // notifies the highlighter with pre/post points.
 func (m *Model) applyEdits(edits []Edit) {
 	m.Rev++
-	for i := len(edits) - 1; i >= 0; i-- {
-		e := edits[i]
+	for _, e := range slices.Backward(edits) {
 		oldEnd := e.Off + len(e.Old)
 		var sp, oep [2]int
 		if m.Syntax != nil {

@@ -47,7 +47,7 @@ func loadGitignore(root string) func(rel, base string) bool {
 		anchored bool // leading "/": root-relative only, never by basename
 	}
 	var pats []pat
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
 			continue

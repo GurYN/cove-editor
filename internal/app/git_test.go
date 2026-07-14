@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -271,5 +272,26 @@ func TestBranchPickerCreatesMissingBranch(t *testing.T) {
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEscape})
 	if m.mode == modePrompt {
 		t.Fatal("escape from the picker should not prompt")
+	}
+}
+
+// The footer summarizes push/pull results instead of echoing git's chatter.
+func TestGitOpStatusMessages(t *testing.T) {
+	m, _ := gitSetup(t)
+	for _, tc := range []struct{ op, out, want string }{
+		{"push", "remote:\nremote: Create a pull request\nbranch 'develop' set up to track 'origin/develop'.", "published branch main to origin"},
+		{"push", "To /tmp/bare\n   abc..def  main -> main", "pushed main"},
+		{"push", "Everything up-to-date", "already up to date"},
+		{"pull", "Updating abc..def\nFast-forward", "pulled main"},
+		{"pull", "Already up to date.", "already up to date"},
+	} {
+		mm, _ := m.handleGitOp(gitOpMsg{op: tc.op, out: tc.out})
+		if mm.lastMsg != tc.want {
+			t.Fatalf("%s %q: got %q, want %q", tc.op, tc.out, mm.lastMsg, tc.want)
+		}
+	}
+	mm, _ := m.handleGitOp(gitOpMsg{op: "push", err: fmt.Errorf("git: boom")})
+	if mm.lastMsg != "git: boom" {
+		t.Fatalf("error message lost: %q", mm.lastMsg)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -261,7 +262,6 @@ func newRegistry() *action.Registry {
 		{"delete.back", "backspace", func(e *editor.Model) { e.DeleteRune(-1) }},
 		{"delete.fwd", "delete", func(e *editor.Model) { e.DeleteRune(+1) }},
 	} {
-		v := v
 		hid(v.id, v.key, action.Editor, ed(v.do))
 	}
 	reg("cursor.docStart", "Go to Beginning of File", "ctrl+home", action.Editor, ed(func(e *editor.Model) { e.Go(0, 0) }))
@@ -393,8 +393,8 @@ func newRegistry() *action.Registry {
 				m.lastMsg = err.Error()
 				return
 			}
-			for i := len(m.docs) - 1; i >= 0; i-- {
-				if same(m.docs[i].path, path) {
+			for i, d := range slices.Backward(m.docs) {
+				if same(d.path, path) {
 					m.active = i
 					m.forceClose()
 				}

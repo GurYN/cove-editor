@@ -83,7 +83,7 @@ func Status(top string) (Snapshot, error) {
 	if err != nil {
 		return snap, err
 	}
-	for _, ln := range strings.Split(out, "\n") {
+	for ln := range strings.SplitSeq(out, "\n") {
 		switch {
 		case ln == "":
 		case strings.HasPrefix(ln, "# branch.oid "):
@@ -176,7 +176,7 @@ func Blame(top, path string) ([]BlameLine, error) {
 	byLine := map[int]string{}      // 1-based final line → full sha
 	cur := ""
 	maxLine := 0
-	for _, ln := range strings.Split(string(out), "\n") {
+	for ln := range strings.SplitSeq(string(out), "\n") {
 		if strings.HasPrefix(ln, "\t") { // content line
 			continue
 		}
@@ -258,8 +258,6 @@ func CreateBranch(top, name string) error {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
+	s, _, _ = strings.Cut(s, "\n")
 	return s
 }
