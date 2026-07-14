@@ -229,7 +229,14 @@ func Show(top, path string) ([]byte, error) {
 
 func Commit(top, msg string) (string, error) { return run(top, "commit", "-m", msg) }
 
-func Push(top string) (string, error) { return runLoose(top, "push") }
+// Push pushes the current branch; a branch with no upstream is published
+// (push -u origin HEAD) instead of failing.
+func Push(top string) (string, error) {
+	if _, err := run(top, "rev-parse", "--abbrev-ref", "@{upstream}"); err != nil {
+		return runLoose(top, "push", "-u", "origin", "HEAD")
+	}
+	return runLoose(top, "push")
+}
 func Pull(top string) (string, error) { return runLoose(top, "pull") }
 
 func Branches(top string) ([]string, error) {
