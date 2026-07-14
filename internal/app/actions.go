@@ -145,6 +145,7 @@ func newRegistry() *action.Registry {
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
 	reg("git.branch", "Git: Switch Branch…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
+	reg("git.restore", "Git: Discard File Changes (Restore)", "", action.Global, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
 		m.blameOn = !m.blameOn
 		if !m.blameOn {
@@ -186,6 +187,7 @@ func newRegistry() *action.Registry {
 		}
 		return nil
 	})
+	ghid("git.restore.x", "x", func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	ghid("git.commit.c", "c", func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
 	ghid("git.refresh.r", "r", func(m *Model) tea.Cmd { m.refreshGit(); return nil })
 	ghid("git.branch.b", "b", func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
@@ -416,5 +418,12 @@ func rel(root, path string) string {
 func same(a, b string) bool {
 	aa, _ := filepath.Abs(a)
 	bb, _ := filepath.Abs(b)
-	return aa == bb
+	if aa == bb {
+		return true
+	}
+	// Symlinked prefixes (macOS /tmp → /private/tmp, symlinked checkouts)
+	// make one file reachable by two absolute paths — compare resolved.
+	ra, errA := filepath.EvalSymlinks(aa)
+	rb, errB := filepath.EvalSymlinks(bb)
+	return errA == nil && errB == nil && ra == rb
 }

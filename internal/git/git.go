@@ -257,6 +257,13 @@ func CreateBranch(top, name string) error {
 	return err
 }
 
+// Restore discards a tracked file's staged and unstaged changes, restoring
+// it to its HEAD content.
+func Restore(top, path string) error {
+	_, err := run(top, "restore", "--source=HEAD", "--staged", "--worktree", "--", path)
+	return err
+}
+
 func firstLine(s string) string {
 	s, _, _ = strings.Cut(s, "\n")
 	return s
