@@ -239,6 +239,9 @@ func Push(top string) (string, error) {
 }
 func Pull(top string) (string, error) { return runLoose(top, "pull") }
 
+// Fetch updates remote-tracking refs so ahead/behind counts are current.
+func Fetch(top string) (string, error) { return runLoose(top, "fetch") }
+
 func Branches(top string) ([]string, error) {
 	out, err := run(top, "branch", "--format=%(refname:short)")
 	if err != nil || out == "" {
