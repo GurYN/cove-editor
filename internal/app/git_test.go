@@ -350,3 +350,48 @@ func TestGitRestoreFile(t *testing.T) {
 		t.Fatal("untracked file survived the delete")
 	}
 }
+
+// "r" refreshes local status and fetches, so behind/ahead counts track the
+// real remote (a PR merged on the forge shows up without a pull).
+func TestRefreshFetchesRemote(t *testing.T) {
+	m, top := gitSetup(t)
+	bare := t.TempDir()
+	g := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	g(bare, "init", "-q", "--bare")
+	g(top, "remote", "add", "origin", bare)
+	g(top, "push", "-q", "-u", "origin", "main")
+
+	// Second clone advances the remote's main.
+	w2 := t.TempDir()
+	g(w2, "clone", "-q", bare, "w2")
+	w2 = filepath.Join(w2, "w2")
+	g(w2, "config", "user.email", "t@t.t")
+	g(w2, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(w2, "b.txt"), []byte("hi\n"), 0o644)
+	g(w2, "add", "-A")
+	g(w2, "commit", "-q", "-m", "remote work")
+	g(w2, "push", "-q")
+
+	m.refreshGit()
+	if m.gitSnap.Behind != 0 {
+		t.Fatalf("stale tracking ref should still say behind=0, got %d", m.gitSnap.Behind)
+	}
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("refresh returned no fetch cmd")
+	}
+	m2, _ = m2.update(cmd()) // run the fetch, deliver its gitOpMsg
+	if m2.gitSnap.Behind != 1 {
+		t.Fatalf("behind=%d after fetch, want 1", m2.gitSnap.Behind)
+	}
+	if m2.gitBusy != "" {
+		t.Fatalf("gitBusy stuck at %q", m2.gitBusy)
+	}
+}

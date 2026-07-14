@@ -139,7 +139,15 @@ func newRegistry() *action.Registry {
 	// ---- git (palette entries are Global; single-letter keys only bind
 	// inside the panel via the Git context) ----
 	reg("git.toggle", "Git: Toggle Panel", "ctrl+g", action.Global, func(m *Model) tea.Cmd { m.toggleGit(); return nil })
-	reg("git.refresh", "Git: Refresh Status", "", action.Global, func(m *Model) tea.Cmd { m.refreshGit(); return nil })
+	// Refresh reads local status immediately, then fetches in the background
+	// so the ±ahead/behind counts track the actual remote, not the last pull.
+	reg("git.refresh", "Git: Refresh Status", "", action.Global, func(m *Model) tea.Cmd {
+		m.refreshGit()
+		if m.gitSnap.Upstream == "" {
+			return nil // nothing to fetch from (no remote / unpublished branch)
+		}
+		return m.gitOp("fetch")
+	})
 	reg("git.commit", "Git: Commit Staged…", "", action.Global, func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
 	reg("git.push", "Git: Push", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("push") })
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
@@ -189,7 +197,12 @@ func newRegistry() *action.Registry {
 	})
 	ghid("git.restore.x", "x", func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	ghid("git.commit.c", "c", func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
-	ghid("git.refresh.r", "r", func(m *Model) tea.Cmd { m.refreshGit(); return nil })
+	ghid("git.refresh.r", "r", func(m *Model) tea.Cmd {
+		if a := r.ByID("git.refresh"); a != nil {
+			return a.Do(m)
+		}
+		return nil
+	})
 	ghid("git.branch.b", "b", func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
 	ghid("git.stageAll.a", "a", func(m *Model) tea.Cmd {
 		if a := r.ByID("git.stageAll"); a != nil {

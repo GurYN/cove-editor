@@ -411,9 +411,12 @@ func (m *Model) gitOp(op string) tea.Cmd {
 	return func() tea.Msg {
 		var out string
 		var err error
-		if op == "push" {
+		switch op {
+		case "push":
 			out, err = git.Push(top)
-		} else {
+		case "fetch":
+			out, err = git.Fetch(top)
+		default:
 			out, err = git.Pull(top)
 		}
 		return gitOpMsg{op: op, out: out, err: err}
@@ -429,6 +432,8 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 		// message — say what happened instead.
 		low := strings.ToLower(msg.out)
 		switch {
+		case msg.op == "fetch":
+			m.lastMsg = "" // refreshed panel/± counts are the result
 		case strings.Contains(low, "up to date") || strings.Contains(low, "up-to-date"):
 			m.lastMsg = "already up to date"
 		case strings.Contains(low, "set up to track"):
