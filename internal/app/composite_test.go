@@ -190,3 +190,40 @@ func TestProblemsListNavigates(t *testing.T) {
 		t.Fatal("problems list still open after jump")
 	}
 }
+
+// Dragging the sidebar/editor divider resizes both panes; width clamps at 12.
+func TestDividerDragResizesSidebar(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	var m tea.Model = New("/tmp/sample.go", []byte(sampleSrc))
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	x := m.(Model).side.Width // divider column
+	m, _ = m.Update(tea.MouseMsg{X: x, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m, _ = m.Update(tea.MouseMsg{X: 42, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	appm := m.(Model)
+	if appm.side.Width != 42 {
+		t.Fatalf("sidebar width %d after drag, want 42", appm.side.Width)
+	}
+	if w := appm.doc().ed.Width; w != 100-43 {
+		t.Fatalf("editor width %d, want %d", w, 100-43)
+	}
+	m, _ = m.Update(tea.MouseMsg{X: 3, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	if appm = m.(Model); appm.side.Width != 12 {
+		t.Fatalf("min clamp failed: %d", appm.side.Width)
+	}
+}
+
+// Hovering the divider flips the resize-pointer state on and off.
+func TestDividerHoverPointer(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	var m tea.Model = New("/tmp/sample.go", []byte(sampleSrc))
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	x := m.(Model).side.Width
+	m, _ = m.Update(tea.MouseMsg{X: x, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if !m.(Model).hoverDivider {
+		t.Fatal("hover over divider not detected")
+	}
+	m, _ = m.Update(tea.MouseMsg{X: x + 10, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if m.(Model).hoverDivider {
+		t.Fatal("pointer still resize-shaped after leaving the divider")
+	}
+}

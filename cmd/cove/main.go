@@ -45,9 +45,11 @@ func main() {
 	}
 	p := tea.NewProgram(app.New(path, data),
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+		tea.WithMouseAllMotion(), // hover events: divider resize pointer needs them
 	)
-	if _, err := p.Run(); err != nil {
+	_, err := p.Run()
+	os.Stdout.WriteString("\x1b]22;default\x1b\\") // restore pointer shape (OSC 22)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "cove:", err)
 		os.Exit(1)
 	}

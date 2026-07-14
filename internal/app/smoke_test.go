@@ -14,10 +14,25 @@ import (
 	"github.com/muesli/termenv"
 )
 
+// sampleSrc is the fixture every setup() model edits. Tests index into it
+// (diag offsets, line 5 col 4, sidebar root "tmp") — keep it multi-line Go.
+const sampleSrc = `package sample
+
+import "fmt"
+
+// greet says hello to whoever shows up.
+func greet(name string) {
+	fmt.Println("hello", name)
+}
+`
+
 func setup(t *testing.T) tea.Model {
 	t.Helper()
 	lipgloss.SetColorProfile(termenv.ANSI256)
-	src, _ := os.ReadFile("/tmp/sample.go")
+	src := []byte(sampleSrc)
+	if err := os.WriteFile("/tmp/sample.go", src, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var m tea.Model = New("/tmp/sample.go", src)
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB}) // close sidebar: editor at x=0

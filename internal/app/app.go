@@ -63,6 +63,7 @@ const (
 	paneEditor pane = iota
 	paneSidebar
 	paneTabs
+	paneDivider // sidebar/editor border column: drag to resize
 )
 
 type overlayKind int
@@ -90,6 +91,7 @@ type Model struct {
 
 	side        sidebar.Model
 	sidebarOpen bool
+	sidebarW    int // user-set width; divider drag adjusts it
 	focus       pane // paneEditor or paneSidebar
 
 	ovKind    overlayKind
@@ -116,7 +118,8 @@ type Model struct {
 	promptDo    func(*Model, string)
 	deferred    tea.Cmd // set by prompt callbacks that need a follow-up Cmd
 
-	mouseDown pane      // pane that owns the current drag
+	mouseDown    pane // pane that owns the current drag
+	hoverDivider bool // pointer currently shows the resize shape
 	vim       *vimState // nil unless keymap = "vim"
 
 	width, height int
@@ -137,7 +140,7 @@ func New(path string, data []byte) Model {
 	}
 
 	root := "."
-	m := Model{sidebarOpen: true, focus: paneEditor}
+	m := Model{sidebarOpen: true, focus: paneEditor, sidebarW: sidebarWidth}
 	if cfg.Keymap == "vim" {
 		m.vim = &vimState{}
 	}
@@ -263,7 +266,7 @@ func (m *Model) editorX() int {
 func (m *Model) layout() {
 	sw := 0
 	if m.sidebarOpen {
-		sw = min(sidebarWidth, m.width/3)
+		sw = min(m.sidebarW, m.width/2)
 	}
 	m.side.Width = sw
 	m.side.Height = m.height - 2 // tab bar + bottom bar
@@ -567,7 +570,29 @@ func (m Model) renderTabBar() string {
 
 // ---- mouse ----
 
+// setPointer switches the terminal pointer between the default arrow and a
+// horizontal-resize shape via OSC 22 (kitty, foot, WezTerm, xterm ≥ 367).
+// Terminals without support ignore the sequence.
+func setPointer(resize bool) {
+	shape := "default"
+	if resize {
+		shape = "ew-resize"
+	}
+	os.Stdout.WriteString("\x1b]22;" + shape + "\x1b\\")
+}
+
 func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
+	// Buttonless motion = hover: only used to swap the pointer shape over
+	// the divider. Must never reach the drag paths below.
+	if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonNone {
+		over := m.sidebarOpen && m.ovKind == overlayNone &&
+			msg.Y > 0 && msg.X == m.side.Width
+		if over != m.hoverDivider {
+			m.hoverDivider = over
+			setPointer(over)
+		}
+		return m, nil
+	}
 	if m.ovKind != overlayNone { // overlays are keyboard-driven; click closes
 		if msg.Action == tea.MouseActionPress {
 			m.ovKind = overlayNone
@@ -580,6 +605,8 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		target = m.mouseDown // drags stay with the pane they started in
 	case msg.Y == 0:
 		target = paneTabs
+	case m.sidebarOpen && msg.X == m.side.Width:
+		target = paneDivider
 	case m.sidebarOpen && msg.X < m.editorX():
 		target = paneSidebar
 	}
@@ -588,6 +615,11 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	}
 
 	switch target {
+	case paneDivider:
+		if msg.Action == tea.MouseActionMotion || msg.Action == tea.MouseActionRelease {
+			m.sidebarW = max(12, min(msg.X, m.width/2))
+			m.layout()
+		}
 	case paneTabs:
 		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 			return m, nil
