@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +24,7 @@ func TestMain(m *testing.M) {
 
 func bigFile(lines int) []byte {
 	var sb bytes.Buffer
-	for i := 0; i < lines; i++ {
+	for i := range lines {
 		fmt.Fprintf(&sb, "line %06d: the quick brown fox jumps over the lazy dog\n", i)
 	}
 	return sb.Bytes()
@@ -51,7 +51,7 @@ func TestKeystrokeLatency50k(t *testing.T) {
 	m.Go(25_000, 0)
 
 	const n = 500
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		samples := make([]time.Duration, n)
 		for i := range samples {
 			start := time.Now()
@@ -62,7 +62,7 @@ func TestKeystrokeLatency50k(t *testing.T) {
 				t.Fatal("empty frame")
 			}
 		}
-		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		slices.Sort(samples)
 		p50, p99 := samples[n/2], samples[n*99/100]
 		t.Logf("keystroke->frame p50=%s p99=%s", p50, p99)
 		if p99 > 16*time.Millisecond {
@@ -88,7 +88,7 @@ func TestEditAndScroll(t *testing.T) {
 	if !m.Dirty {
 		t.Fatal("edit did not set Dirty")
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		m = key(m, tea.KeyDown)
 	}
 	if m.top == 0 {
@@ -229,8 +229,7 @@ func BenchmarkKeystrokeFrame50k(b *testing.B) {
 	m := New(buffer.New(bigFile(50_000)))
 	m.Width, m.Height = 120, 50
 	m.Go(25_000, 0)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		m = typeRunes(m, "x")
 		_ = m.View()
 	}

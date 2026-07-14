@@ -42,7 +42,7 @@ func TestLineSignsBigFileFastPath(t *testing.T) {
 	// 50k identical lines with one edit: prefix/suffix trim must keep this
 	// instant and mark exactly one line.
 	var sb strings.Builder
-	for i := 0; i < 50000; i++ {
+	for range 50000 {
 		sb.WriteString("line\n")
 	}
 	old := sb.String()

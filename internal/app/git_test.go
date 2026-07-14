@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -236,5 +237,116 @@ func TestGitBranchPicker(t *testing.T) {
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !strings.Contains(frame(m), "⎇ main") {
 		t.Fatalf("checkout failed:\n%s", frame(m))
+	}
+}
+
+// Enter on a branch name that matches nothing offers to create it off the
+// current branch; "y" runs checkout -b.
+func TestBranchPickerCreatesMissingBranch(t *testing.T) {
+	m, top := gitSetup(t)
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}) // panel: open branch picker
+	if m.ovKind != overlayBranches {
+		t.Fatal("branch picker did not open")
+	}
+	for _, r := range "feature/x" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modePrompt || !strings.Contains(m.promptLabel, `"feature/x"`) ||
+		!strings.Contains(m.promptLabel, "main") {
+		t.Fatalf("no create prompt (mode=%v label=%q)", m.mode, m.promptLabel)
+	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune{'y'}}, {Type: tea.KeyEnter}} {
+		m, _ = m.update(k)
+	}
+	if m.gitSnap.Branch != "feature/x" {
+		t.Fatalf("on branch %q, want feature/x", m.gitSnap.Branch)
+	}
+	_ = top
+
+	// Escape (or answering n) must not create anything.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	for _, r := range "nope" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEscape})
+	if m.mode == modePrompt {
+		t.Fatal("escape from the picker should not prompt")
+	}
+}
+
+// The footer summarizes push/pull results instead of echoing git's chatter.
+func TestGitOpStatusMessages(t *testing.T) {
+	m, _ := gitSetup(t)
+	for _, tc := range []struct{ op, out, want string }{
+		{"push", "remote:\nremote: Create a pull request\nbranch 'develop' set up to track 'origin/develop'.", "published branch main to origin"},
+		{"push", "To /tmp/bare\n   abc..def  main -> main", "pushed main"},
+		{"push", "Everything up-to-date", "already up to date"},
+		{"pull", "Updating abc..def\nFast-forward", "pulled main"},
+		{"pull", "Already up to date.", "already up to date"},
+	} {
+		mm, _ := m.handleGitOp(gitOpMsg{op: tc.op, out: tc.out})
+		if mm.lastMsg != tc.want {
+			t.Fatalf("%s %q: got %q, want %q", tc.op, tc.out, mm.lastMsg, tc.want)
+		}
+	}
+	mm, _ := m.handleGitOp(gitOpMsg{op: "push", err: fmt.Errorf("git: boom")})
+	if mm.lastMsg != "git: boom" {
+		t.Fatalf("error message lost: %q", mm.lastMsg)
+	}
+}
+
+// "x" in the git panel discards the selected file's changes after a y/n
+// confirm: tracked files restore to HEAD (open tabs reload, undoably),
+// untracked files are deleted.
+func TestGitRestoreFile(t *testing.T) {
+	m, top := gitSetup(t) // a.txt committed as "one\n", now "one\ntwo\n"
+	m.openFile(filepath.Join(top, "a.txt"))
+	m.focus = paneGit
+	for range 5 { // land on the file row (rows include section headers)
+		if _, ok := m.gitSelected(); ok {
+			break
+		}
+		m.gitMove(+1)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if m.mode != modePrompt || !strings.Contains(m.promptLabel, "Discard changes to a.txt") {
+		t.Fatalf("no confirm prompt: mode=%v label=%q", m.mode, m.promptLabel)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if data, _ := os.ReadFile(filepath.Join(top, "a.txt")); string(data) != "one\n" {
+		t.Fatalf("file not restored: %q", data)
+	}
+	d := m.docByPath(filepath.Join(top, "a.txt"))
+	if got := string(d.ed.Buf.Bytes()); got != "one\n" {
+		t.Fatalf("open tab not reloaded: %q", got)
+	}
+	if d.ed.Dirty {
+		t.Fatal("reloaded tab marked dirty")
+	}
+	d.ed.UndoStep() // the discard is one undoable edit
+	if got := string(d.ed.Buf.Bytes()); got != "one\ntwo\n" {
+		t.Fatalf("undo did not bring the change back: %q", got)
+	}
+
+	// Untracked file: "x" prompts to delete it.
+	os.WriteFile(filepath.Join(top, "new.txt"), []byte("x\n"), 0o644)
+	m.refreshGit()
+	for range 9 {
+		r, ok := m.gitSelected()
+		if ok && r.fs.Untracked() {
+			break
+		}
+		m.gitMove(+1)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if !strings.Contains(m.promptLabel, "Delete untracked") {
+		t.Fatalf("wrong prompt for untracked: %q", m.promptLabel)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, err := os.Stat(filepath.Join(top, "new.txt")); !os.IsNotExist(err) {
+		t.Fatal("untracked file survived the delete")
 	}
 }

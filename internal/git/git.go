@@ -83,7 +83,7 @@ func Status(top string) (Snapshot, error) {
 	if err != nil {
 		return snap, err
 	}
-	for _, ln := range strings.Split(out, "\n") {
+	for ln := range strings.SplitSeq(out, "\n") {
 		switch {
 		case ln == "":
 		case strings.HasPrefix(ln, "# branch.oid "):
@@ -176,7 +176,7 @@ func Blame(top, path string) ([]BlameLine, error) {
 	byLine := map[int]string{}      // 1-based final line → full sha
 	cur := ""
 	maxLine := 0
-	for _, ln := range strings.Split(string(out), "\n") {
+	for ln := range strings.SplitSeq(string(out), "\n") {
 		if strings.HasPrefix(ln, "\t") { // content line
 			continue
 		}
@@ -229,7 +229,14 @@ func Show(top, path string) ([]byte, error) {
 
 func Commit(top, msg string) (string, error) { return run(top, "commit", "-m", msg) }
 
-func Push(top string) (string, error) { return runLoose(top, "push") }
+// Push pushes the current branch; a branch with no upstream is published
+// (push -u origin HEAD) instead of failing.
+func Push(top string) (string, error) {
+	if _, err := run(top, "rev-parse", "--abbrev-ref", "@{upstream}"); err != nil {
+		return runLoose(top, "push", "-u", "origin", "HEAD")
+	}
+	return runLoose(top, "push")
+}
 func Pull(top string) (string, error) { return runLoose(top, "pull") }
 
 func Branches(top string) ([]string, error) {
@@ -250,9 +257,14 @@ func CreateBranch(top, name string) error {
 	return err
 }
 
+// Restore discards a tracked file's staged and unstaged changes, restoring
+// it to its HEAD content.
+func Restore(top, path string) error {
+	_, err := run(top, "restore", "--source=HEAD", "--staged", "--worktree", "--", path)
+	return err
+}
+
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
+	s, _, _ = strings.Cut(s, "\n")
 	return s
 }

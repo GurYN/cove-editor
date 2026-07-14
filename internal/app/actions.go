@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -125,6 +126,16 @@ func newRegistry() *action.Registry {
 	reg("term.toggle", "Terminal: Toggle", "ctrl+j", action.Global, func(m *Model) tea.Cmd { return m.toggleTerm() })
 	reg("term.new", "Terminal: New Instance", "", action.Global, func(m *Model) tea.Cmd { return m.newTerm() })
 
+	// ---- split panes ----
+	reg("pane.split", "Pane: Split Right", "ctrl+\\", action.Global, func(m *Model) tea.Cmd { m.splitOpen(); return nil })
+	reg("pane.close", "Pane: Close Split", "", action.Global, func(m *Model) tea.Cmd { m.split = false; return nil })
+	reg("pane.other", "Pane: Focus Other", "f6", action.Global, func(m *Model) tea.Cmd {
+		if m.split {
+			m.focusPane(!m.splitRight)
+		}
+		return nil
+	})
+
 	// ---- git (palette entries are Global; single-letter keys only bind
 	// inside the panel via the Git context) ----
 	reg("git.toggle", "Git: Toggle Panel", "ctrl+g", action.Global, func(m *Model) tea.Cmd { m.toggleGit(); return nil })
@@ -134,6 +145,7 @@ func newRegistry() *action.Registry {
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
 	reg("git.branch", "Git: Switch Branch…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
+	reg("git.restore", "Git: Discard File Changes (Restore)", "", action.Global, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
 		m.blameOn = !m.blameOn
 		if !m.blameOn {
@@ -175,6 +187,7 @@ func newRegistry() *action.Registry {
 		}
 		return nil
 	})
+	ghid("git.restore.x", "x", func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	ghid("git.commit.c", "c", func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
 	ghid("git.refresh.r", "r", func(m *Model) tea.Cmd { m.refreshGit(); return nil })
 	ghid("git.branch.b", "b", func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
@@ -251,7 +264,6 @@ func newRegistry() *action.Registry {
 		{"delete.back", "backspace", func(e *editor.Model) { e.DeleteRune(-1) }},
 		{"delete.fwd", "delete", func(e *editor.Model) { e.DeleteRune(+1) }},
 	} {
-		v := v
 		hid(v.id, v.key, action.Editor, ed(v.do))
 	}
 	reg("cursor.docStart", "Go to Beginning of File", "ctrl+home", action.Editor, ed(func(e *editor.Model) { e.Go(0, 0) }))
@@ -277,6 +289,7 @@ func newRegistry() *action.Registry {
 	reg("lsp.hover", "Show Documentation (Hover)", "ctrl+k", action.Editor, func(m *Model) tea.Cmd { return cmdHover(m) })
 	reg("lsp.complete", "Trigger Completion", "ctrl+@", action.Editor, func(m *Model) tea.Cmd { return cmdCompletion(m) })
 	reg("lsp.format", "Format Document", "", action.Editor, func(m *Model) tea.Cmd { return cmdFormat(m) })
+	reg("lsp.symbols", "Go to Symbol in File (Outline)", "ctrl+t", action.Editor, func(m *Model) tea.Cmd { return cmdSymbols(m) })
 	reg("lsp.problems", "Problems: List Errors and Warnings", "f8", action.Global, func(m *Model) tea.Cmd { *m = m.openProblems(); return nil })
 	reg("lsp.rename", "Rename Symbol", "f2", action.Editor, func(m *Model) tea.Cmd {
 		d := m.doc()
@@ -382,8 +395,8 @@ func newRegistry() *action.Registry {
 				m.lastMsg = err.Error()
 				return
 			}
-			for i := len(m.docs) - 1; i >= 0; i-- {
-				if same(m.docs[i].path, path) {
+			for i, d := range slices.Backward(m.docs) {
+				if same(d.path, path) {
 					m.active = i
 					m.forceClose()
 				}
@@ -405,5 +418,12 @@ func rel(root, path string) string {
 func same(a, b string) bool {
 	aa, _ := filepath.Abs(a)
 	bb, _ := filepath.Abs(b)
-	return aa == bb
+	if aa == bb {
+		return true
+	}
+	// Symlinked prefixes (macOS /tmp → /private/tmp, symlinked checkouts)
+	// make one file reachable by two absolute paths — compare resolved.
+	ra, errA := filepath.EvalSymlinks(aa)
+	rb, errB := filepath.EvalSymlinks(bb)
+	return errA == nil && errB == nil && ra == rb
 }

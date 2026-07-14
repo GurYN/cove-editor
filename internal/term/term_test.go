@@ -17,7 +17,7 @@ var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // hasOutputLine reports whether some screen row starts with want — i.e. it
 // is program output, not the typed command echoing back.
 func hasOutputLine(screen, want string) bool {
-	for _, l := range strings.Split(ansiRE.ReplaceAllString(screen, ""), "\n") {
+	for l := range strings.SplitSeq(ansiRE.ReplaceAllString(screen, ""), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(l), want) {
 			return true
 		}

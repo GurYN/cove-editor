@@ -2,7 +2,9 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/GurYN/cove-editor/internal/buffer"
@@ -42,10 +44,20 @@ func newDoc(path string, data []byte) *doc {
 	return d
 }
 
+// isBinary sniffs for a NUL byte in the head of the file — git's own
+// text/binary heuristic. Binary files (executables, zips, images) would
+// render as control-picture soup and get corrupted on save.
+func isBinary(data []byte) bool {
+	return bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0
+}
+
 func loadDoc(path string) (*doc, error) {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
+	}
+	if isBinary(data) {
+		return nil, fmt.Errorf("%s is a binary file", filepath.Base(path))
 	}
 	return newDoc(path, data), nil
 }

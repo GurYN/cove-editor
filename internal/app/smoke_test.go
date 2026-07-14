@@ -404,6 +404,28 @@ func TestTerminalToggleAndType(t *testing.T) {
 	}
 }
 
+func TestSidebarSwitcherClick(t *testing.T) {
+	m := setup(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB}) // reopen sidebar
+	app := m.(Model)
+	if !app.sidebarOpen || app.gitView {
+		t.Fatal("expected open sidebar showing the file tree")
+	}
+	y := app.height - 3 // switcher row
+	gitX := app.sideSwitcherRanges()[1].start
+	m, _ = m.Update(tea.MouseMsg{X: gitX, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	app = m.(Model)
+	if !app.gitView || app.focus != paneGit {
+		t.Fatalf("git button: gitView=%v focus=%v, want git panel focused", app.gitView, app.focus)
+	}
+	filesX := app.sideSwitcherRanges()[0].start
+	m, _ = m.Update(tea.MouseMsg{X: filesX, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	app = m.(Model)
+	if app.gitView || app.focus != paneSidebar {
+		t.Fatalf("files button: gitView=%v focus=%v, want file tree focused", app.gitView, app.focus)
+	}
+}
+
 func TestPanelDividerDrag(t *testing.T) {
 	m := setup(t)
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
@@ -418,8 +440,8 @@ func TestPanelDividerDrag(t *testing.T) {
 		t.Fatalf("drag down 3 rows: termH = %d, want %d", app.termH, termDefaultRows-3)
 	}
 	// sidebar stays full height; only the editor shrinks for the panel
-	if app.side.Height != 24-2 {
-		t.Fatalf("sidebar height %d, want full %d", app.side.Height, 24-2)
+	if app.side.Height != 24-4 {
+		t.Fatalf("sidebar height %d, want full %d", app.side.Height, 24-4)
 	}
 	for _, tt := range app.terms {
 		tt.Close()

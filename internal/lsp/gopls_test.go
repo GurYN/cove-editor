@@ -100,6 +100,24 @@ wait:
 		t.Fatalf("rename edits = %d, want >= 2", edits)
 	}
 
+	// Document symbols: both functions must appear in order.
+	ctx4, cancel4 := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel4()
+	syms, err := c.DocumentSymbols(ctx4, uri)
+	if err != nil {
+		t.Fatalf("documentSymbols: %v", err)
+	}
+	var names []string
+	for _, s := range syms {
+		names = append(names, s.Name)
+	}
+	if len(syms) != 2 || syms[0].Name != "greet" || syms[1].Name != "main" {
+		t.Fatalf("symbols = %v, want [greet main]", names)
+	}
+	if syms[0].SelectionRange.Start.Line != 2 {
+		t.Fatalf("greet symbol at line %d, want 2", syms[0].SelectionRange.Start.Line)
+	}
+
 	// Hover over greet.
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel3()

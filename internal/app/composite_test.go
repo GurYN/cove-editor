@@ -133,8 +133,8 @@ func TestToastFlushRight(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	m := setup(t).(Model)
 	m.doc().ed.Diags = []editor.DiagSpan{{Start: 0, End: 5, Severity: 2, Message: "short"}}
-	lines := strings.Split(m.View(), "\n")
-	for _, l := range lines {
+	lines := strings.SplitSeq(m.View(), "\n")
+	for l := range lines {
 		plain := ansi.Strip(l)
 		if i := strings.LastIndexAny(plain, "╮╯"); i >= 0 {
 			if w := lipgloss.Width(plain); w != 100 {

@@ -1,5 +1,7 @@
 package config
 
+import "maps"
+
 // Built-in themes. Truecolor hex; lipgloss degrades to 256/16 colors on
 // lesser terminals automatically.
 var themes = map[string]map[string]string{
@@ -34,11 +36,7 @@ func (c Config) ThemeColors() map[string]string {
 		base = themes["cove-dark"]
 	}
 	out := make(map[string]string, len(base))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range c.Colors {
-		out[k] = v
-	}
+	maps.Copy(out, base)
+	maps.Copy(out, c.Colors)
 	return out
 }

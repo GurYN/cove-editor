@@ -113,12 +113,16 @@ func (m Model) Update(k tea.KeyMsg) (Model, int, bool) {
 func (m Model) View() string {
 	w := min(m.width-6, 72) // content cells per row inside the box
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(m.Title) + "  " + m.query + "█")
+	sb.WriteString(titleStyle.Render(m.Title))
+	sb.WriteString("  ")
+	sb.WriteString(m.query)
+	sb.WriteString("█")
 
 	first := max(0, min(m.sel-maxRows/2, len(m.matches)-maxRows))
 	last := min(len(m.matches), first+maxRows)
 	if len(m.matches) == 0 {
-		sb.WriteString("\n" + detailStyle.Render("no matches"))
+		sb.WriteString("\n")
+		sb.WriteString(detailStyle.Render("no matches"))
 	}
 	for i := first; i < last; i++ {
 		sb.WriteByte('\n')

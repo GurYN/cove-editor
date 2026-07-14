@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -134,7 +135,7 @@ func (m *Model) toggleGit() {
 	m.refreshGit()
 }
 
-func (m *Model) gitHeight() int { return max(1, m.height-3) } // tab bar + header + bottom bar
+func (m *Model) gitHeight() int { return max(1, m.height-5) } // tab bar + header + switcher + spacer + bottom bar
 
 func (m *Model) gitScroll() {
 	h := m.gitHeight()
@@ -170,6 +171,71 @@ func (m *Model) gitSelected() (gitRow, bool) {
 
 // gitStageToggle stages/unstages the selected file (space, or a click on
 // the status letter — Zed's checkbox).
+// gitRestorePrompt discards the selected file's changes after a y/n
+// confirm: tracked files go back to their HEAD content, untracked files are
+// deleted. An open tab reloads (as one undoable edit — ctrl+z un-discards).
+func (m *Model) gitRestorePrompt() {
+	r, ok := m.gitSelected()
+	if !ok {
+		return
+	}
+	verb := "Discard changes to "
+	if r.fs.Untracked() {
+		verb = "Delete untracked "
+	}
+	*m = m.prompt(verb+r.fs.Path+"? y/n:", "", func(m *Model, text string) {
+		if !strings.EqualFold(text, "y") {
+			return
+		}
+		abs := filepath.Join(m.gitSnap.Top, filepath.FromSlash(r.fs.Path))
+		if r.fs.Untracked() {
+			if err := os.Remove(abs); err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = "deleted " + r.fs.Path
+				for i, d := range m.docs {
+					if same(d.path, abs) {
+						m.active = i
+						m.forceClose()
+						break
+					}
+				}
+			}
+		} else if err := git.Restore(m.gitSnap.Top, r.fs.Path); err != nil {
+			m.lastMsg = err.Error()
+		} else {
+			m.lastMsg = "restored " + r.fs.Path
+			m.reloadDoc(abs)
+			m.deferred = m.syncLSP()
+		}
+		m.refreshGit()
+		m.side.Refresh()
+	})
+}
+
+// reloadDoc syncs an open tab with the on-disk content after a git restore.
+func (m *Model) reloadDoc(abs string) {
+	d := m.docByPath(abs)
+	if d == nil || d.virtual {
+		return
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return
+	}
+	if d.crlf {
+		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	}
+	if old := d.ed.Buf.Bytes(); !bytes.Equal(old, data) {
+		d.ed.ApplyEdits([]editor.Edit{{Off: 0, Old: old, New: data}})
+	}
+	d.ed.Dirty = false
+	if fi, err := os.Stat(abs); err == nil {
+		d.mtime = fi.ModTime()
+	}
+	m.loadGitHead(d)
+}
+
 func (m *Model) gitStageToggle() {
 	r, ok := m.gitSelected()
 	if !ok {
@@ -359,7 +425,19 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
 		m.lastMsg = msg.err.Error()
 	} else {
-		m.lastMsg = firstLine(msg.out)
+		// git's raw chatter ("remote:", progress lines) makes a poor status
+		// message — say what happened instead.
+		low := strings.ToLower(msg.out)
+		switch {
+		case strings.Contains(low, "up to date") || strings.Contains(low, "up-to-date"):
+			m.lastMsg = "already up to date"
+		case strings.Contains(low, "set up to track"):
+			m.lastMsg = "published branch " + m.gitSnap.Branch + " to origin"
+		case msg.op == "push":
+			m.lastMsg = "pushed " + m.gitSnap.Branch
+		default:
+			m.lastMsg = "pulled " + m.gitSnap.Branch
+		}
 	}
 	m.refreshGit()
 	if msg.op == "pull" {
@@ -539,7 +617,9 @@ func (m Model) gitPanelView() string {
 		case i == m.gitSel:
 			sb.WriteString(gitSelStyle.Faint(true).Render(plain))
 		default:
-			sb.WriteString(" " + st.Render(letter) + gitPad(" "+r.fs.Path, w-2))
+			sb.WriteString(" ")
+			sb.WriteString(st.Render(letter))
+			sb.WriteString(gitPad(" "+r.fs.Path, w-2))
 		}
 	}
 	return sb.String()

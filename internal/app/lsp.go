@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type complMsg struct {
 	items []lsp.CompletionItem
 	rev   int // editor revision at request time
 }
+type symsMsg struct{ syms []lsp.DocumentSymbol }
 type wsEditMsg struct{ edit *lsp.WorkspaceEdit }
 type fmtMsg struct {
 	path  string
@@ -73,11 +75,6 @@ func toDiagSpans(buf *buffer.Buffer, diags []lsp.Diagnostic) []editor.DiagSpan {
 func offsetOf(buf *buffer.Buffer, p lsp.Position) int {
 	line := min(p.Line, buf.LineCount()-1)
 	return buf.Offset(line, lsp.ByteCol(buf.Line(line), p.Character))
-}
-
-func positionOf(buf *buffer.Buffer, off int) lsp.Position {
-	line, col := buf.Pos(off)
-	return lsp.Position{Line: line, Character: lsp.UTF16Col(buf.Line(line), col)}
 }
 
 func (m *Model) cursorPosition() (string, lsp.Position, bool) {
@@ -181,6 +178,18 @@ func cmdCompletion(m *Model) tea.Cmd {
 	})
 }
 
+func cmdSymbols(m *Model) tea.Cmd {
+	return m.lspCmd(func(c *lsp.Client, uri string, pos lsp.Position) tea.Msg {
+		ctx, cancel := lsp.Ctx()
+		defer cancel()
+		syms, err := c.DocumentSymbols(ctx, uri)
+		if err != nil {
+			return lspErrMsg{err}
+		}
+		return symsMsg{syms}
+	})
+}
+
 func cmdRename(m *Model, newName string) tea.Cmd {
 	return m.lspCmd(func(c *lsp.Client, uri string, pos lsp.Position) tea.Msg {
 		ctx, cancel := lsp.Ctx()
@@ -267,9 +276,9 @@ func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit) {
 		}
 		buf := buffer.New(data)
 		ee := toEditorEdits(buf, edits)
-		for i := len(ee) - 1; i >= 0; i-- {
-			buf.Delete(ee[i].Off, ee[i].Off+len(ee[i].Old))
-			buf.Insert(ee[i].Off, ee[i].New)
+		for _, e := range slices.Backward(ee) {
+			buf.Delete(e.Off, e.Off+len(e.Old))
+			buf.Insert(e.Off, e.New)
 		}
 		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 			m.lastMsg = err.Error()

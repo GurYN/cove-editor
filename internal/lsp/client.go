@@ -65,6 +65,7 @@ func (c *Client) start() {
 			"textDocument": map[string]any{
 				"publishDiagnostics": map[string]any{},
 				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
+				"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
 				"completion": map[string]any{
 					"completionItem": map[string]any{"snippetSupport": false},
 				},
@@ -305,6 +306,33 @@ func (c *Client) locations(ctx context.Context, method string, params any) ([]Lo
 		}
 	}
 	return locs, nil
+}
+
+// DocumentSymbols returns the file's outline. Servers reply with either
+// hierarchical DocumentSymbol[] or flat SymbolInformation[]; the flat form
+// (spotted by its "location" field) is folded into the hierarchical one.
+func (c *Client) DocumentSymbols(ctx context.Context, uri string) ([]DocumentSymbol, error) {
+	conn, err := c.readyConn()
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"textDocument": map[string]any{"uri": uri}}
+	var nodes []struct {
+		DocumentSymbol
+		Location *Location `json:"location"`
+	}
+	if err := conn.Call(ctx, "textDocument/documentSymbol", params, &nodes); err != nil {
+		return nil, err
+	}
+	syms := make([]DocumentSymbol, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Location != nil {
+			n.SelectionRange = n.Location.Range
+			n.Children = nil // SymbolInformation is flat
+		}
+		syms = append(syms, n.DocumentSymbol)
+	}
+	return syms, nil
 }
 
 func (c *Client) Rename(ctx context.Context, uri string, pos Position, newName string) (*WorkspaceEdit, error) {

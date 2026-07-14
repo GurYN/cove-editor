@@ -184,3 +184,29 @@ func TestTopNotARepo(t *testing.T) {
 		t.Skip("temp dir is inside a repo")
 	}
 }
+
+// Push on a branch with no upstream publishes it (push -u origin HEAD)
+// instead of failing with "no upstream branch".
+func TestPushPublishesNewBranch(t *testing.T) {
+	top := initRepo(t)
+	bare := t.TempDir()
+	if _, err := run(bare, "init", "-q", "--bare"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(top, "remote", "add", "origin", bare); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateBranch(top, "develop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Push(top); err != nil {
+		t.Fatalf("push of unpublished branch failed: %v", err)
+	}
+	if up, err := run(top, "rev-parse", "--abbrev-ref", "@{upstream}"); err != nil || up != "origin/develop" {
+		t.Fatalf("upstream = %q (%v), want origin/develop", up, err)
+	}
+	// Second push goes down the plain-push path.
+	if _, err := Push(top); err != nil {
+		t.Fatalf("second push failed: %v", err)
+	}
+}
