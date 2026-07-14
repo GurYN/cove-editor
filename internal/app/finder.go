@@ -42,23 +42,29 @@ func loadGitignore(root string) func(rel, base string) bool {
 	if err != nil {
 		return func(string, string) bool { return false }
 	}
-	var pats []string
+	type pat struct {
+		p        string
+		anchored bool // leading "/": root-relative only, never by basename
+	}
+	var pats []pat
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
 			continue
 		}
-		pats = append(pats, strings.Trim(line, "/"))
+		pats = append(pats, pat{strings.Trim(line, "/"), strings.HasPrefix(line, "/")})
 	}
 	return func(rel, base string) bool {
 		for _, p := range pats {
-			if ok, _ := filepath.Match(p, base); ok {
+			if !p.anchored {
+				if ok, _ := filepath.Match(p.p, base); ok {
+					return true
+				}
+			}
+			if ok, _ := filepath.Match(p.p, rel); ok {
 				return true
 			}
-			if ok, _ := filepath.Match(p, rel); ok {
-				return true
-			}
-			if strings.HasPrefix(rel, p+string(filepath.Separator)) {
+			if strings.HasPrefix(rel, p.p+string(filepath.Separator)) {
 				return true
 			}
 		}

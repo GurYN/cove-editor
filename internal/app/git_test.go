@@ -238,3 +238,38 @@ func TestGitBranchPicker(t *testing.T) {
 		t.Fatalf("checkout failed:\n%s", frame(m))
 	}
 }
+
+// Enter on a branch name that matches nothing offers to create it off the
+// current branch; "y" runs checkout -b.
+func TestBranchPickerCreatesMissingBranch(t *testing.T) {
+	m, top := gitSetup(t)
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}) // panel: open branch picker
+	if m.ovKind != overlayBranches {
+		t.Fatal("branch picker did not open")
+	}
+	for _, r := range "feature/x" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modePrompt || !strings.Contains(m.promptLabel, `"feature/x"`) ||
+		!strings.Contains(m.promptLabel, "main") {
+		t.Fatalf("no create prompt (mode=%v label=%q)", m.mode, m.promptLabel)
+	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune{'y'}}, {Type: tea.KeyEnter}} {
+		m, _ = m.update(k)
+	}
+	if m.gitSnap.Branch != "feature/x" {
+		t.Fatalf("on branch %q, want feature/x", m.gitSnap.Branch)
+	}
+	_ = top
+
+	// Escape (or answering n) must not create anything.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	for _, r := range "nope" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEscape})
+	if m.mode == modePrompt {
+		t.Fatal("escape from the picker should not prompt")
+	}
+}

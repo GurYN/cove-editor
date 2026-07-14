@@ -461,6 +461,24 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 	m.ovKind = overlayNone
 	m.focus = paneEditor
 	if chosen < 0 {
+		// Enter on a branch name that matched nothing: offer to create it
+		// off the current branch (Escape still just closes).
+		if kind == overlayBranches && k.Type == tea.KeyEnter {
+			if name := strings.TrimSpace(m.ov.Query()); name != "" {
+				return m.prompt(fmt.Sprintf("No branch %q — create from %s? y/n:", name, m.gitSnap.Branch), "",
+					func(m *Model, text string) {
+						if !strings.EqualFold(text, "y") {
+							return
+						}
+						if err := git.CreateBranch(m.gitSnap.Top, name); err != nil {
+							m.lastMsg = err.Error()
+						} else {
+							m.lastMsg = "on new branch " + name
+						}
+						m.refreshGit()
+					}), nil
+			}
+		}
 		return m, nil
 	}
 	switch kind {
