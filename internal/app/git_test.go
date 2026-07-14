@@ -144,6 +144,41 @@ func TestGitCommitFlow(t *testing.T) {
 	}
 }
 
+func TestGitGutterSigns(t *testing.T) {
+	m, top := gitSetup(t) // a.txt committed as "one\n", now "one\ntwo\n"
+	m.openFile(filepath.Join(top, "a.txt"))
+	d := m.doc()
+	if d == nil || len(d.ed.Signs) < 2 {
+		t.Fatalf("no signs computed: %+v", d)
+	}
+	if d.ed.Signs[0] != 0 || d.ed.Signs[1] != 'a' {
+		t.Fatalf("signs = %q, want line 2 added", d.ed.Signs)
+	}
+	if !strings.Contains(frame(m), "▎  2 two") {
+		t.Fatalf("gutter bar missing:\n%s", frame(m))
+	}
+	// Type on line 1, flush the debounce: line 1 becomes modified.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m, _ = m.update(changeTickMsg{})
+	if s := m.doc().ed.Signs; s[0] != 'm' {
+		t.Fatalf("signs after edit = %q, want line 1 modified", s)
+	}
+	// Save + commit everything moves HEAD: signs must clear.
+	m.doc().save()
+	act := m.reg.ByID("git.stageAll")
+	act.Do(&m)
+	m.gitCommitPrompt()
+	for _, r := range "wip" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	for _, s := range m.doc().ed.Signs {
+		if s != 0 {
+			t.Fatalf("signs after commit = %q, want none", m.doc().ed.Signs)
+		}
+	}
+}
+
 func TestGitMouseClickOpensDiff(t *testing.T) {
 	m, _ := gitSetup(t)
 	// Row layout: y=0 tabs, y=1 panel header, y=2 "Changes (1)", y=3 file.

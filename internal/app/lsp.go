@@ -110,6 +110,7 @@ func (m *Model) flushChange() tea.Cmd {
 	}
 	d.sentRev = d.ed.Rev
 	m.lspm.Change(d.path, d.sentRev, d.ed.Buf.Bytes())
+	m.updateSigns(d)   // git gutter rides the same debounce
 	return m.syncLSP() // buffer may already have moved again
 }
 

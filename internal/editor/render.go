@@ -21,8 +21,9 @@ const (
 	ClassConstant
 	ClassProperty
 	ClassOperator
-	ClassDiffAdd // git diff views: added / removed lines
+	ClassDiffAdd // git: added / removed / modified lines (diff views, gutter)
 	ClassDiffDel
+	ClassDiffMod
 	numClasses
 )
 
@@ -43,7 +44,7 @@ var themeSlots = map[string]int{
 	"keyword": ClassKeyword, "string": ClassString, "comment": ClassComment,
 	"number": ClassNumber, "function": ClassFunction, "type": ClassType,
 	"constant": ClassConstant, "property": ClassProperty, "operator": ClassOperator,
-	"git.added": ClassDiffAdd, "git.deleted": ClassDiffDel,
+	"git.added": ClassDiffAdd, "git.deleted": ClassDiffDel, "git.modified": ClassDiffMod,
 	"info": paintInfo, "warning": paintWarn, "error": paintErr,
 	"match": paintMatch, "selection": paintSelection,
 }
@@ -217,7 +218,20 @@ func (m Model) View() string {
 			sb.WriteByte('\n')
 		}
 		if gw > 0 {
-			num := fmt.Sprintf(" %*d ", gw-2, i+1)
+			// The gutter's leading cell carries the git sign, if any.
+			bar := " "
+			if i < len(m.Signs) {
+				switch m.Signs[i] {
+				case 'a':
+					bar = paintStyles[ClassDiffAdd].Render("▎")
+				case 'm':
+					bar = paintStyles[ClassDiffMod].Render("▎")
+				case 'd':
+					bar = paintStyles[ClassDiffDel].Render("▁")
+				}
+			}
+			sb.WriteString(bar)
+			num := fmt.Sprintf("%*d ", gw-2, i+1)
 			if i == curLine {
 				sb.WriteString(gutterCurStyle.Render(num))
 			} else {

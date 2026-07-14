@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -61,8 +62,14 @@ func (m *Model) refreshGit() {
 	if err != nil {
 		m.gitErr = err.Error()
 	}
+	headMoved := snap.Oid != m.gitSnap.Oid
 	m.gitSnap = snap
 	m.buildGitRows()
+	if headMoved { // commit/checkout/pull: gutter baselines are stale
+		for _, d := range m.docs {
+			m.loadGitHead(d)
+		}
+	}
 }
 
 func (m *Model) gitRepo() bool {
@@ -358,6 +365,36 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 		m.side.Refresh() // pull may create/delete files
 	}
 	return m, nil
+}
+
+// ---- gutter signs ----
+
+// loadGitHead fetches the doc's HEAD baseline and recomputes its signs.
+// nil baseline (untracked file, no repo, virtual tab) = no signs.
+func (m *Model) loadGitHead(d *doc) {
+	d.head = nil
+	if m.gitSnap.Top != "" && !d.virtual {
+		abs, _ := filepath.Abs(d.path)
+		if r, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = r // git reports the resolved top (/private/var vs /var on macOS)
+		}
+		if rel, err := filepath.Rel(m.gitSnap.Top, abs); err == nil && !strings.HasPrefix(rel, "..") {
+			if b, err := git.Show(m.gitSnap.Top, filepath.ToSlash(rel)); err == nil {
+				d.head = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+			}
+		}
+	}
+	m.updateSigns(d)
+}
+
+// updateSigns rediffs the buffer against the HEAD baseline. Runs on the
+// didChange debounce tick, so it stays off the keystroke→frame path.
+func (m *Model) updateSigns(d *doc) {
+	if d.head == nil {
+		d.ed.Signs = nil
+		return
+	}
+	d.ed.Signs = git.LineSigns(d.head, d.ed.Buf.Bytes())
 }
 
 // ---- rendering ----

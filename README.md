@@ -13,7 +13,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`) — the chrome you expect from a GUI editor.
 - **Mouse support that actually works** — click to place the cursor, click tabs and tree entries, drag to select.
 - **Integrated terminal** (`Ctrl+J`) — your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
-- **Git built in** (`Ctrl+G`) — a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull, and branch switching. The current branch and ahead/behind counts live in the status bar.
+- **Git built in** (`Ctrl+G`) — a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull, and branch switching. Gutter signs mark added/modified/deleted lines as you type; the current branch and ahead/behind counts live in the status bar.
 - **Multi-cursor editing, find & replace, undo/redo.**
 - **No terminal traps** — `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
 
@@ -112,7 +112,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done — panel, staging, diffs, commit, push/pull, branches; gutter signs and blame still to come), and split panes (pending). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done — panel, staging, diffs, commit, push/pull, branches, gutter signs; blame still to come), and split panes (pending). Plugins and debugging are deferred to v2.
 
 ## Contributing
 

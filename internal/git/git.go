@@ -29,6 +29,7 @@ func (f FileStatus) Conflict() bool  { return f.Index == '!' }
 type Snapshot struct {
 	Top           string // repo top-level dir, absolute
 	Branch        string
+	Oid           string // HEAD commit; changes on commit/checkout/pull
 	Upstream      string
 	Ahead, Behind int
 	Files         []FileStatus
@@ -84,6 +85,8 @@ func Status(top string) (Snapshot, error) {
 	for _, ln := range strings.Split(out, "\n") {
 		switch {
 		case ln == "":
+		case strings.HasPrefix(ln, "# branch.oid "):
+			snap.Oid = ln[len("# branch.oid "):]
 		case strings.HasPrefix(ln, "# branch.head "):
 			snap.Branch = ln[len("# branch.head "):]
 		case strings.HasPrefix(ln, "# branch.upstream "):
@@ -146,6 +149,14 @@ func DiffUntracked(top, path string) string {
 	cmd.Dir = top
 	out, _ := cmd.Output()
 	return string(out)
+}
+
+// Show returns a file's content at HEAD (path repo-relative, slash-separated).
+// Raw bytes — no trimming, file content must round-trip exactly.
+func Show(top, path string) ([]byte, error) {
+	cmd := exec.Command("git", "show", "HEAD:"+path)
+	cmd.Dir = top
+	return cmd.Output()
 }
 
 func Commit(top, msg string) (string, error) { return run(top, "commit", "-m", msg) }

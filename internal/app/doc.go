@@ -16,9 +16,10 @@ type doc struct {
 	ed      editor.Model
 	crlf    bool
 	mtime   time.Time
-	confirm bool // next save overwrites an externally-modified file
-	sentRev int  // last editor revision synced to the language server
-	virtual bool // read-only in-memory view (git diff); never saved
+	confirm bool   // next save overwrites an externally-modified file
+	sentRev int    // last editor revision synced to the language server
+	virtual bool   // read-only in-memory view (git diff); never saved
+	head    []byte // file content at git HEAD (LF-normalized); nil = no baseline
 }
 
 func newDoc(path string, data []byte) *doc {

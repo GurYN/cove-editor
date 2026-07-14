@@ -67,6 +67,7 @@ type Model struct {
 	ReadOnly bool       // rejects every mutation; navigation/selection still work
 	Rev      int        // bumped on every buffer mutation; drives LSP sync
 	Diags    []DiagSpan // set by the app; offsets clamped at render time
+	Signs    []byte     // git gutter sign per line ('a'/'m'/'d', 0 none); set by the app
 
 	cursors []Cursor // sorted by sel start, non-overlapping, len >= 1
 	primary int      // index into cursors; scroll follows this one

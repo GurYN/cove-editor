@@ -582,6 +582,7 @@ func (m *Model) openFile(path string) {
 	m.focus = paneEditor
 	m.layout()
 	m.lspm.Open(path, d.ed.Buf.Bytes(), d.ed.Rev)
+	m.loadGitHead(d)
 }
 
 // closeActive closes the active tab, prompting when dirty.
