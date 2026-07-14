@@ -13,6 +13,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`) — the chrome you expect from a GUI editor.
 - **Mouse support that actually works** — click to place the cursor, click tabs and tree entries, drag to select.
 - **Integrated terminal** (`Ctrl+J`) — your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
+- **Git built in** (`Ctrl+G`) — a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull, and branch switching. The current branch and ahead/behind counts live in the status bar.
 - **Multi-cursor editing, find & replace, undo/redo.**
 - **No terminal traps** — `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
 
@@ -59,6 +60,7 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo               |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
 | `Ctrl+B`        | Toggle sidebar                |
+| `Ctrl+G`        | Toggle git panel              |
 | `Ctrl+J`        | Toggle terminal panel         |
 | `Ctrl+W`        | Close tab                     |
 | `Ctrl+E`        | Expand selection to syntax node |
@@ -71,6 +73,24 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 Every action has a stable ID (shown in the palette footer) and can be rebound in the config file.
 
 When the terminal panel has focus, every key goes to your shell except `Ctrl+J` (hide panel), `Ctrl+Q` (quit), and `Shift+PgUp`/`PgDn` (scrollback).
+
+`Ctrl+B` and `Ctrl+G` are tri-state: they open and focus their panel, refocus it if it's open but unfocused, and close it when it already has focus.
+
+### Git panel
+
+Inside the panel (all of this is also in the palette):
+
+| Key       | Action                                    |
+| --------- | ----------------------------------------- |
+| `Space`   | Stage / unstage the selected file          |
+| `Enter`   | Open the file's diff (read-only tab)       |
+| `c`       | Commit staged files                        |
+| `b`       | Switch branch (fuzzy picker)               |
+| `a` / `u` | Stage all / unstage all                    |
+| `r`       | Refresh status                             |
+| `Esc`     | Back to the editor                         |
+
+Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, and *New Branch…* are in the palette.
 
 ## Configuration
 
@@ -85,11 +105,14 @@ keymap = "default"    # or "vim" (opt-in)
 
 [lsp.go]
 command = ["gopls"]            # override or add language servers
+
+[colors]
+"git.added" = "#98c379"        # override any theme color, incl. git states
 ```
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration, and split panes. Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done — panel, staging, diffs, commit, push/pull, branches; gutter signs and blame still to come), and split panes (pending). Plugins and debugging are deferred to v2.
 
 ## Contributing
 
