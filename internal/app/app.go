@@ -213,7 +213,7 @@ func (m *Model) doc() *doc {
 	return m.docs[m.active]
 }
 
-func (m Model) Init() tea.Cmd { return listenLSP(m.lspm) }
+func (m Model) Init() tea.Cmd { return tea.Batch(listenLSP(m.lspm), watchTick()) }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	start := time.Now()
@@ -240,6 +240,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, listenLSP(m.lspm)
 	case changeTickMsg:
 		return m, m.flushChange()
+	case watchTickMsg:
+		m.checkDiskChanges()
+		return m, tea.Batch(watchTick(), m.syncLSP())
 	case termMsg:
 		return m.handleTermMsg(msg)
 	case gitOpMsg:

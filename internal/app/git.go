@@ -227,7 +227,9 @@ func (m *Model) reloadDoc(abs string) {
 		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	}
 	if old := d.ed.Buf.Bytes(); !bytes.Equal(old, data) {
+		line, col := d.ed.Cursor()
 		d.ed.ApplyEdits([]editor.Edit{{Off: 0, Old: old, New: data}})
+		d.ed.Go(line, col) // keep the cursor in place instead of jumping to EOF
 	}
 	d.ed.Dirty = false
 	if fi, err := os.Stat(abs); err == nil {

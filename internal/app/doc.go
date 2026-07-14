@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/GurYN/cove-editor/internal/buffer"
 	"github.com/GurYN/cove-editor/internal/editor"
 	"github.com/GurYN/cove-editor/internal/git"
@@ -27,6 +29,8 @@ type doc struct {
 
 	blame     []git.BlameLine // per-HEAD-line; nil = not fetched, empty = unavailable
 	blameBusy bool
+
+	seen time.Time // last disk mtime the watcher warned about (dirty buffers)
 }
 
 func newDoc(path string, data []byte) *doc {
@@ -60,6 +64,38 @@ func loadDoc(path string) (*doc, error) {
 		return nil, fmt.Errorf("%s is a binary file", filepath.Base(path))
 	}
 	return newDoc(path, data), nil
+}
+
+// watchTickMsg drives the disk-change poll (every 2s).
+// ponytail: mtime polling, no watcher dependency; fsnotify if 2s ever feels slow.
+type watchTickMsg struct{}
+
+func watchTick() tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return watchTickMsg{} })
+}
+
+// checkDiskChanges polls open files for outside edits. A clean buffer
+// reloads in place (undoably, cursor kept); a dirty one gets a one-time
+// warning and the save-time mtime guard arbitrates from there.
+func (m *Model) checkDiskChanges() {
+	for _, d := range m.docs {
+		if d.virtual || d.mtime.IsZero() {
+			continue
+		}
+		fi, err := os.Stat(d.path)
+		if err != nil || fi.ModTime().Equal(d.mtime) {
+			continue
+		}
+		if !d.ed.Dirty {
+			m.reloadDoc(d.path)
+			m.lastMsg = filepath.Base(d.path) + " reloaded (changed on disk)"
+			continue
+		}
+		if !fi.ModTime().Equal(d.seen) {
+			d.seen = fi.ModTime()
+			m.lastMsg = filepath.Base(d.path) + " changed on disk — buffer has unsaved edits"
+		}
+	}
 }
 
 // save writes the buffer to disk. Returns a status message; guards against
