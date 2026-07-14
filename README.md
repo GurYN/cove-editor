@@ -114,7 +114,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done: panel, staging, diffs, commit, push/pull, branches, gutter signs, inline blame), and split panes (pending). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done: panel, staging, diffs, commit, push/pull, branches, gutter signs, inline blame), and split panes. Plugins and debugging are deferred to v2.
 
 ## Contributing
 

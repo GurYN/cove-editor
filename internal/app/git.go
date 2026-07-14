@@ -67,11 +67,29 @@ func (m *Model) refreshGit() {
 	headMoved := snap.Oid != m.gitSnap.Oid
 	m.gitSnap = snap
 	m.buildGitRows()
+	m.syncTreeGit()
 	if headMoved { // commit/checkout/pull: gutter baselines are stale
 		for _, d := range m.docs {
 			m.loadGitHead(d)
 		}
 	}
+}
+
+// syncTreeGit mirrors the snapshot's change markers into the file tree.
+func (m *Model) syncTreeGit() {
+	st := make(map[string]byte, len(m.gitSnap.Files))
+	for _, f := range m.gitSnap.Files {
+		abs := filepath.Join(m.gitSnap.Top, filepath.FromSlash(f.Path))
+		switch {
+		case f.Conflict():
+			st[abs] = '!'
+		case f.Untracked():
+			st[abs] = 'A'
+		default:
+			st[abs] = 'M'
+		}
+	}
+	m.side.SetGitStatus(st)
 }
 
 func (m *Model) gitRepo() bool {

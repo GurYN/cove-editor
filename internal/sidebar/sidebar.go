@@ -15,7 +15,23 @@ var (
 	dirStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("74")).Bold(true)
 	selStyle  = lipgloss.NewStyle().Reverse(true)
 	headStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	// git status tints — same defaults as the git panel.
+	addStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("108"))
+	modStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("179"))
+	conStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("176"))
 )
+
+// ApplyTheme recolors the git tints from the same color map as the editor.
+func ApplyTheme(colors map[string]string) {
+	set := func(dst *lipgloss.Style, key string) {
+		if c := colors[key]; c != "" {
+			*dst = lipgloss.NewStyle().Foreground(lipgloss.Color(c))
+		}
+	}
+	set(&addStyle, "git.added")
+	set(&modStyle, "git.modified")
+	set(&conStyle, "git.conflict")
+}
 
 type node struct {
 	name     string
@@ -35,6 +51,24 @@ type Model struct {
 	sel    int
 	top    int
 	err    string
+	gitFiles map[string]byte // abs path -> 'A' new, 'M' modified, '!' conflict
+	gitDirs  map[string]bool // dirs containing a changed file
+}
+
+// SetGitStatus installs the change markers shown in the tree: abs file path
+// -> 'A' (new/untracked), 'M' (modified), '!' (conflict). Ancestor dirs of
+// each changed file get a dot marker.
+func (m *Model) SetGitStatus(files map[string]byte) {
+	m.gitFiles = files
+	m.gitDirs = make(map[string]bool, len(files))
+	for p := range files {
+		for d := filepath.Dir(p); strings.HasPrefix(d, m.Root); d = filepath.Dir(d) {
+			if m.gitDirs[d] || d == filepath.Dir(d) {
+				break
+			}
+			m.gitDirs[d] = true
+		}
+	}
 }
 
 func New(root string) Model {
@@ -241,12 +275,22 @@ func (m Model) View(focused bool) string {
 			}
 		}
 		row := strings.Repeat("  ", m.depths[i]) + icon + n.name
+		st := m.gitFiles[n.path]
+		if n.isDir && m.gitDirs[n.path] {
+			row += " •"
+		}
 		row = pad(" "+row, m.Width)
 		switch {
 		case i == m.sel && focused:
 			row = selStyle.Render(row)
 		case i == m.sel:
 			row = selStyle.Faint(true).Render(row)
+		case st == '!':
+			row = conStyle.Render(row)
+		case st == 'A':
+			row = addStyle.Render(row)
+		case st == 'M':
+			row = modStyle.Render(row)
 		case n.isDir:
 			row = dirStyle.Render(row)
 		}

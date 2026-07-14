@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ func applyChrome(colors map[string]string) {
 		borderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(border))
 	}
 	applyGitChrome(colors)
+	sidebar.ApplyTheme(colors)
 }
 
 type mode int
@@ -134,6 +136,8 @@ type Model struct {
 
 	gitView bool // left pane shows the git panel instead of the file tree
 	gitSnap git.Snapshot
+
+	lastMouse time.Time // last mouse event; gates the broken-report alt+[ drop
 	gitRows []gitRow
 	gitSel  int
 	gitTop  int
@@ -287,6 +291,16 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if isMouseJunk(msg) {
+			return m, nil
+		}
+		// A split mouse report's ESC fuses with its '[' into an alt+[ chord;
+		// mid-scroll that is never real typing — drop it before the unfuse
+		// below turns it into Esc + a literal '[' insert.
+		if msg.Alt && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 &&
+			msg.Runes[0] == '[' && time.Since(m.lastMouse) < 500*time.Millisecond {
+			return m, nil
+		}
 		m.lastMsg = ""
 		m.hoverText = "" // any key dismisses the hover card
 		// The terminal never delivers a lone Esc: bubbletea's parser buffers
@@ -301,9 +315,25 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		return m.dispatchKey(msg)
 	case tea.MouseMsg:
+		m.lastMouse = time.Now()
 		return m.dispatchMouse(msg)
 	}
 	return m, nil
+}
+
+// mouseFrag matches the printable remainder of an SGR mouse report
+// ("ESC[<btn;x;yM") whose ESC got lost when a fast wheel flood split the
+// report across stdin reads — bubbletea v1 then delivers it as typed runes.
+// ponytail: fragments cut mid-number ("66;57") still leak one short burst;
+// upstream fix is bubbletea v2's rewritten input parser.
+var mouseFrag = regexp.MustCompile(`\[<[0-9;]+[Mm]|^[<0-9;]+[Mm]$`)
+
+// isMouseJunk reports whether a key message is a broken mouse report that
+// must never reach the buffer. Single runes and bracketed pastes are real
+// input and always pass.
+func isMouseJunk(msg tea.KeyMsg) bool {
+	return msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) > 1 &&
+		mouseFrag.MatchString(string(msg.Runes))
 }
 
 // editorX is the editor pane's left edge (sidebar + border column).
