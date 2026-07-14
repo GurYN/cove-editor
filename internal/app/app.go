@@ -250,6 +250,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	case refsMsg:
 		return m.openReferences(msg.locs), nil
+	case symsMsg:
+		return m.openSymbols(msg.syms), nil
 	case hoverMsg:
 		if msg.text == "" {
 			m.lastMsg = "no documentation"
@@ -312,7 +314,7 @@ func (m *Model) layout() {
 		sw = min(m.sidebarW, m.width/2)
 	}
 	m.side.Width = sw
-	m.side.Height = m.height - 2 // tab bar + bottom bar; panel sits under the editor only
+	m.side.Height = m.height - 4 // tab bar + bottom bar + switcher row + its spacer; panel sits under the editor only
 	for _, d := range m.docs {
 		d.ed.Width = m.width - m.editorX()
 		d.ed.Height = m.contentRows()
@@ -474,6 +476,53 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		m.layout()
 	}
 	return m, nil
+}
+
+// openSymbols shows the active file's outline (functions, types, …) as a
+// fuzzy picker. Rows reuse the Problems overlay plumbing: pick → jump.
+func (m Model) openSymbols(syms []lsp.DocumentSymbol) Model {
+	d := m.doc()
+	if d == nil {
+		return m
+	}
+	if len(syms) == 0 {
+		m.lastMsg = "no symbols in this file"
+		return m
+	}
+	m.ovKind = overlayDiags
+	m.ovDiags = m.ovDiags[:0]
+	var items []overlay.Item
+	var walk func(s []lsp.DocumentSymbol, depth int)
+	walk = func(s []lsp.DocumentSymbol, depth int) {
+		for _, sym := range s {
+			line, col := d.ed.Buf.Pos(offsetOf(d.ed.Buf, sym.SelectionRange.Start))
+			m.ovDiags = append(m.ovDiags, problemRef{path: d.path, line: line, col: col})
+			items = append(items, overlay.Item{
+				Label:  strings.Repeat("  ", depth) + symbolGlyph(sym.Kind) + " " + sym.Name,
+				Detail: fmt.Sprintf(":%d", line+1),
+			})
+			walk(sym.Children, depth+1)
+		}
+	}
+	walk(syms, 0)
+	m.ov = overlay.New("Symbol:", items, m.width)
+	return m
+}
+
+// symbolGlyph maps the LSP SymbolKind enum to a one-cell marker.
+func symbolGlyph(kind int) string {
+	switch kind {
+	case 5, 23: // class, struct
+		return "◆"
+	case 11: // interface
+		return "◇"
+	case 6, 9, 12: // method, constructor, function
+		return "ƒ"
+	case 10, 22: // enum, enum member
+		return "≡"
+	default: // fields, variables, constants, modules, …
+		return "·"
+	}
 }
 
 // openProblems lists every diagnostic across open tabs, errors first.
@@ -695,6 +744,26 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// The sidebar's bottom switcher row (above its spacer): a click on a
+	// button swaps the panel.
+	if m.sidebarOpen && msg.Y == m.height-3 && msg.X < m.side.Width &&
+		msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		m.mouseDown = paneSidebar // no drag from a switcher click
+		for i, r := range m.sideSwitcherRanges() {
+			if msg.X >= r.start && msg.X < r.end {
+				if i == 1 {
+					m.gitView = true
+					m.focus = paneGit
+					m.refreshGit()
+				} else {
+					m.gitView = false
+					m.focus = paneSidebar
+				}
+				break
+			}
+		}
+		return m, nil
+	}
 	target := paneEditor
 	switch {
 	case msg.Action == tea.MouseActionMotion || msg.Action == tea.MouseActionRelease:
@@ -912,6 +981,8 @@ func (m Model) View() string {
 		if m.gitView {
 			side = m.gitPanelView()
 		}
+		// switcher plus a spacer row so the buttons don't sit on the bottom bar
+		side += "\n" + m.sideSwitcher() + "\n" + strings.Repeat(" ", m.side.Width)
 		middle = lipgloss.JoinHorizontal(lipgloss.Top, side, border, middle)
 	}
 	if m.ovKind != overlayNone {
@@ -934,6 +1005,45 @@ func (m Model) View() string {
 		}
 	}
 	return m.renderTabBar() + "\n" + middle + "\n" + m.bottomBar()
+}
+
+// sideButtons are the panel-switcher labels at the bottom of the sidebar.
+var sideButtons = [2]string{"Files", "Git"}
+
+// sideSwitcherRanges returns each button's [start, end) x-range within the
+// sidebar, matching sideSwitcher exactly so render and hit-test can't drift.
+func (m Model) sideSwitcherRanges() [2]struct{ start, end int } {
+	const margin = 2 // cells left and right of the control
+	half := (m.side.Width - 2*margin) / 2
+	return [2]struct{ start, end int }{{margin, margin + half}, {margin + half, m.side.Width - margin}}
+}
+
+// sideSwitcher renders the one-row Files/Git picker under the sidebar: a
+// segmented control spanning the sidebar minus side margins, each button
+// half of it, the active one highlighted — reusing the tab bar's themed
+// styles.
+func (m Model) sideSwitcher() string {
+	ranges := m.sideSwitcherRanges()
+	row := strings.Repeat(" ", ranges[0].start)
+	for i, r := range ranges {
+		st := tabStyle.Faint(true)
+		if (i == 1) == m.gitView {
+			st = tabActiveStyle
+		}
+		row += st.Render(centerCell(sideButtons[i], r.end-r.start))
+	}
+	return row + strings.Repeat(" ", max(0, m.side.Width-ranges[1].end))
+}
+
+// centerCell pads s to exactly w cells, label centered. ponytail: rune==cell
+// assumption, same as the sidebar.
+func centerCell(s string, w int) string {
+	r := []rune(s)
+	if len(r) >= w {
+		return string(r[:w])
+	}
+	left := (w - len(r)) / 2
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", w-len(r)-left)
 }
 
 // composite splices over onto base starting at row top; left < 0 centers.

@@ -277,6 +277,7 @@ func newRegistry() *action.Registry {
 	reg("lsp.hover", "Show Documentation (Hover)", "ctrl+k", action.Editor, func(m *Model) tea.Cmd { return cmdHover(m) })
 	reg("lsp.complete", "Trigger Completion", "ctrl+@", action.Editor, func(m *Model) tea.Cmd { return cmdCompletion(m) })
 	reg("lsp.format", "Format Document", "", action.Editor, func(m *Model) tea.Cmd { return cmdFormat(m) })
+	reg("lsp.symbols", "Go to Symbol in File (Outline)", "ctrl+t", action.Editor, func(m *Model) tea.Cmd { return cmdSymbols(m) })
 	reg("lsp.problems", "Problems: List Errors and Warnings", "f8", action.Global, func(m *Model) tea.Cmd { *m = m.openProblems(); return nil })
 	reg("lsp.rename", "Rename Symbol", "f2", action.Editor, func(m *Model) tea.Cmd {
 		d := m.doc()

@@ -134,7 +134,7 @@ func (m *Model) toggleGit() {
 	m.refreshGit()
 }
 
-func (m *Model) gitHeight() int { return max(1, m.height-3) } // tab bar + header + bottom bar
+func (m *Model) gitHeight() int { return max(1, m.height-5) } // tab bar + header + switcher + spacer + bottom bar
 
 func (m *Model) gitScroll() {
 	h := m.gitHeight()

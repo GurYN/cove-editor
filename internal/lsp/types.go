@@ -48,6 +48,15 @@ type CompletionItem struct {
 	SortText   string    `json:"sortText,omitempty"`
 }
 
+// DocumentSymbol is one node of a textDocument/documentSymbol response.
+// Kind values are the LSP SymbolKind enum (5 class, 12 function, …).
+type DocumentSymbol struct {
+	Name           string           `json:"name"`
+	Kind           int              `json:"kind"`
+	SelectionRange Range            `json:"selectionRange"`
+	Children       []DocumentSymbol `json:"children,omitempty"`
+}
+
 type WorkspaceEdit struct {
 	Changes map[string][]TextEdit `json:"changes"`
 	// Some servers send documentChanges regardless of our capabilities.

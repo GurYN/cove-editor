@@ -28,6 +28,7 @@ type complMsg struct {
 	items []lsp.CompletionItem
 	rev   int // editor revision at request time
 }
+type symsMsg struct{ syms []lsp.DocumentSymbol }
 type wsEditMsg struct{ edit *lsp.WorkspaceEdit }
 type fmtMsg struct {
 	path  string
@@ -178,6 +179,18 @@ func cmdCompletion(m *Model) tea.Cmd {
 			return lspErrMsg{err}
 		}
 		return complMsg{items: items, rev: rev}
+	})
+}
+
+func cmdSymbols(m *Model) tea.Cmd {
+	return m.lspCmd(func(c *lsp.Client, uri string, pos lsp.Position) tea.Msg {
+		ctx, cancel := lsp.Ctx()
+		defer cancel()
+		syms, err := c.DocumentSymbols(ctx, uri)
+		if err != nil {
+			return lspErrMsg{err}
+		}
+		return symsMsg{syms}
 	})
 }
 
