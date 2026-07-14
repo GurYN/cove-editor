@@ -65,7 +65,13 @@ func newRegistry() *action.Registry {
 	}
 
 	// ---- global ----
-	reg("app.quit", "Quit", "ctrl+q", action.Global, func(m *Model) tea.Cmd { m.lspm.Shutdown(); return tea.Quit })
+	reg("app.quit", "Quit", "ctrl+q", action.Global, func(m *Model) tea.Cmd {
+		m.lspm.Shutdown()
+		for _, t := range m.terms {
+			t.Close()
+		}
+		return tea.Quit
+	})
 	reg("app.palette", "Command Palette", "ctrl+p", action.Global, func(m *Model) tea.Cmd { *m = m.openPalette(); return nil })
 	hid("app.palette.f1", "f1", action.Global, func(m *Model) tea.Cmd { *m = m.openPalette(); return nil })
 	reg("file.open", "Go to File…", "ctrl+o", action.Global, func(m *Model) tea.Cmd { *m = m.openFinder(); return nil })
@@ -101,6 +107,8 @@ func newRegistry() *action.Registry {
 		m.focus = paneSidebar
 		return nil
 	})
+	reg("term.toggle", "Terminal: Toggle", "ctrl+j", action.Global, func(m *Model) tea.Cmd { return m.toggleTerm() })
+	reg("term.new", "Terminal: New Instance", "", action.Global, func(m *Model) tea.Cmd { return m.newTerm() })
 
 	// ---- editor: search ----
 	reg("find.open", "Find", "ctrl+f", action.Editor, func(m *Model) tea.Cmd {

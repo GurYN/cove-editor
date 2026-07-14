@@ -219,11 +219,11 @@ func TestDividerHoverPointer(t *testing.T) {
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	x := m.(Model).side.Width
 	m, _ = m.Update(tea.MouseMsg{X: x, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
-	if !m.(Model).hoverDivider {
+	if m.(Model).hoverShape != "ew-resize" {
 		t.Fatal("hover over divider not detected")
 	}
 	m, _ = m.Update(tea.MouseMsg{X: x + 10, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
-	if m.(Model).hoverDivider {
+	if m.(Model).hoverShape != "default" {
 		t.Fatal("pointer still resize-shaped after leaving the divider")
 	}
 }

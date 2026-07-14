@@ -20,6 +20,7 @@ import (
 	"github.com/GurYN/cove-editor/internal/lsp"
 	"github.com/GurYN/cove-editor/internal/overlay"
 	"github.com/GurYN/cove-editor/internal/sidebar"
+	"github.com/GurYN/cove-editor/internal/term"
 )
 
 var (
@@ -64,6 +65,8 @@ const (
 	paneSidebar
 	paneTabs
 	paneDivider // sidebar/editor border column: drag to resize
+	paneTerminal
+	panePanelDivider // terminal panel title row: drag to resize
 )
 
 type overlayKind int
@@ -91,7 +94,7 @@ type Model struct {
 
 	side        sidebar.Model
 	sidebarOpen bool
-	sidebarW    int // user-set width; divider drag adjusts it
+	sidebarW    int  // user-set width; divider drag adjusts it
 	focus       pane // paneEditor or paneSidebar
 
 	ovKind    overlayKind
@@ -118,9 +121,14 @@ type Model struct {
 	promptDo    func(*Model, string)
 	deferred    tea.Cmd // set by prompt callbacks that need a follow-up Cmd
 
-	mouseDown    pane // pane that owns the current drag
-	hoverDivider bool // pointer currently shows the resize shape
-	vim       *vimState // nil unless keymap = "vim"
+	terms      []*term.Term // shell instances; empty until first opened
+	termActive int
+	termOpen   bool
+	termH      int // panel content rows
+
+	mouseDown  pane      // pane that owns the current drag
+	hoverShape string    // pointer shape currently set ("" = default)
+	vim        *vimState // nil unless keymap = "vim"
 
 	width, height int
 	lastMsg       string
@@ -140,7 +148,7 @@ func New(path string, data []byte) Model {
 	}
 
 	root := "."
-	m := Model{sidebarOpen: true, focus: paneEditor, sidebarW: sidebarWidth}
+	m := Model{sidebarOpen: true, focus: paneEditor, sidebarW: sidebarWidth, termH: termDefaultRows}
 	if cfg.Keymap == "vim" {
 		m.vim = &vimState{}
 	}
@@ -200,6 +208,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, listenLSP(m.lspm)
 	case changeTickMsg:
 		return m, m.flushChange()
+	case termMsg:
+		return m.handleTermMsg(msg)
 	case lspErrMsg:
 		m.lastMsg = msg.err.Error()
 		return m, nil
@@ -263,16 +273,27 @@ func (m *Model) editorX() int {
 	return m.side.Width + 1
 }
 
+// contentRows is the height left for sidebar/editor: everything minus tab
+// bar, bottom bar, and the terminal panel.
+func (m *Model) contentRows() int {
+	return m.height - 2 - m.panelRows()
+}
+
 func (m *Model) layout() {
 	sw := 0
 	if m.sidebarOpen {
 		sw = min(m.sidebarW, m.width/2)
 	}
 	m.side.Width = sw
-	m.side.Height = m.height - 2 // tab bar + bottom bar
+	m.side.Height = m.height - 2 // tab bar + bottom bar; panel sits under the editor only
 	for _, d := range m.docs {
 		d.ed.Width = m.width - m.editorX()
-		d.ed.Height = m.height - 2
+		d.ed.Height = m.contentRows()
+	}
+	if m.termOpen {
+		for _, t := range m.terms {
+			t.Resize(max(2, m.width-m.editorX()), m.termRows())
+		}
 	}
 }
 
@@ -286,6 +307,26 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return mm, tea.Batch(cmd, mm.syncLSP())
 	case modePrompt:
 		return m.updatePrompt(msg)
+	}
+	if t := m.activeTerm(); m.focus == paneTerminal && t != nil {
+		// Only scrollback, the panel toggle, and quit stay with Cove
+		// (respecting rebinds); every other key goes to the shell.
+		switch msg.String() {
+		case "shift+pgup":
+			t.Scroll(+m.termRows())
+			return m, nil
+		case "shift+pgdown":
+			t.Scroll(-m.termRows())
+			return m, nil
+		}
+		if act := m.reg.Lookup(action.Global, msg.String()); act != nil &&
+			(act.ID == "term.toggle" || act.ID == "app.quit") {
+			cmd := act.Do(&m)
+			m.layout()
+			return m, cmd
+		}
+		t.Send(msg)
+		return m, nil
 	}
 	if m.compl.active && m.focus == paneEditor {
 		mm, cmd, handled := m.handleComplKey(msg)
@@ -570,26 +611,29 @@ func (m Model) renderTabBar() string {
 
 // ---- mouse ----
 
-// setPointer switches the terminal pointer between the default arrow and a
-// horizontal-resize shape via OSC 22 (kitty, foot, WezTerm, xterm ≥ 367).
-// Terminals without support ignore the sequence.
-func setPointer(resize bool) {
-	shape := "default"
-	if resize {
-		shape = "ew-resize"
-	}
+// setPointer switches the terminal pointer shape ("default", "ew-resize",
+// "ns-resize") via OSC 22 (kitty, foot, WezTerm, xterm ≥ 367). Terminals
+// without support ignore the sequence.
+func setPointer(shape string) {
 	os.Stdout.WriteString("\x1b]22;" + shape + "\x1b\\")
 }
 
 func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	// Buttonless motion = hover: only used to swap the pointer shape over
-	// the divider. Must never reach the drag paths below.
+	// the two dividers. Must never reach the drag paths below.
 	if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonNone {
-		over := m.sidebarOpen && m.ovKind == overlayNone &&
-			msg.Y > 0 && msg.X == m.side.Width
-		if over != m.hoverDivider {
-			m.hoverDivider = over
-			setPointer(over)
+		shape := "default"
+		switch {
+		case m.ovKind != overlayNone:
+		case m.sidebarOpen && msg.Y > 0 && msg.X == m.side.Width:
+			shape = "ew-resize"
+		case m.termOpen && msg.Y == m.contentRows()+1 &&
+			msg.X-m.editorX() >= m.termChipEnd(): // label/chips strip keeps the arrow
+			shape = "ns-resize"
+		}
+		if shape != m.hoverShape {
+			m.hoverShape = shape
+			setPointer(shape)
 		}
 		return m, nil
 	}
@@ -609,12 +653,56 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		target = paneDivider
 	case m.sidebarOpen && msg.X < m.editorX():
 		target = paneSidebar
+	case m.termOpen && msg.Y == m.contentRows()+1:
+		target = panePanelDivider
+	case m.termOpen && msg.Y > m.contentRows()+1:
+		target = paneTerminal
 	}
 	if msg.Action == tea.MouseActionPress {
 		m.mouseDown = target
 	}
 
 	switch target {
+	case paneTerminal:
+		t := m.activeTerm()
+		if t == nil {
+			return m, nil
+		}
+		switch {
+		case msg.Button == tea.MouseButtonWheelUp:
+			t.Scroll(+3)
+		case msg.Button == tea.MouseButtonWheelDown:
+			t.Scroll(-3)
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
+			m.focus = paneTerminal
+			m.compl.active = false
+			m.hoverText = ""
+		}
+	case panePanelDivider:
+		// A press on an instance chip or the "+" button is a click, not a
+		// resize drag.
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			x := msg.X - m.editorX()
+			for i, r := range m.termChipRanges() {
+				if x >= r.start && x < r.end {
+					m.mouseDown = paneTerminal // no drag from a chip click
+					if i == len(m.terms) {     // the "+" chip
+						return m, m.newTerm()
+					}
+					m.termActive = i
+					m.focus = paneTerminal
+					return m, nil
+				}
+			}
+			if x < m.termChipEnd() { // label strip: dead zone, no drag
+				m.mouseDown = paneTerminal
+				return m, nil
+			}
+		}
+		if msg.Action == tea.MouseActionMotion || msg.Action == tea.MouseActionRelease {
+			m.termH = clampInt(m.height-2-msg.Y, 3, max(3, m.height-8))
+			m.layout()
+		}
 	case paneDivider:
 		if msg.Action == tea.MouseActionMotion || msg.Action == tea.MouseActionRelease {
 			m.sidebarW = max(12, min(msg.X, m.width/2))
@@ -749,6 +837,9 @@ func (m Model) View() string {
 	} else {
 		middle = m.welcome()
 	}
+	if m.termOpen && m.activeTerm() != nil {
+		middle += "\n" + m.renderTermPanel()
+	}
 	if m.sidebarOpen {
 		rows := max(1, m.height-2)
 		border := strings.TrimSuffix(strings.Repeat(borderStyle.Render("│")+"\n", rows), "\n")
@@ -815,7 +906,7 @@ func (m Model) composite(base, over string, top, left int) string {
 func clampInt(v, lo, hi int) int { return max(lo, min(hi, v)) }
 
 func (m Model) welcome() string {
-	h := m.height - 2
+	h := m.contentRows()
 	w := m.width - m.editorX()
 	msg := welcomeStyle.Render("Ctrl+P — all commands   Ctrl+O — open file   Ctrl+B — file tree")
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, msg)

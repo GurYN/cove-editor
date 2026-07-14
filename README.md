@@ -12,6 +12,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Command palette** (`Ctrl+P`) — every action is discoverable and shows its keybinding and rebindable ID.
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`) — the chrome you expect from a GUI editor.
 - **Mouse support that actually works** — click to place the cursor, click tabs and tree entries, drag to select.
+- **Integrated terminal** (`Ctrl+J`) — your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
 - **Multi-cursor editing, find & replace, undo/redo.**
 - **No terminal traps** — `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
 
@@ -58,6 +59,7 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo               |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
 | `Ctrl+B`        | Toggle sidebar                |
+| `Ctrl+J`        | Toggle terminal panel         |
 | `Ctrl+W`        | Close tab                     |
 | `Ctrl+E`        | Expand selection to syntax node |
 | `F12` / `Shift+F12` | Go to definition / references |
@@ -67,6 +69,8 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Ctrl+Q`        | Quit                          |
 
 Every action has a stable ID (shown in the palette footer) and can be rebound in the config file.
+
+When the terminal panel has focus, every key goes to your shell except `Ctrl+J` (hide panel), `Ctrl+Q` (quit), and `Shift+PgUp`/`PgDn` (scrollback).
 
 ## Configuration
 
@@ -85,7 +89,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, and LSP for four languages. Plugins, integrated terminal, git integration, debugging, and split panes are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration, and split panes. Plugins and debugging are deferred to v2.
 
 ## Contributing
 

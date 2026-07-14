@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.10.1
+	github.com/creack/pty v1.1.24
 	github.com/muesli/termenv v0.16.0
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/tree-sitter/go-tree-sitter v0.25.0

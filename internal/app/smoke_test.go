@@ -361,3 +361,103 @@ func TestVimKeymap(t *testing.T) {
 		t.Fatalf("visual yank/paste: %q", got)
 	}
 }
+
+func TestTerminalToggleAndType(t *testing.T) {
+	m := setup(t)
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ}) // open panel
+	if cmd == nil {
+		t.Fatal("expected listenTerm cmd on first open")
+	}
+	app := m.(Model)
+	if !app.termOpen || app.focus != paneTerminal || len(app.terms) == 0 {
+		t.Fatalf("panel not open+focused: open=%v focus=%v", app.termOpen, app.focus)
+	}
+	if !strings.Contains(m.View(), "Terminal") {
+		t.Fatal("panel title missing from view")
+	}
+	// keys route to the shell, then the echo shows up on screen
+	for _, r := range "echo covesmoke" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(m.View(), "covesmoke") {
+		if time.Now().After(deadline) {
+			t.Fatal("typed command never appeared in panel")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// editor kept its space: doc height shrank by panel size
+	app = m.(Model)
+	if h := app.doc().ed.Height; h != 24-2-app.panelRows() {
+		t.Fatalf("editor height %d not reduced by panel", h)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ}) // hide
+	app = m.(Model)
+	if app.termOpen || app.focus != paneEditor {
+		t.Fatal("panel should hide and return focus to editor")
+	}
+	for _, tt := range app.terms {
+		tt.Close()
+	}
+}
+
+func TestPanelDividerDrag(t *testing.T) {
+	m := setup(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	app := m.(Model)
+	titleY := app.contentRows() + 1
+	x := app.editorX() + app.termChipEnd() + 2 // grab the border, not the label/chips
+	m, _ = m.Update(tea.MouseMsg{X: x, Y: titleY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m, _ = m.Update(tea.MouseMsg{X: x, Y: titleY + 3, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m, _ = m.Update(tea.MouseMsg{X: x, Y: titleY + 3, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	app = m.(Model)
+	if app.termH != termDefaultRows-3 {
+		t.Fatalf("drag down 3 rows: termH = %d, want %d", app.termH, termDefaultRows-3)
+	}
+	// sidebar stays full height; only the editor shrinks for the panel
+	if app.side.Height != 24-2 {
+		t.Fatalf("sidebar height %d, want full %d", app.side.Height, 24-2)
+	}
+	for _, tt := range app.terms {
+		tt.Close()
+	}
+}
+
+func TestTerminalPlusButtonAndChips(t *testing.T) {
+	m := setup(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	app := m.(Model)
+	titleY := app.contentRows() + 1
+	ranges := app.termChipRanges()
+	plus := ranges[len(ranges)-1] // last chip is "+"
+	m, _ = m.Update(tea.MouseMsg{X: app.editorX() + plus.start, Y: titleY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	app = m.(Model)
+	if len(app.terms) != 2 || app.termActive != 1 {
+		t.Fatalf("+ click: terms=%d active=%d, want 2/1", len(app.terms), app.termActive)
+	}
+	// click chip 1 switches back
+	first := app.termChipRanges()[0]
+	m, _ = m.Update(tea.MouseMsg{X: app.editorX() + first.start, Y: titleY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	app = m.(Model)
+	if app.termActive != 0 || app.focus != paneTerminal {
+		t.Fatalf("chip click: active=%d focus=%v, want 0/terminal", app.termActive, app.focus)
+	}
+	// hover over the chips strip keeps the arrow pointer; past it, ns-resize
+	m, _ = m.Update(tea.MouseMsg{X: app.editorX() + first.start, Y: titleY, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if got := m.(Model).hoverShape; got != "default" {
+		t.Fatalf("pointer over chips = %q, want default", got)
+	}
+	m, _ = m.Update(tea.MouseMsg{X: app.editorX() + app.termChipEnd() + 2, Y: titleY, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if got := m.(Model).hoverShape; got != "ns-resize" {
+		t.Fatalf("pointer over border = %q, want ns-resize", got)
+	}
+	// a chip click must not start a resize drag
+	m, _ = m.Update(tea.MouseMsg{X: app.editorX() + first.start, Y: titleY + 3, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	if got := m.(Model).termH; got != termDefaultRows {
+		t.Fatalf("chip click dragged the divider: termH=%d", got)
+	}
+	for _, tt := range m.(Model).terms {
+		tt.Close()
+	}
+}
