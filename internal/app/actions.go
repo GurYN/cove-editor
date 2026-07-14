@@ -125,6 +125,16 @@ func newRegistry() *action.Registry {
 	reg("term.toggle", "Terminal: Toggle", "ctrl+j", action.Global, func(m *Model) tea.Cmd { return m.toggleTerm() })
 	reg("term.new", "Terminal: New Instance", "", action.Global, func(m *Model) tea.Cmd { return m.newTerm() })
 
+	// ---- split panes ----
+	reg("pane.split", "Pane: Split Right", "ctrl+\\", action.Global, func(m *Model) tea.Cmd { m.splitOpen(); return nil })
+	reg("pane.close", "Pane: Close Split", "", action.Global, func(m *Model) tea.Cmd { m.split = false; return nil })
+	reg("pane.other", "Pane: Focus Other", "f6", action.Global, func(m *Model) tea.Cmd {
+		if m.split {
+			m.focusPane(!m.splitRight)
+		}
+		return nil
+	})
+
 	// ---- git (palette entries are Global; single-letter keys only bind
 	// inside the panel via the Git context) ----
 	reg("git.toggle", "Git: Toggle Panel", "ctrl+g", action.Global, func(m *Model) tea.Cmd { m.toggleGit(); return nil })

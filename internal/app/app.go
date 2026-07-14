@@ -70,6 +70,7 @@ const (
 	paneTerminal
 	panePanelDivider // terminal panel title row: drag to resize
 	paneGit          // git panel occupying the sidebar slot
+	paneSplitDivider // border column between split editor panes: drag to resize
 )
 
 type overlayKind int
@@ -95,6 +96,11 @@ type Model struct {
 	reg    *action.Registry
 	docs   []*doc
 	active int
+
+	split      bool // vertical editor split (see split.go)
+	splitRight bool // the focused pane is the right one
+	other      int  // doc index in the unfocused pane; valid while split
+	splitW     int  // user-set left pane width; 0 = half
 
 	side        sidebar.Model
 	sidebarOpen bool
@@ -318,6 +324,17 @@ func (m *Model) layout() {
 	for _, d := range m.docs {
 		d.ed.Width = m.width - m.editorX()
 		d.ed.Height = m.contentRows()
+	}
+	if m.split && len(m.docs) > 0 {
+		lw := m.splitLW()
+		fw, uw := lw, m.splitAvail()-lw-1
+		if m.splitRight {
+			fw, uw = uw, fw
+		}
+		// Unfocused first: on a mirrored split the focused pane's width
+		// must win, so mouse hit-testing matches what the user clicks.
+		m.docs[m.other].ed.Width = uw
+		m.docs[m.active].ed.Width = fw
 	}
 	if m.termOpen {
 		for _, t := range m.terms {
@@ -662,11 +679,21 @@ func (m Model) closeActive() Model {
 
 func (m *Model) forceClose() {
 	m.lspm.Close(m.docs[m.active].path)
+	closed := m.active
 	m.docs = append(m.docs[:m.active], m.docs[m.active+1:]...)
 	if m.active >= len(m.docs) {
 		m.active = max(0, len(m.docs)-1)
 	}
+	if m.split {
+		switch {
+		case m.other > closed:
+			m.other--
+		case m.other == closed:
+			m.other = m.active // the other pane mirrors what's left
+		}
+	}
 	if len(m.docs) == 0 {
+		m.split = false
 		m.focus = paneSidebar
 	}
 }
@@ -728,6 +755,8 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		case m.ovKind != overlayNone:
 		case m.sidebarOpen && msg.Y > 0 && msg.X == m.side.Width:
 			shape = "ew-resize"
+		case m.split && len(m.docs) > 0 && msg.Y > 0 && msg.Y <= m.contentRows() && msg.X == m.splitX():
+			shape = "ew-resize"
 		case m.termOpen && msg.Y == m.contentRows()+1 &&
 			msg.X-m.editorX() >= m.termChipEnd(): // label/chips strip keeps the arrow
 			shape = "ns-resize"
@@ -777,6 +806,8 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		if m.gitView {
 			target = paneGit
 		}
+	case m.split && len(m.docs) > 0 && msg.Y <= m.contentRows() && msg.X == m.splitX():
+		target = paneSplitDivider
 	case m.termOpen && msg.Y == m.contentRows()+1:
 		target = panePanelDivider
 	case m.termOpen && msg.Y > m.contentRows()+1:
@@ -832,6 +863,11 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			m.sidebarW = max(12, min(msg.X, m.width/2))
 			m.layout()
 		}
+	case paneSplitDivider:
+		if msg.Action == tea.MouseActionMotion || msg.Action == tea.MouseActionRelease {
+			m.splitW = clampInt(msg.X-m.editorX(), 10, max(10, m.splitAvail()-11))
+			m.layout()
+		}
 	case paneTabs:
 		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 			return m, nil
@@ -869,13 +905,17 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			}
 		}
 	case paneEditor:
+		if m.split && msg.Action == tea.MouseActionPress {
+			m.focusPane(msg.X > m.splitX())
+			m.layout() // focused pane's width wins on a mirrored split
+		}
 		if d := m.doc(); d != nil {
 			if msg.Action == tea.MouseActionPress {
 				m.focus = paneEditor
 				m.compl.active = false
 				m.hoverText = ""
 			}
-			msg.X -= m.editorX()
+			msg.X -= m.paneXAbs()
 			msg.Y--
 			if msg.Ctrl && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 				// ctrl+click = go to definition at the clicked cell
@@ -966,10 +1006,13 @@ func (m Model) View() string {
 		return ""
 	}
 	var middle string
-	if d := m.doc(); d != nil {
-		middle = d.ed.View()
-	} else {
+	switch d := m.doc(); {
+	case d == nil:
 		middle = m.welcome()
+	case m.split:
+		middle = m.splitView()
+	default:
+		middle = d.ed.View()
 	}
 	if m.termOpen && m.activeTerm() != nil {
 		middle += "\n" + m.renderTermPanel()
@@ -989,7 +1032,7 @@ func (m Model) View() string {
 		middle = m.composite(middle, m.ov.View(), 1, -1)
 	} else if d := m.doc(); d != nil && m.focus == paneEditor {
 		cx, cy := d.ed.CursorScreen()
-		left := m.editorX() + cx
+		left := m.paneXAbs() + cx
 		switch {
 		case m.compl.active:
 			middle = m.composite(middle, m.renderCompl(), cy+1, left)
