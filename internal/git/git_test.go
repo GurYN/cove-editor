@@ -108,6 +108,31 @@ func TestStatusStageCommitFlow(t *testing.T) {
 	}
 }
 
+func TestBlame(t *testing.T) {
+	top := initRepo(t)
+	lines, err := Blame(top, "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("lines = %+v", lines)
+	}
+	b := lines[0]
+	if b.Author != "t" || b.Summary != "init" || len(b.SHA) != 7 || b.Time == 0 {
+		t.Fatalf("blame = %+v", b)
+	}
+}
+
+func TestAlignMapsUnchangedLines(t *testing.T) {
+	_, oldFor := Align([]byte("a\nb\nc"), []byte("a\nX\nnew\nc"))
+	want := []int{0, -1, -1, 2}
+	for i, v := range want {
+		if oldFor[i] != v {
+			t.Fatalf("oldFor = %v, want %v", oldFor, want)
+		}
+	}
+}
+
 func TestBranches(t *testing.T) {
 	top := initRepo(t)
 	if err := CreateBranch(top, "feature"); err != nil {

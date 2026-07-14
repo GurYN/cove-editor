@@ -1,25 +1,25 @@
 # Cove
 
-A terminal IDE you can use in five minutes — no tutorial, no muscle-memory tax.
+A terminal IDE you can use in five minutes: no tutorial, no muscle-memory tax.
 
 Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Zed, or JetBrains, everything works the way you expect: visible menus and tabs, a command palette, familiar shortcuts (`Ctrl+S` saves, `Ctrl+P` opens the palette), and first-class mouse support. The differentiator is **discoverability**, not a feature list.
 
 ## Features
 
-- **Fast on big files** — rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
+- **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
 - **Tree-sitter syntax highlighting** with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node).
-- **LSP built in** — diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion, formatting, and a problems list (`F8`). Go, Python, TypeScript, and Rust work out of the box.
-- **Command palette** (`Ctrl+P`) — every action is discoverable and shows its keybinding and rebindable ID.
-- **File tree, tabs, fuzzy file finder** (`Ctrl+O`) — the chrome you expect from a GUI editor.
-- **Mouse support that actually works** — click to place the cursor, click tabs and tree entries, drag to select.
-- **Integrated terminal** (`Ctrl+J`) — your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
-- **Git built in** (`Ctrl+G`) — a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull, and branch switching. Gutter signs mark added/modified/deleted lines as you type; the current branch and ahead/behind counts live in the status bar.
+- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion, formatting, and a problems list (`F8`). Go, Python, TypeScript, and Rust work out of the box.
+- **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
+- **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor.
+- **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select.
+- **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
+- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull, and branch switching. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **Multi-cursor editing, find & replace, undo/redo.**
-- **No terminal traps** — `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
+- **No terminal traps**: `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
 
 ## Install
 
-Download a binary from the [releases page](https://github.com/GurYN/cove-editor/releases), or build from source (Go 1.26+ and a C compiler required — tree-sitter uses CGo):
+Download a binary from the [releases page](https://github.com/GurYN/cove-editor/releases), or build from source (Go 1.26+ and a C compiler required; tree-sitter uses CGo):
 
 ```sh
 git clone https://github.com/GurYN/cove-editor.git
@@ -92,6 +92,8 @@ Inside the panel (all of this is also in the palette):
 
 Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, and *New Branch…* are in the palette.
 
+Outside the panel, gutter signs next to the line numbers mark added, modified, and deleted lines as you type. *Git: Toggle Inline Blame* (palette) shows the last commit for the cursor line in the status bar: author, age, and summary; lines you have edited show *uncommitted changes*.
+
 ## Configuration
 
 TOML at `~/.config/cove/config.toml` (or point `COVE_CONFIG` elsewhere). Open it from inside Cove via the palette: *Open Settings*.
@@ -112,7 +114,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done — panel, staging, diffs, commit, push/pull, branches, gutter signs; blame still to come), and split panes (pending). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done: panel, staging, diffs, commit, push/pull, branches, gutter signs, inline blame), and split panes (pending). Plugins and debugging are deferred to v2.
 
 ## Contributing
 
@@ -121,7 +123,7 @@ go test ./...                      # full suite
 go test ./internal/... -bench .    # benchmarks
 ```
 
-The performance gates (`TestKeystrokeLatency50k`, `TestKeystrokeLatencyWithSyntax`) are hard limits — p99 keystroke→frame < 16ms — and run in CI.
+The performance gates (`TestKeystrokeLatency50k`, `TestKeystrokeLatencyWithSyntax`) are hard limits (p99 keystroke→frame < 16ms) and run in CI.
 
 ## License
 

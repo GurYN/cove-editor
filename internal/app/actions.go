@@ -134,6 +134,13 @@ func newRegistry() *action.Registry {
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
 	reg("git.branch", "Git: Switch Branch…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
+	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
+		m.blameOn = !m.blameOn
+		if !m.blameOn {
+			m.lastMsg = "blame off"
+		}
+		return nil // the fetch is scheduled by the Update choke point
+	})
 	reg("git.stageAll", "Git: Stage All", "", action.Global, func(m *Model) tea.Cmd {
 		if m.gitRepo() {
 			if err := git.StageAll(m.gitSnap.Top); err != nil {

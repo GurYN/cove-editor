@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -149,6 +150,73 @@ func DiffUntracked(top, path string) string {
 	cmd.Dir = top
 	out, _ := cmd.Output()
 	return string(out)
+}
+
+// BlameLine is the last commit that touched one line of the HEAD version.
+type BlameLine struct {
+	SHA     string // short hash
+	Author  string
+	Time    int64 // author-time, unix seconds
+	Summary string
+}
+
+// Blame runs `git blame --porcelain HEAD` and returns one entry per line of
+// the file at HEAD. The caller maps buffer lines through Align's oldFor.
+func Blame(top, path string) ([]BlameLine, error) {
+	cmd := exec.Command("git", "blame", "--porcelain", "HEAD", "--", path)
+	cmd.Dir = top
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("git blame: %s", firstLine(string(ee.Stderr)))
+		}
+		return nil, err
+	}
+	meta := map[string]*BlameLine{} // full sha → shared metadata
+	byLine := map[int]string{}      // 1-based final line → full sha
+	cur := ""
+	maxLine := 0
+	for _, ln := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(ln, "\t") { // content line
+			continue
+		}
+		if f := strings.Fields(ln); len(f) >= 3 && len(f[0]) == 40 && isHex(f[0]) {
+			cur = f[0]
+			if n, err := strconv.Atoi(f[2]); err == nil {
+				byLine[n] = cur
+				maxLine = max(maxLine, n)
+			}
+			if meta[cur] == nil {
+				meta[cur] = &BlameLine{SHA: cur[:7]}
+			}
+			continue
+		}
+		if m := meta[cur]; m != nil {
+			if v, ok := strings.CutPrefix(ln, "author "); ok {
+				m.Author = v
+			} else if v, ok := strings.CutPrefix(ln, "author-time "); ok {
+				m.Time, _ = strconv.ParseInt(v, 10, 64)
+			} else if v, ok := strings.CutPrefix(ln, "summary "); ok {
+				m.Summary = v
+			}
+		}
+	}
+	lines := make([]BlameLine, maxLine)
+	for n, sha := range byLine {
+		if m := meta[sha]; m != nil {
+			lines[n-1] = *m
+		}
+	}
+	return lines, nil
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Show returns a file's content at HEAD (path repo-relative, slash-separated).

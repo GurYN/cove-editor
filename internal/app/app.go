@@ -133,6 +133,7 @@ type Model struct {
 	gitTop  int
 	gitErr  string
 	gitBusy string // "push"/"pull" while one is in flight
+	blameOn bool   // inline blame for the cursor line (git.blame toggle)
 
 	terms      []*term.Term // shell instances; empty until first opened
 	termActive int
@@ -208,6 +209,11 @@ func (m Model) Init() tea.Cmd { return listenLSP(m.lspm) }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	start := time.Now()
 	next, cmd := m.update(msg)
+	// Single choke point for lazy blame: whatever changed the active doc
+	// (toggle, tab switch, open), the fetch gets scheduled here.
+	if bc := next.blameCmdIfNeeded(); bc != nil {
+		cmd = tea.Batch(cmd, bc)
+	}
 	next.lastCost = time.Since(start)
 	return next, cmd
 }
@@ -229,6 +235,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.handleTermMsg(msg)
 	case gitOpMsg:
 		return m.handleGitOp(msg)
+	case blameMsg:
+		return m.handleBlame(msg)
 	case lspErrMsg:
 		m.lastMsg = msg.err.Error()
 		return m, nil
@@ -1026,9 +1034,14 @@ func (m Model) bottomBar() string {
 	}
 	left := fmt.Sprintf(" %s%s%s  %d:%d%s", vimLabel, name, dirty, line+1, col+1, multi)
 	right := fmt.Sprintf("%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), m.lastCost.Round(time.Microsecond))
-	if m.lastMsg != "" { // transient message gets whatever space is left
+	// The message slot: a transient message wins, else the blame annotation.
+	msg := m.lastMsg
+	if msg == "" {
+		msg = m.blameSeg(d)
+	}
+	if msg != "" {
 		space := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
-		right = ansi.Truncate(m.lastMsg, max(0, space), "…") + "  " + right
+		right = ansi.Truncate(msg, max(0, space), "…") + "  " + right
 	}
 	pad := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right))
 	return m.bar(left + fmt.Sprintf("%*s", pad, "") + right)

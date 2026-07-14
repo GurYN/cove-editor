@@ -179,6 +179,31 @@ func TestGitGutterSigns(t *testing.T) {
 	}
 }
 
+func TestGitInlineBlame(t *testing.T) {
+	m, top := gitSetup(t)
+	m.openFile(filepath.Join(top, "a.txt"))
+	m.reg.ByID("git.blame").Do(&m)
+	cmd := m.blameCmdIfNeeded() // what the Update choke point schedules
+	if cmd == nil {
+		t.Fatal("no blame fetch scheduled")
+	}
+	m, _ = m.update(cmd().(blameMsg))
+	// Line 1 is committed: author + summary in the status bar.
+	if v := frame(m); !strings.Contains(v, "t, just now · init") {
+		t.Fatalf("blame annotation missing:\n%s", v)
+	}
+	// Line 2 is the uncommitted edit.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyDown})
+	if v := frame(m); !strings.Contains(v, "uncommitted changes") {
+		t.Fatalf("uncommitted annotation missing:\n%s", v)
+	}
+	// A transient message outranks blame.
+	m.lastMsg = "saved"
+	if v := frame(m); strings.Contains(v, "uncommitted changes") {
+		t.Fatalf("lastMsg should win the slot:\n%s", v)
+	}
+}
+
 func TestGitMouseClickOpensDiff(t *testing.T) {
 	m, _ := gitSetup(t)
 	// Row layout: y=0 tabs, y=1 panel header, y=2 "Changes (1)", y=3 file.

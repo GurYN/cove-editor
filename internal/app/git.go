@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -374,16 +375,13 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 func (m *Model) loadGitHead(d *doc) {
 	d.head = nil
 	if m.gitSnap.Top != "" && !d.virtual {
-		abs, _ := filepath.Abs(d.path)
-		if r, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = r // git reports the resolved top (/private/var vs /var on macOS)
-		}
-		if rel, err := filepath.Rel(m.gitSnap.Top, abs); err == nil && !strings.HasPrefix(rel, "..") {
-			if b, err := git.Show(m.gitSnap.Top, filepath.ToSlash(rel)); err == nil {
+		if rel := gitRelPath(m.gitSnap.Top, d.path); !strings.HasPrefix(rel, "..") {
+			if b, err := git.Show(m.gitSnap.Top, rel); err == nil {
 				d.head = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 			}
 		}
 	}
+	d.blame = nil // baseline moved: stale, refetched lazily when needed
 	m.updateSigns(d)
 }
 
@@ -391,10 +389,93 @@ func (m *Model) loadGitHead(d *doc) {
 // didChange debounce tick, so it stays off the keystroke→frame path.
 func (m *Model) updateSigns(d *doc) {
 	if d.head == nil {
-		d.ed.Signs = nil
+		d.ed.Signs, d.lineMap = nil, nil
 		return
 	}
-	d.ed.Signs = git.LineSigns(d.head, d.ed.Buf.Bytes())
+	d.ed.Signs, d.lineMap = git.Align(d.head, d.ed.Buf.Bytes())
+}
+
+// ---- inline blame (current line, in the status bar's message slot) ----
+
+type blameMsg struct {
+	d     *doc
+	lines []git.BlameLine
+}
+
+// blameCmdIfNeeded lazily fetches blame for the active doc — called once
+// per Update, so tab switches and toggles need no extra plumbing.
+func (m *Model) blameCmdIfNeeded() tea.Cmd {
+	d := m.doc()
+	if !m.blameOn || d == nil || d.virtual || d.blame != nil || d.blameBusy ||
+		m.gitSnap.Top == "" || d.head == nil {
+		return nil
+	}
+	d.blameBusy = true
+	top, path := m.gitSnap.Top, gitRelPath(m.gitSnap.Top, d.path)
+	return func() tea.Msg {
+		lines, err := git.Blame(top, path)
+		if err != nil {
+			lines = []git.BlameLine{} // non-nil sentinel: don't refetch-loop
+		}
+		return blameMsg{d: d, lines: lines}
+	}
+}
+
+func (m Model) handleBlame(msg blameMsg) (Model, tea.Cmd) {
+	msg.d.blameBusy = false
+	msg.d.blame = msg.lines
+	return m, nil
+}
+
+// blameSeg is the current line's annotation: "author, age · summary".
+func (m Model) blameSeg(d *doc) string {
+	if !m.blameOn || d == nil || d.blame == nil || len(d.blame) == 0 {
+		return ""
+	}
+	line, _ := d.ed.Cursor()
+	if line >= len(d.lineMap) {
+		return ""
+	}
+	hl := d.lineMap[line]
+	if hl < 0 {
+		return "uncommitted changes"
+	}
+	if hl >= len(d.blame) || d.blame[hl].SHA == "" {
+		return ""
+	}
+	b := d.blame[hl]
+	return fmt.Sprintf("%s, %s · %s", b.Author, age(b.Time), b.Summary)
+}
+
+func age(unix int64) string {
+	dt := time.Since(time.Unix(unix, 0))
+	switch {
+	case dt < time.Minute:
+		return "just now"
+	case dt < time.Hour:
+		return fmt.Sprintf("%dm ago", int(dt.Minutes()))
+	case dt < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(dt.Hours()))
+	case dt < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(dt.Hours()/24))
+	case dt < 365*24*time.Hour:
+		return fmt.Sprintf("%dmo ago", int(dt.Hours()/(24*30)))
+	default:
+		return fmt.Sprintf("%dy ago", int(dt.Hours()/(24*365)))
+	}
+}
+
+// gitRelPath converts an editor path to a repo-top-relative slash path.
+func gitRelPath(top, path string) string {
+	abs, _ := filepath.Abs(path)
+	if r, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = r
+	}
+	rel, err := filepath.Rel(top, abs)
+	if err != nil {
+		return path
+	}
+	return filepath.ToSlash(rel)
 }
 
 // ---- rendering ----

@@ -11,22 +11,36 @@ const (
 )
 
 // LineSigns diffs old→new content and returns one sign per new line.
+func LineSigns(oldB, newB []byte) []byte {
+	signs, _ := Align(oldB, newB)
+	return signs
+}
+
+// Align diffs old→new content. It returns one sign per new line plus, for
+// each new line, the old line it corresponds to (-1 for added/modified
+// lines) — the mapping blame needs to survive unsaved edits.
 // Common prefix/suffix are trimmed first, so the Myers pass only sees the
 // edited region — typical cost is O(changed lines), not O(file).
-func LineSigns(oldB, newB []byte) []byte {
+func Align(oldB, newB []byte) (signs []byte, oldFor []int) {
 	a, b := splitLines(oldB), splitLines(newB)
-	signs := make([]byte, len(b))
+	signs = make([]byte, len(b))
+	oldFor = make([]int, len(b))
+	for i := range oldFor {
+		oldFor[i] = -1
+	}
 	p := 0
 	for p < len(a) && p < len(b) && bytes.Equal(a[p], b[p]) {
+		oldFor[p] = p
 		p++
 	}
 	ea, eb := len(a), len(b)
 	for ea > p && eb > p && bytes.Equal(a[ea-1], b[eb-1]) {
 		ea--
 		eb--
+		oldFor[eb] = ea
 	}
 	if p == ea && p == eb { // identical
-		return signs
+		return signs, oldFor
 	}
 	ma, mb := a[p:ea], b[p:eb]
 	delA, insB, ok := diffMarks(ma, mb)
@@ -65,12 +79,13 @@ func LineSigns(oldB, newB []byte) []byte {
 		case i < len(ma) && delA[i]:
 			markDel(p + j - 1)
 			i++
-		default:
+		default: // matched pair
+			oldFor[p+j] = p + i
 			i++
 			j++
 		}
 	}
-	return signs
+	return signs, oldFor
 }
 
 func splitLines(b []byte) [][]byte {
