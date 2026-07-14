@@ -8,13 +8,15 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 
 - **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
 - **Tree-sitter syntax highlighting** with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node).
-- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion, formatting, and a problems list (`F8`). Go, Python, TypeScript, and Rust work out of the box.
+- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript, and Rust work out of the box.
 - **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
-- **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor.
-- **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select.
+- **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
+- **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6` jumps between them.
+- **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
-- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull, and branch switching. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
+- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **Multi-cursor editing, find & replace, undo/redo.**
+- **Plays nice with the outside world**: files edited outside Cove reload in place (undoable); a buffer with unsaved changes warns instead.
 - **No terminal traps**: `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
 
 ## Install
@@ -63,9 +65,16 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Ctrl+G`        | Toggle git panel              |
 | `Ctrl+J`        | Toggle terminal panel         |
 | `Ctrl+W`        | Close tab                     |
+| `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next tab |
+| `Ctrl+\`        | Split pane                    |
+| `F6`            | Focus other pane              |
 | `Ctrl+E`        | Expand selection to syntax node |
+| `Ctrl+D`        | Add next occurrence to selection |
+| `Alt+Up` / `Alt+Down` | Add cursor above / below |
 | `F12` / `Shift+F12` | Go to definition / references |
 | `Ctrl+K`        | Hover documentation           |
+| `Ctrl+Space`    | Trigger completion            |
+| `Ctrl+T`        | Go to symbol (outline)        |
 | `F2`            | Rename symbol                 |
 | `F8`            | Problems list                 |
 | `Ctrl+Q`        | Quit                          |
@@ -75,6 +84,8 @@ Every action has a stable ID (shown in the palette footer) and can be rebound in
 When the terminal panel has focus, every key goes to your shell except `Ctrl+J` (hide panel), `Ctrl+Q` (quit), and `Shift+PgUp`/`PgDn` (scrollback).
 
 `Ctrl+B` and `Ctrl+G` are tri-state: they open and focus their panel, refocus it if it's open but unfocused, and close it when it already has focus.
+
+In the file tree: `n` new file, `N` new folder, `r` rename, `x` delete (with confirm).
 
 ### Git panel
 
@@ -87,6 +98,7 @@ Inside the panel (all of this is also in the palette):
 | `c`       | Commit staged files                        |
 | `b`       | Switch branch (fuzzy picker)               |
 | `a` / `u` | Stage all / unstage all                    |
+| `x`       | Discard the file's changes (with confirm)  |
 | `r`       | Refresh status                             |
 | `Esc`     | Back to the editor                         |
 
@@ -114,7 +126,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (done: panel, staging, diffs, commit, push/pull, branches, gutter signs, inline blame), and split panes (pending). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, push/pull, branches, restore, gutter signs, inline blame, file-tree markers), and split panes — all built. Plugins and debugging are deferred to v2.
 
 ## Contributing
 

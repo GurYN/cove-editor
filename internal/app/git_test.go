@@ -364,7 +364,10 @@ func TestRefreshFetchesRemote(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	g(bare, "init", "-q", "--bare")
+	// -b main: without it the bare repo's HEAD points at the host git's
+	// init.defaultBranch (master on CI), and the clone below checks out
+	// nothing — its push then never advances main.
+	g(bare, "init", "-q", "--bare", "-b", "main")
 	g(top, "remote", "add", "origin", bare)
 	g(top, "push", "-q", "-u", "origin", "main")
 
