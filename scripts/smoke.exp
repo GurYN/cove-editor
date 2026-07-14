@@ -1,0 +1,13 @@
+set stty_init "rows 24 columns 80"
+set timeout 20
+spawn ./cove /tmp/big.txt
+expect -re {\]11;\?} { send "\x1b]11;rgb:1e1e/1e1e/1e1e\x07" }
+sleep 6
+send "hello "
+sleep 1
+send "\x13"
+sleep 1
+send "\x11"
+expect eof
+catch wait result
+puts "app-exit=[lindex $result 3]"

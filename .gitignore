@@ -1,0 +1,5 @@
+/cove
+dist/
+*.prof
+*.test
+.DS_Store
