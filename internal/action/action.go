@@ -15,6 +15,7 @@ const (
 	Global  Context = "global"
 	Editor  Context = "editor"
 	Sidebar Context = "sidebar"
+	Git     Context = "git" // the git panel
 )
 
 // Action is one named command. Key is the default binding in

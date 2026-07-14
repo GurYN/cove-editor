@@ -10,7 +10,9 @@ var themes = map[string]map[string]string{
 		"info": "#61afef", "warning": "#e5c07b", "error": "#e06c75",
 		"match": "#4b4b1f", "selection": "#264f78",
 		"ui.bg": "#2c3244", "ui.fg": "#9da5b4", "ui.border": "#4a5166",
-		"gutter": "#525a6e",
+		"gutter":    "#525a6e",
+		"git.added": "#98c379", "git.modified": "#e5c07b",
+		"git.deleted": "#e06c75", "git.conflict": "#c586c0",
 	},
 	"cove-light": {
 		"keyword": "#af00db", "string": "#0a7a33", "comment": "#8a949e",
@@ -19,7 +21,9 @@ var themes = map[string]map[string]string{
 		"info": "#0057b8", "warning": "#9a6a00", "error": "#c72e2e",
 		"match": "#f3e8a2", "selection": "#add6ff",
 		"ui.bg": "#dfe3ea", "ui.fg": "#5c6773", "ui.border": "#b8bfcc",
-		"gutter": "#aab2c0",
+		"gutter":    "#aab2c0",
+		"git.added": "#0a7a33", "git.modified": "#9a6a00",
+		"git.deleted": "#c72e2e", "git.conflict": "#af00db",
 	},
 }
 

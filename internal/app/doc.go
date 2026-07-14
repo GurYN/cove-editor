@@ -18,6 +18,7 @@ type doc struct {
 	mtime   time.Time
 	confirm bool // next save overwrites an externally-modified file
 	sentRev int  // last editor revision synced to the language server
+	virtual bool // read-only in-memory view (git diff); never saved
 }
 
 func newDoc(path string, data []byte) *doc {
@@ -46,6 +47,9 @@ func loadDoc(path string) (*doc, error) {
 // save writes the buffer to disk. Returns a status message; guards against
 // overwriting a file modified outside Cove (second save confirms).
 func (d *doc) save() string {
+	if d.virtual {
+		return "read-only view"
+	}
 	if fi, err := os.Stat(d.path); err == nil && !d.mtime.IsZero() && !fi.ModTime().Equal(d.mtime) && !d.confirm {
 		d.confirm = true
 		return "file changed on disk — save again to overwrite"

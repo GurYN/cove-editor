@@ -59,13 +59,14 @@ type DiagSpan struct {
 }
 
 type Model struct {
-	Buf    *buffer.Buffer
-	Width  int
-	Height int
-	Syntax Syntax
-	Dirty  bool
-	Rev    int        // bumped on every buffer mutation; drives LSP sync
-	Diags  []DiagSpan // set by the app; offsets clamped at render time
+	Buf      *buffer.Buffer
+	Width    int
+	Height   int
+	Syntax   Syntax
+	Dirty    bool
+	ReadOnly bool       // rejects every mutation; navigation/selection still work
+	Rev      int        // bumped on every buffer mutation; drives LSP sync
+	Diags    []DiagSpan // set by the app; offsets clamped at render time
 
 	cursors []Cursor // sorted by sel start, non-overlapping, len >= 1
 	primary int      // index into cursors; scroll follows this one
@@ -477,6 +478,9 @@ func (m *Model) deleteAtCursors(dir int) {
 
 // apply runs tx against the buffer, records it, and repositions cursors.
 func (m *Model) apply(tx Tx) {
+	if m.ReadOnly { // nothing ever enters hist, so undo/redo stay no-ops too
+		return
+	}
 	tx.Before = append([]Cursor(nil), m.cursors...)
 	tx.at = time.Now()
 	m.applyEdits(tx.Edits)

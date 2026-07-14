@@ -12,6 +12,7 @@ import (
 	"github.com/GurYN/cove-editor/internal/action"
 	"github.com/GurYN/cove-editor/internal/config"
 	"github.com/GurYN/cove-editor/internal/editor"
+	"github.com/GurYN/cove-editor/internal/git"
 )
 
 // sampleConfig is written on first "Open Settings" — config discoverability.
@@ -79,6 +80,9 @@ func newRegistry() *action.Registry {
 		if d := m.doc(); d != nil {
 			m.lastMsg = d.save()
 			m.lspm.Save(d.path)
+			if m.gitSnap.Top != "" {
+				m.refreshGit() // keep the panel/branch segment honest
+			}
 		}
 		return nil
 	})
@@ -96,19 +100,89 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 	reg("sidebar.toggle", "Sidebar: Toggle", "ctrl+b", action.Global, func(m *Model) tea.Cmd {
-		m.sidebarOpen = !m.sidebarOpen
-		if !m.sidebarOpen && m.focus == paneSidebar {
+		// Same tri-state as git.toggle: closed (or showing git) → show tree
+		// and focus it; open but unfocused → focus; focused → close.
+		switch {
+		case m.gitView: // ctrl+b always means the file tree
+			m.gitView = false
+			m.sidebarOpen = true
+			m.focus = paneSidebar
+		case m.sidebarOpen && m.focus == paneSidebar:
+			m.sidebarOpen = false
 			m.focus = paneEditor
+		default:
+			m.sidebarOpen = true
+			m.focus = paneSidebar
 		}
 		return nil
 	})
 	reg("sidebar.focus", "Sidebar: Focus File Tree", "", action.Global, func(m *Model) tea.Cmd {
 		m.sidebarOpen = true
+		m.gitView = false
 		m.focus = paneSidebar
 		return nil
 	})
 	reg("term.toggle", "Terminal: Toggle", "ctrl+j", action.Global, func(m *Model) tea.Cmd { return m.toggleTerm() })
 	reg("term.new", "Terminal: New Instance", "", action.Global, func(m *Model) tea.Cmd { return m.newTerm() })
+
+	// ---- git (palette entries are Global; single-letter keys only bind
+	// inside the panel via the Git context) ----
+	reg("git.toggle", "Git: Toggle Panel", "ctrl+g", action.Global, func(m *Model) tea.Cmd { m.toggleGit(); return nil })
+	reg("git.refresh", "Git: Refresh Status", "", action.Global, func(m *Model) tea.Cmd { m.refreshGit(); return nil })
+	reg("git.commit", "Git: Commit Staged…", "", action.Global, func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
+	reg("git.push", "Git: Push", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("push") })
+	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
+	reg("git.branch", "Git: Switch Branch…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
+	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
+	reg("git.stageAll", "Git: Stage All", "", action.Global, func(m *Model) tea.Cmd {
+		if m.gitRepo() {
+			if err := git.StageAll(m.gitSnap.Top); err != nil {
+				m.lastMsg = err.Error()
+			}
+			m.refreshGit()
+		}
+		return nil
+	})
+	reg("git.unstageAll", "Git: Unstage All", "", action.Global, func(m *Model) tea.Cmd {
+		if m.gitRepo() {
+			if err := git.UnstageAll(m.gitSnap.Top); err != nil {
+				m.lastMsg = err.Error()
+			}
+			m.refreshGit()
+		}
+		return nil
+	})
+	ghid := func(id, key string, do func(*Model) tea.Cmd) { hid(id, key, action.Git, do) }
+	ghid("git.up", "up", func(m *Model) tea.Cmd { m.gitMove(-1); return nil })
+	ghid("git.down", "down", func(m *Model) tea.Cmd { m.gitMove(+1); return nil })
+	ghid("git.stage", " ", func(m *Model) tea.Cmd { m.gitStageToggle(); return nil })
+	ghid("git.open", "enter", func(m *Model) tea.Cmd {
+		if r, ok := m.gitSelected(); ok {
+			m.gitOpenDiff(r)
+		}
+		return nil
+	})
+	ghid("git.focusEditor", "esc", func(m *Model) tea.Cmd {
+		if len(m.docs) > 0 {
+			m.focus = paneEditor
+		}
+		return nil
+	})
+	ghid("git.commit.c", "c", func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
+	ghid("git.refresh.r", "r", func(m *Model) tea.Cmd { m.refreshGit(); return nil })
+	ghid("git.branch.b", "b", func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
+	ghid("git.stageAll.a", "a", func(m *Model) tea.Cmd {
+		if a := r.ByID("git.stageAll"); a != nil {
+			return a.Do(m)
+		}
+		return nil
+	})
+	ghid("git.unstageAll.u", "u", func(m *Model) tea.Cmd {
+		if a := r.ByID("git.unstageAll"); a != nil {
+			return a.Do(m)
+		}
+		return nil
+	})
 
 	// ---- editor: search ----
 	reg("find.open", "Find", "ctrl+f", action.Editor, func(m *Model) tea.Cmd {

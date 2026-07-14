@@ -21,6 +21,8 @@ const (
 	ClassConstant
 	ClassProperty
 	ClassOperator
+	ClassDiffAdd // git diff views: added / removed lines
+	ClassDiffDel
 	numClasses
 )
 
@@ -41,6 +43,7 @@ var themeSlots = map[string]int{
 	"keyword": ClassKeyword, "string": ClassString, "comment": ClassComment,
 	"number": ClassNumber, "function": ClassFunction, "type": ClassType,
 	"constant": ClassConstant, "property": ClassProperty, "operator": ClassOperator,
+	"git.added": ClassDiffAdd, "git.deleted": ClassDiffDel,
 	"info": paintInfo, "warning": paintWarn, "error": paintErr,
 	"match": paintMatch, "selection": paintSelection,
 }

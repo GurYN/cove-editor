@@ -35,7 +35,9 @@ func setup(t *testing.T) tea.Model {
 	}
 	var m tea.Model = New("/tmp/sample.go", src)
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB}) // close sidebar: editor at x=0
+	// close sidebar so the editor sits at x=0 (tri-state: focus, then close)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
 	return m
 }
 

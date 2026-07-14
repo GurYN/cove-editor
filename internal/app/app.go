@@ -17,6 +17,7 @@ import (
 	"github.com/GurYN/cove-editor/internal/action"
 	"github.com/GurYN/cove-editor/internal/config"
 	"github.com/GurYN/cove-editor/internal/editor"
+	"github.com/GurYN/cove-editor/internal/git"
 	"github.com/GurYN/cove-editor/internal/lsp"
 	"github.com/GurYN/cove-editor/internal/overlay"
 	"github.com/GurYN/cove-editor/internal/sidebar"
@@ -47,6 +48,7 @@ func applyChrome(colors map[string]string) {
 	if border != "" {
 		borderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(border))
 	}
+	applyGitChrome(colors)
 }
 
 type mode int
@@ -67,6 +69,7 @@ const (
 	paneDivider // sidebar/editor border column: drag to resize
 	paneTerminal
 	panePanelDivider // terminal panel title row: drag to resize
+	paneGit          // git panel occupying the sidebar slot
 )
 
 type overlayKind int
@@ -77,6 +80,7 @@ const (
 	overlayFinder
 	overlayRefs
 	overlayDiags
+	overlayBranches
 )
 
 // problemRef is one row of the Problems list: where Enter should land.
@@ -97,12 +101,13 @@ type Model struct {
 	sidebarW    int  // user-set width; divider drag adjusts it
 	focus       pane // paneEditor or paneSidebar
 
-	ovKind    overlayKind
-	ov        overlay.Model
-	ovActions []action.Action // palette payload
-	ovFiles   []string        // finder payload
-	ovRefs    []lsp.Location  // references payload
-	ovDiags   []problemRef    // problems payload
+	ovKind     overlayKind
+	ov         overlay.Model
+	ovActions  []action.Action // palette payload
+	ovFiles    []string        // finder payload
+	ovRefs     []lsp.Location  // references payload
+	ovDiags    []problemRef    // problems payload
+	ovBranches []string        // branch picker payload
 
 	lspm          *lsp.Manager
 	lspStatus     map[string]string
@@ -120,6 +125,14 @@ type Model struct {
 	promptText  string
 	promptDo    func(*Model, string)
 	deferred    tea.Cmd // set by prompt callbacks that need a follow-up Cmd
+
+	gitView bool // left pane shows the git panel instead of the file tree
+	gitSnap git.Snapshot
+	gitRows []gitRow
+	gitSel  int
+	gitTop  int
+	gitErr  string
+	gitBusy string // "push"/"pull" while one is in flight
 
 	terms      []*term.Term // shell instances; empty until first opened
 	termActive int
@@ -158,13 +171,17 @@ func New(path string, data []byte) Model {
 	if path != "" {
 		if fi, err := os.Stat(path); err == nil && fi.IsDir() {
 			root = path
-			m.focus = paneSidebar
 		} else {
 			root = filepath.Dir(path)
 			m.docs = append(m.docs, newDoc(path, data))
 		}
 	}
+	if len(m.docs) == 0 { // nothing to edit yet: start in the file tree
+		m.focus = paneSidebar
+	}
 	m.side = sidebar.New(root)
+	m.refreshGit() // branch segment in the status bar from the first frame
+	m.gitErr = ""  // not being a repo is fine until the panel is opened
 	m.reg = newRegistry()
 	for id, key := range cfg.Keys {
 		if !m.reg.Rebind(id, key) {
@@ -210,6 +227,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, m.flushChange()
 	case termMsg:
 		return m.handleTermMsg(msg)
+	case gitOpMsg:
+		return m.handleGitOp(msg)
 	case lspErrMsg:
 		m.lastMsg = msg.err.Error()
 		return m, nil
@@ -342,9 +361,24 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m = mm
 	}
+	// Panels bind single letters, but the input reader can coalesce quickly
+	// arriving runes (paste, PTY batching) into one KeyRunes msg. Replay
+	// them one at a time so "c" still means Commit after " c" arrives fused.
+	if (m.focus == paneSidebar || m.focus == paneGit) && msg.Type == tea.KeyRunes && !msg.Alt && len(msg.Runes) > 1 {
+		var cmds []tea.Cmd
+		for _, r := range msg.Runes {
+			var cmd tea.Cmd
+			m, cmd = m.dispatchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+	}
 	ctx := action.Editor
-	if m.focus == paneSidebar {
+	switch m.focus {
+	case paneSidebar:
 		ctx = action.Sidebar
+	case paneGit:
+		ctx = action.Git
 	}
 	if act := m.reg.Lookup(ctx, msg.String()); act != nil {
 		cmd := act.Do(&m)
@@ -413,6 +447,15 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 	case overlayRefs:
 		m.jumpTo(m.ovRefs[chosen])
 		m.layout()
+	case overlayBranches:
+		name := m.ovBranches[chosen]
+		if err := git.Checkout(m.gitSnap.Top, name); err != nil {
+			m.lastMsg = err.Error()
+		} else {
+			m.lastMsg = "switched to " + name
+		}
+		m.refreshGit()
+		m.side.Refresh() // checkout swaps working-tree files
 	case overlayDiags:
 		ref := m.ovDiags[chosen]
 		m.openFile(ref.path)
@@ -653,6 +696,9 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		target = paneDivider
 	case m.sidebarOpen && msg.X < m.editorX():
 		target = paneSidebar
+		if m.gitView {
+			target = paneGit
+		}
 	case m.termOpen && msg.Y == m.contentRows()+1:
 		target = panePanelDivider
 	case m.termOpen && msg.Y > m.contentRows()+1:
@@ -721,6 +767,16 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 				m.active = i
 				m.focus = paneEditor
 			}
+		}
+	case paneGit:
+		switch {
+		case msg.Button == tea.MouseButtonWheelUp:
+			m.gitWheel(-3)
+		case msg.Button == tea.MouseButtonWheelDown:
+			m.gitWheel(3)
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
+			m.focus = paneGit
+			m.gitClick(msg.Y-2, msg.X) // -1 tab bar, -1 header
 		}
 	case paneSidebar:
 		switch {
@@ -843,7 +899,11 @@ func (m Model) View() string {
 	if m.sidebarOpen {
 		rows := max(1, m.height-2)
 		border := strings.TrimSuffix(strings.Repeat(borderStyle.Render("│")+"\n", rows), "\n")
-		middle = lipgloss.JoinHorizontal(lipgloss.Top, m.side.View(m.focus == paneSidebar), border, middle)
+		side := m.side.View(m.focus == paneSidebar)
+		if m.gitView {
+			side = m.gitPanelView()
+		}
+		middle = lipgloss.JoinHorizontal(lipgloss.Top, side, border, middle)
 	}
 	if m.ovKind != overlayNone {
 		middle = m.composite(middle, m.ov.View(), 1, -1)
@@ -912,27 +972,39 @@ func (m Model) welcome() string {
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, msg)
 }
 
+// bar renders one status-bar line hard-clipped to the terminal width, so a
+// long message/path can never wrap the footer onto a second row.
+func (m Model) bar(content string) string {
+	return statusStyle.Width(m.width).Render(ansi.Truncate(content, m.width, "…"))
+}
+
 func (m Model) bottomBar() string {
 	// While the palette is open, the footer shows the highlighted action's
 	// ID — the name used for [keys] rebinding in config.toml. No nested
 	// styles here: an inner reset would cut the bar's background short.
 	if m.ovKind == overlayPalette {
 		if i := m.ov.Selected(); i >= 0 {
-			return statusStyle.Width(m.width).Render(" id: " + m.ovActions[i].ID)
+			return m.bar(" id: " + m.ovActions[i].ID)
 		}
 	}
 	switch m.mode {
 	case modeFind, modeReplace:
 		return m.minibar()
 	case modePrompt:
-		left := promptStyle.Render(" "+m.promptLabel) + " " + m.promptText + "█"
+		text := m.promptText
+		// Keep the tail of a long input visible while typing.
+		if over := lipgloss.Width(m.promptLabel) + len([]rune(text)) + 8 - m.width; over > 0 {
+			r := []rune(text)
+			text = "…" + string(r[min(len(r), over+1):])
+		}
+		left := promptStyle.Render(" "+m.promptLabel) + " " + text + "█"
 		pad := max(1, m.width-lipgloss.Width(left)-5)
-		return statusStyle.Width(m.width).Render(left + fmt.Sprintf("%*s", pad, "esc  "))
+		return m.bar(left + fmt.Sprintf("%*s", pad, "esc  "))
 	}
 	d := m.doc()
 	if d == nil {
-		right := "^P commands  ^O files  ^Q quit "
-		return statusStyle.Width(m.width).Render(fmt.Sprintf("%*s", m.width, right))
+		right := m.gitSeg() + "^P commands  ^O files  ^Q quit "
+		return m.bar(fmt.Sprintf("%*s", m.width, right))
 	}
 	line, col := d.ed.Cursor()
 	dirty := ""
@@ -947,10 +1019,18 @@ func (m Model) bottomBar() string {
 	if m.vim != nil {
 		vimLabel = m.vim.label() + "  "
 	}
-	left := fmt.Sprintf(" %s%s%s  %d:%d%s", vimLabel, d.path, dirty, line+1, col+1, multi)
-	right := fmt.Sprintf("%s  %s  %dL  %s  ^P commands ", m.lastMsg, m.lspStatusLine(d), d.ed.Buf.LineCount(), m.lastCost.Round(time.Microsecond))
+	name := d.path
+	if !d.virtual { // virtual tabs carry a display title, not a real path
+		name = rel(m.side.Root, d.path)
+	}
+	left := fmt.Sprintf(" %s%s%s  %d:%d%s", vimLabel, name, dirty, line+1, col+1, multi)
+	right := fmt.Sprintf("%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), m.lastCost.Round(time.Microsecond))
+	if m.lastMsg != "" { // transient message gets whatever space is left
+		space := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
+		right = ansi.Truncate(m.lastMsg, max(0, space), "…") + "  " + right
+	}
 	pad := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right))
-	return statusStyle.Width(m.width).Render(left + fmt.Sprintf("%*s", pad, "") + right)
+	return m.bar(left + fmt.Sprintf("%*s", pad, "") + right)
 }
 
 func (m Model) minibar() string {
@@ -976,5 +1056,5 @@ func (m Model) minibar() string {
 	right := fmt.Sprintf("%s%s  ↓↑ next/prev  ^R %s  ^T regex  ⏎ go  esc ",
 		counter, re, map[mode]string{modeFind: "replace", modeReplace: "find"}[m.mode])
 	pad := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right))
-	return statusStyle.Width(m.width).Render(left + fmt.Sprintf("%*s", pad, "") + right)
+	return m.bar(left + fmt.Sprintf("%*s", pad, "") + right)
 }
