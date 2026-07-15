@@ -21,6 +21,16 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install GurYN/tap/cove
+```
+
+The formula builds from source on your machine (tree-sitter uses CGo, so there are no prebuilt bottles yet); Homebrew pulls in the Go toolchain as a build dependency automatically.
+
+### From a release or from source
+
 Download a binary from the [releases page](https://github.com/GurYN/cove-editor/releases), or build from source (Go 1.26+ and a C compiler required; tree-sitter uses CGo):
 
 ```sh
