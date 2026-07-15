@@ -1,0 +1,5 @@
+# Vendored third-party code: excluded from GitHub language stats and
+# collapsed in diffs (linguist-vendored).
+internal/syntax/tsmarkdown/** linguist-vendored
+internal/syntax/tsdockerfile/** linguist-vendored
+internal/term/vt10x/** linguist-vendored
