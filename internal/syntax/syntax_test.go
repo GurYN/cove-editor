@@ -63,6 +63,13 @@ func TestAllLanguagesLoad(t *testing.T) {
 		"x.zsh":  "echo hi\n",
 		"x.toml": "# c\n[table]\nkey = \"v\"\nn = 1\nb = true\n",
 		"x.md":   "# title\n\nsome **bold** text\n",
+		"x.yaml": "# c\nkey: value\nn: 1\nb: true\nlist:\n  - a\n",
+		"x.yml":  "key: \"v\"\n",
+		"docker-compose.yml": "services:\n  web:\n    image: nginx:latest\n    ports:\n      - \"80:80\"\n",
+		"Dockerfile":         "FROM golang:1.26 AS build\n# c\nARG V=1\nENV K=v\nRUN --mount=type=cache,target=/go go build\nCOPY . /app\n",
+		"Dockerfile.prod":    "FROM alpine\nCMD [\"sh\"]\n",
+		"Containerfile":      "FROM alpine\n",
+		"x.dockerfile":       "FROM alpine\nUSER ${APP_USER}\n",
 	}
 	for name, src := range samples {
 		h := New(name, []byte(src))

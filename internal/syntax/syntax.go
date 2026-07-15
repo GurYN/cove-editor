@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	tstoml "github.com/tree-sitter-grammars/tree-sitter-toml/bindings/go"
+	tsyaml "github.com/tree-sitter-grammars/tree-sitter-yaml/bindings/go"
+
+	tsdockerfile "github.com/GurYN/cove-editor/internal/syntax/tsdockerfile"
 	ts "github.com/tree-sitter/go-tree-sitter"
 
 	tsmarkdown "github.com/GurYN/cove-editor/internal/syntax/tsmarkdown"
@@ -50,6 +53,12 @@ var bashScm string
 //go:embed queries/toml.scm
 var tomlScm string
 
+//go:embed queries/yaml.scm
+var yamlScm string
+
+//go:embed queries/dockerfile.scm
+var dockerfileScm string
+
 //go:embed queries/markdown.scm
 var markdownScm string
 
@@ -87,6 +96,10 @@ var langs = map[string]func() langDef{
 	"css":  func() langDef { return langDef{lang: ts.NewLanguage(tscss.Language()), query: cssScm} },
 	"bash": func() langDef { return langDef{lang: ts.NewLanguage(tsbash.Language()), query: bashScm} },
 	"toml": func() langDef { return langDef{lang: ts.NewLanguage(tstoml.Language()), query: tomlScm} },
+	"yaml": func() langDef { return langDef{lang: ts.NewLanguage(tsyaml.Language()), query: yamlScm} },
+	"dockerfile": func() langDef {
+		return langDef{lang: ts.NewLanguage(tsdockerfile.Language()), query: dockerfileScm}
+	},
 	"html": func() langDef {
 		return langDef{lang: ts.NewLanguage(tshtml.Language()), query: htmlScm, inj: []injection{
 			{node: "raw_text", parent: "script_element", lang: "typescript"},
@@ -115,6 +128,20 @@ var exts = map[string]string{
 	".html": "html", ".htm": "html", ".css": "css",
 	".sh": "bash", ".bash": "bash", ".zsh": "bash",
 	".toml": "toml", ".md": "markdown", ".markdown": "markdown",
+	".yaml": "yaml", ".yml": "yaml", ".dockerfile": "dockerfile",
+}
+
+// langFor resolves a language from the file path: extension first, then
+// extensionless basenames (Dockerfile, Dockerfile.prod, Containerfile).
+func langFor(path string) (string, bool) {
+	if name, ok := exts[strings.ToLower(filepath.Ext(path))]; ok {
+		return name, true
+	}
+	base := strings.ToLower(filepath.Base(path))
+	if base == "containerfile" || base == "dockerfile" || strings.HasPrefix(base, "dockerfile.") {
+		return "dockerfile", true
+	}
+	return "", false
 }
 
 // fenceLangs maps code fence info strings (```go, ```js …) to language names.
@@ -127,6 +154,8 @@ var fenceLangs = map[string]string{
 	"json": "json", "html": "html", "css": "css",
 	"sh": "bash", "bash": "bash", "shell": "bash", "zsh": "bash",
 	"toml": "toml",
+	"yaml": "yaml", "yml": "yaml",
+	"dockerfile": "dockerfile", "docker": "dockerfile",
 }
 
 // classFor maps a tree-sitter capture name to an editor style class.
@@ -200,7 +229,7 @@ func compile(d langDef) (*ts.Parser, *ts.Query, []int, bool) {
 // New returns a highlighter for the file at path, or nil if the language is
 // not supported.
 func New(path string, src []byte) *Highlighter {
-	name, ok := exts[strings.ToLower(filepath.Ext(path))]
+	name, ok := langFor(path)
 	if !ok {
 		return nil
 	}
