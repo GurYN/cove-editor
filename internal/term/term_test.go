@@ -66,6 +66,8 @@ func TestEncodeKey(t *testing.T) {
 		{tea.KeyMsg{Type: tea.KeyCtrlC}, "\x03"},
 		{tea.KeyMsg{Type: tea.KeyUp}, "\x1b[A"},
 		{tea.KeyMsg{Type: tea.KeyEscape}, "\x1b"},
+		{tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}, " "},
+		{tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" "), Alt: true}, "\x1b "},
 	}
 	for _, c := range cases {
 		if got := string(encodeKey(c.k)); got != c.want {
