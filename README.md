@@ -7,8 +7,8 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 ## Features
 
 - **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
-- **Tree-sitter syntax highlighting** with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node).
-- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript, and Rust work out of the box.
+- **Tree-sitter syntax highlighting** for ten languages, with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
+- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, and CSS work out of the box.
 - **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6` jumps between them.
@@ -16,7 +16,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
 - **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **Multi-cursor editing, find & replace, undo/redo.**
-- **Plays nice with the outside world**: files edited outside Cove reload in place (undoable); a buffer with unsaved changes warns instead.
+- **Plays nice with the outside world**: files edited outside Cove reload in place (undoable); a buffer with unsaved changes warns instead. The file tree and git status re-sync whenever the terminal regains focus, so changes from another shell or editor show up on their own.
 - **No terminal traps**: `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
 
 ## Install
@@ -38,14 +38,17 @@ cove .
 
 ## Language support
 
-Syntax highlighting ships in the binary for Go, Python, TypeScript, Rust, and JSON. Language intelligence needs the language's server on your `PATH`:
+Syntax highlighting ships in the binary for Go, Python, TypeScript/JavaScript (including JSX/TSX), Rust, HTML, CSS, Bash, JSON, TOML, and Markdown. HTML highlights embedded `<script>` and `<style>` blocks; Markdown highlights bold/italic/links/code spans and fenced code blocks in their own language (` ```go `, ` ```js `, …).
+
+Language intelligence needs the language's server on your `PATH`:
 
 | Language   | Server                       | Install                                              |
 | ---------- | ---------------------------- | ---------------------------------------------------- |
 | Go         | `gopls`                      | `go install golang.org/x/tools/gopls@latest`          |
 | Python     | `pyright-langserver`         | `npm i -g pyright`                                    |
-| TypeScript | `typescript-language-server` | `npm i -g typescript-language-server typescript`      |
+| TypeScript / JavaScript | `typescript-language-server` | `npm i -g typescript-language-server typescript` |
 | Rust       | `rust-analyzer`              | `rustup component add rust-analyzer`                  |
+| HTML / CSS | `vscode-html-language-server` / `vscode-css-language-server` | `npm i -g vscode-langservers-extracted` |
 
 No server installed? Cove still works as a fast editor with syntax highlighting.
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,107 @@ func TestHighlightsGo(t *testing.T) {
 		if !classes[want] {
 			t.Errorf("missing span class %d in %v", want, spans)
 		}
+	}
+}
+
+// TestAllLanguagesLoad guards against silent nil from a bad query: every
+// registered extension must yield a working highlighter that produces spans.
+func TestAllLanguagesLoad(t *testing.T) {
+	samples := map[string]string{
+		"x.go":   "package main\n\nfunc main() {}\n",
+		"x.json": "{\"a\": 1}\n",
+		"x.py":   "def f():\n    return 1\n",
+		"x.rs":   "fn main() { let x = 1; }\n",
+		"x.ts":   "function f(): number { return 1 }\n",
+		"x.tsx":  "const x = <div id=\"a\"/>\n",
+		"x.js":   "function f() { return 1 }\n",
+		"x.mjs":  "export function f() { return 1 }\n",
+		"x.cjs":  "module.exports = function f() { return 1 }\n",
+		"x.jsx":  "const x = <div id=\"a\"/>\n",
+		"x.html": "<!doctype html><p class=\"a\">hi</p><!-- c -->\n",
+		"x.htm":  "<p>hi</p>\n",
+		"x.css":  "/* c */ .a { color: #fff; width: 10px; }\n",
+		"x.sh":   "#!/bin/sh\nif true; then echo \"hi\"; fi\n",
+		"x.bash": "for i in 1 2; do echo $i; done\n",
+		"x.zsh":  "echo hi\n",
+		"x.toml": "# c\n[table]\nkey = \"v\"\nn = 1\nb = true\n",
+		"x.md":   "# title\n\nsome **bold** text\n",
+	}
+	for name, src := range samples {
+		h := New(name, []byte(src))
+		if h == nil {
+			t.Errorf("%s: no highlighter (grammar or query failed to load)", name)
+			continue
+		}
+		if spans := h.Spans([]byte(src), 0, len(src)); len(spans) == 0 {
+			t.Errorf("%s: highlighter produced no spans", name)
+		}
+	}
+}
+
+// spanAt reports whether some span with the wanted class covers offset.
+func spanAt(spans []editor.HLSpan, off, class int) bool {
+	for _, s := range spans {
+		if s.Class == class && s.Start <= off && off < s.End {
+			return true
+		}
+	}
+	return false
+}
+
+// TestInjections: embedded languages must highlight — markdown inline +
+// fenced code, HTML <script>/<style>.
+func TestInjections(t *testing.T) {
+	md := "# t\n\n**bold** and `code`\n\n```go\nfunc main() {}\n```\n"
+	h := New("x.md", []byte(md))
+	if h == nil {
+		t.Fatal("no markdown highlighter")
+	}
+	spans := h.Spans([]byte(md), 0, len(md))
+	for name, off := range map[string]int{
+		"bold": strings.Index(md, "bold"), "code span": strings.Index(md, "`code`") + 1,
+	} {
+		want := editor.ClassKeyword
+		if name == "code span" {
+			want = editor.ClassString
+		}
+		if !spanAt(spans, off, want) {
+			t.Errorf("markdown inline: %s not highlighted in %v", name, spans)
+		}
+	}
+	if !spanAt(spans, strings.Index(md, "func"), editor.ClassKeyword) {
+		t.Errorf("go fence: 'func' not keyword-highlighted in %v", spans)
+	}
+
+	html := "<script>var x = 1;</script><style>a { color: red }</style>\n"
+	h = New("x.html", []byte(html))
+	if h == nil {
+		t.Fatal("no html highlighter")
+	}
+	spans = h.Spans([]byte(html), 0, len(html))
+	if !spanAt(spans, strings.Index(html, "var"), editor.ClassKeyword) {
+		t.Errorf("script: 'var' not keyword-highlighted in %v", spans)
+	}
+	if !spanAt(spans, strings.Index(html, "color"), editor.ClassProperty) {
+		t.Errorf("style: 'color' not property-highlighted in %v", spans)
+	}
+}
+
+// TestInjectionEdit: after an edit that adds a fence, children must resync.
+func TestInjectionEdit(t *testing.T) {
+	src := []byte("text\n\n```go\nreturn\n```\n")
+	h := New("x.md", src)
+	if h == nil {
+		t.Fatal("no markdown highlighter")
+	}
+	if !spanAt(h.Spans(src, 0, len(src)), 12, editor.ClassKeyword) { // "return"
+		t.Fatal("fence not highlighted before edit")
+	}
+	// Insert "x " at the start: everything shifts by 2.
+	next := append([]byte("x "), src...)
+	h.Edit(0, 0, 2, [2]int{0, 0}, [2]int{0, 0}, [2]int{0, 2})
+	if !spanAt(h.Spans(next, 0, len(next)), 14, editor.ClassKeyword) {
+		t.Fatal("fence highlight did not survive an edit")
 	}
 }
 

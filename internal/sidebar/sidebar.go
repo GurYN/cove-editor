@@ -137,17 +137,20 @@ func (m *Model) Refresh() {
 		if !n.isDir || n.children == nil {
 			return
 		}
-		wasExpanded := map[string]bool{}
+		old := make(map[string]*node, len(n.children))
 		for _, c := range n.children {
-			if c.isDir && c.expanded {
-				wasExpanded[c.path] = true
-			}
+			old[c.path] = c
 		}
 		n.load()
 		for _, c := range n.children {
-			if wasExpanded[c.path] {
-				c.expanded = true
-				walk(c)
+			// Graft the old subtree back so expansion survives at every
+			// depth, then re-read the expanded part of it.
+			if o := old[c.path]; o != nil && o.isDir == c.isDir {
+				c.expanded = o.expanded
+				c.children = o.children
+				if c.expanded {
+					walk(c)
+				}
 			}
 		}
 	}

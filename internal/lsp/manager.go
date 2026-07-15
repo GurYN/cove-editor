@@ -21,11 +21,16 @@ var defaultServers = map[string]ServerDef{
 	"python":     {Argv: []string{"pyright-langserver", "--stdio"}, LangID: "python"},
 	"typescript": {Argv: []string{"typescript-language-server", "--stdio"}, LangID: "typescript"},
 	"rust":       {Argv: []string{"rust-analyzer"}, LangID: "rust"},
+	// html + css ship together in `npm i -g vscode-langservers-extracted`.
+	"html": {Argv: []string{"vscode-html-language-server", "--stdio"}, LangID: "html"},
+	"css":  {Argv: []string{"vscode-css-language-server", "--stdio"}, LangID: "css"},
 }
 
 var extLang = map[string]string{
 	".go": "go", ".py": "python", ".rs": "rust",
-	".ts": "typescript", ".tsx": "typescript", ".js": "typescript", ".jsx": "typescript",
+	".ts": "typescript", ".tsx": "typescript",
+	".js": "typescript", ".jsx": "typescript", ".mjs": "typescript", ".cjs": "typescript",
+	".html": "html", ".htm": "html", ".css": "css",
 }
 
 // Configure registers or overrides a language server (from TOML config).

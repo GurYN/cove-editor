@@ -319,3 +319,45 @@ func TestCenterAfterJump(t *testing.T) {
 		t.Fatalf("top = %d, want 981", m.top)
 	}
 }
+
+// Horizontal wheel scrolls xoff without the render loop snapping it back;
+// moving the cursor snaps the view to it again.
+func TestHorizontalWheel(t *testing.T) {
+	long := strings.Repeat("abcdefghij", 20) // 200 cells
+	m := New(buffer.New([]byte(long + "\nshort\n")))
+	m.Width, m.Height = 20, 2
+
+	wheel := func(b tea.MouseButton) {
+		m, _ = m.Update(tea.MouseMsg{X: 5, Y: 0, Action: tea.MouseActionPress, Button: b})
+	}
+	wheel(tea.MouseButtonWheelRight)
+	wheel(tea.MouseButtonWheelRight)
+	if m.xoff == 0 {
+		t.Fatal("wheel right did not scroll horizontally")
+	}
+	frame := stripANSI(m.View())
+	if strings.Contains(frame, "abcdefghij") && m.xoff%10 != 0 {
+		t.Fatalf("view did not honor xoff=%d: %q", m.xoff, frame)
+	}
+	if m.xoff != 12 {
+		t.Fatalf("xoff=%d after two wheel steps, want 12", m.xoff)
+	}
+	// Rendering must not snap the scroll back to the cursor.
+	m.View()
+	if m.xoff != 12 {
+		t.Fatalf("View reset xoff to %d", m.xoff)
+	}
+	// Wheel left clamps at 0.
+	for range 5 {
+		wheel(tea.MouseButtonWheelLeft)
+	}
+	if m.xoff != 0 {
+		t.Fatalf("xoff=%d after wheel left, want 0", m.xoff)
+	}
+	// Cursor movement snaps the view back so the cursor is visible.
+	wheel(tea.MouseButtonWheelRight)
+	m.MoveH(1, false)
+	if m.xoff > 1 {
+		t.Fatalf("xoff=%d after cursor move to col 1: cursor off screen", m.xoff)
+	}
+}

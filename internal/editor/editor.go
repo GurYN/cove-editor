@@ -429,6 +429,7 @@ func (m *Model) scrollToCursor() {
 	if m.Height > 0 && line >= m.top+m.Height {
 		m.top = line - m.Height + 1
 	}
+	m.keepCursorHVisible()
 }
 
 // ---- editing ----
@@ -702,6 +703,21 @@ func (m *Model) paste() {
 
 // ---- mouse ----
 
+// maxVisibleCellWidth is the widest visible line in screen cells, probed only
+// one wheel step past the current window (megabyte lines must stay O(window)).
+func (m *Model) maxVisibleCellWidth() int {
+	probe := m.xoff + m.textWidth() + 6
+	w := 0
+	for line := m.top; line < min(m.top+m.Height, m.Buf.LineCount()); line++ {
+		start := m.Buf.Offset(line, 0)
+		maxB := min(m.Buf.LineLen(line), probe*4+8)
+		if cells := lineCellsTo(m.Buf.Slice(start, start+maxB), probe); len(cells) > 0 {
+			w = max(w, cells[len(cells)-1].x+1)
+		}
+	}
+	return w
+}
+
 func (m *Model) handleMouse(msg tea.MouseMsg) {
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
@@ -709,6 +725,12 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 		return
 	case tea.MouseButtonWheelDown:
 		m.top = min(max(0, m.Buf.LineCount()-m.Height), m.top+3)
+		return
+	case tea.MouseButtonWheelLeft:
+		m.xoff = max(0, m.xoff-6)
+		return
+	case tea.MouseButtonWheelRight:
+		m.xoff = min(max(0, m.maxVisibleCellWidth()-m.textWidth()), m.xoff+6)
 		return
 	}
 	if msg.Button != tea.MouseButtonLeft && msg.Action != tea.MouseActionMotion {

@@ -239,6 +239,14 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 
+	case tea.FocusMsg:
+		// External edits happen while we're unfocused: another Cove instance,
+		// a shell, a git command. Regaining focus is the cheap sync point.
+		// ponytail: no fsnotify watcher; add one if focus-refresh proves too coarse.
+		m.side.Refresh()
+		m.refreshGit()
+		return m, nil
+
 	case lspEventMsg:
 		m.handleLSPEvent(lsp.Event(msg))
 		return m, listenLSP(m.lspm)
