@@ -129,6 +129,11 @@ func (t *Term) Scrolled() int {
 }
 
 func encodeKey(k tea.KeyMsg) []byte {
+	// KeySpace is a negative sentinel in bubbletea v1 (-15), NOT byte 32 —
+	// it must not fall through to the "KeyType is the byte" branch below.
+	if k.Type == tea.KeySpace {
+		k = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}, Alt: k.Alt}
+	}
 	if k.Type == tea.KeyRunes {
 		b := []byte(string(k.Runes))
 		if k.Alt {
@@ -155,6 +160,8 @@ func encodeKey(k tea.KeyMsg) []byte {
 		return []byte("\x1b[6~")
 	case tea.KeyDelete:
 		return []byte("\x1b[3~")
+	case tea.KeyShiftTab:
+		return []byte("\x1b[Z")
 	}
 	// Control keys, enter, tab, esc, space, backspace: the KeyType IS the byte.
 	if k.Type >= 0 && k.Type < 128 {
