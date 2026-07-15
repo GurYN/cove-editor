@@ -38,3 +38,30 @@ jobs:
         with:
           files: cove_*.tar.gz
           generate_release_notes: true
+
+  tap:
+    # Bump url + sha256 in the tap formula (it builds from source, so that's
+    # the whole diff). Gated on build so a broken release never ships to brew.
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Compute source tarball sha256
+        id: sha
+        run: |
+          SHA=$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" | sha256sum | cut -d' ' -f1)
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: GurYN/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+      - name: Bump formula
+        run: |
+          sed -i \
+            -e "s|url \".*\"|url \"https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz\"|" \
+            -e "s|sha256 \".*\"|sha256 \"${{ steps.sha.outputs.sha256 }}\"|" \
+            Formula/cove.rb
+          if git diff --quiet; then echo "formula already current"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "cove ${GITHUB_REF_NAME}"
+          git push

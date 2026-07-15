@@ -4,6 +4,8 @@ A terminal IDE you can use in five minutes: no tutorial, no muscle-memory tax.
 
 Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Zed, or JetBrains, everything works the way you expect: visible menus and tabs, a command palette, familiar shortcuts (`Ctrl+S` saves, `Ctrl+P` opens the palette), and first-class mouse support. The differentiator is **discoverability**, not a feature list.
 
+![Cove demo](assets/cove-demo.gif)
+
 ## Features
 
 - **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
