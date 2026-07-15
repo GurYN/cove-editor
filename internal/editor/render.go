@@ -196,7 +196,6 @@ func (m Model) View() string {
 	if m.Height <= 0 {
 		return ""
 	}
-	m.keepCursorHVisible()
 	last := min(m.top+m.Height, m.Buf.LineCount())
 	startOff := m.Buf.Offset(m.top, 0)
 	endOff := m.Buf.Len()
@@ -261,8 +260,9 @@ func (m *Model) cursorCellX(line, col int) int {
 }
 
 // keepCursorHVisible adjusts xoff so the primary cursor is on screen.
-// Model is a value in View; the receiver is a pointer via a copy trick in
-// callers — xoff drift across frames is fine because Update recomputes.
+// Called from scrollToCursor (cursor moves), NOT from View: the horizontal
+// wheel scrolls xoff away from the cursor on purpose, and a render-time
+// snap would yank it straight back.
 func (m *Model) keepCursorHVisible() {
 	line, col := m.Buf.Pos(m.cursors[m.primary].Head)
 	cx := m.cursorCellX(line, col)
