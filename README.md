@@ -7,7 +7,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 ## Features
 
 - **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
-- **Tree-sitter syntax highlighting** for ten languages, with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
+- **Tree-sitter syntax highlighting** for twelve languages, with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
 - **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, and CSS work out of the box.
 - **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
@@ -48,7 +48,7 @@ cove .
 
 ## Language support
 
-Syntax highlighting ships in the binary for Go, Python, TypeScript/JavaScript (including JSX/TSX), Rust, HTML, CSS, Bash, JSON, TOML, and Markdown. HTML highlights embedded `<script>` and `<style>` blocks; Markdown highlights bold/italic/links/code spans and fenced code blocks in their own language (` ```go `, ` ```js `, …).
+Syntax highlighting ships in the binary for Go, Python, TypeScript/JavaScript (including JSX/TSX), Rust, HTML, CSS, Bash, JSON, TOML, YAML (including Docker Compose files), Dockerfile (`Dockerfile`, `Dockerfile.*`, `Containerfile`, `*.dockerfile`), and Markdown. HTML highlights embedded `<script>` and `<style>` blocks; Markdown highlights bold/italic/links/code spans and fenced code blocks in their own language (` ```go `, ` ```js `, …).
 
 Language intelligence needs the language's server on your `PATH`:
 
