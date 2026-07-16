@@ -86,12 +86,26 @@ func TestEscUnfuse(t *testing.T) {
 	}
 }
 
-// Esc then Ctrl+Q (fused as alt+ctrl+q) must quit.
+// Esc then Ctrl+Q (fused as alt+ctrl+q) must open the quit confirm
+// (default), and y+Enter must quit. Esc at the prompt must cancel.
 func TestEscCtrlQQuits(t *testing.T) {
 	m := setup(t)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ, Alt: true})
+	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ, Alt: true})
+	if cmd != nil {
+		t.Fatal("quit without confirmation")
+	}
+	if !strings.Contains(m2.View(), "Quit Cove?") {
+		t.Fatal("no quit prompt shown")
+	}
+	m2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m2, cmd = m2.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if cmd != nil {
+		t.Fatal("esc did not cancel the prompt")
+	}
+	m2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	_, cmd = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("no quit command")
+		t.Fatal("no quit command after confirm")
 	}
 }
 

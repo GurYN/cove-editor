@@ -157,6 +157,8 @@ type Model struct {
 	width, height int
 	lastMsg       string
 	lastCost      time.Duration
+
+	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
 }
 
 // New builds the app. path may be a file (opened as the first tab), a
@@ -172,7 +174,8 @@ func New(path string, data []byte) Model {
 	}
 
 	root := "."
-	m := Model{sidebarOpen: true, focus: paneEditor, sidebarW: sidebarWidth, termH: termDefaultRows}
+	m := Model{sidebarOpen: true, focus: paneEditor, sidebarW: sidebarWidth, termH: termDefaultRows,
+		confirmQuit: cfg.Editor.ConfirmQuit}
 	if cfg.Keymap == "vim" {
 		m.vim = &vimState{}
 	}
@@ -716,6 +719,9 @@ func (m *Model) openFile(path string) {
 	m.docs = append(m.docs, d)
 	m.active = len(m.docs) - 1
 	m.focus = paneEditor
+	if d.warn != "" {
+		m.lastMsg = d.warn
+	}
 	m.layout()
 	m.lspm.Open(path, d.ed.Buf.Bytes(), d.ed.Rev)
 	m.loadGitHead(d)
@@ -1010,6 +1016,9 @@ func (m Model) updateMinibar(k tea.KeyMsg) (Model, tea.Cmd) {
 		d.ed.SetSearch("", false)
 		return m, nil
 	case tea.KeyCtrlQ:
+		if a := m.reg.ByID("app.quit"); a != nil { // same confirm flow as everywhere
+			return m, a.Do(&m)
+		}
 		return m, tea.Quit
 	case tea.KeyRunes:
 		*input += string(k.Runes)

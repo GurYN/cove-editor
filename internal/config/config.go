@@ -16,6 +16,7 @@ type Config struct {
 	Editor struct {
 		TabSize     int  `toml:"tab_size"`
 		LineNumbers bool `toml:"line_numbers"`
+		ConfirmQuit bool `toml:"confirm_quit"`
 	} `toml:"editor"`
 
 	// Keys maps action IDs to key overrides: "file.save" = "ctrl+s".
@@ -58,6 +59,7 @@ func Load() (Config, error) {
 	c.Keymap = "default"
 	c.Editor.TabSize = 4
 	c.Editor.LineNumbers = true // toml.Decode only overrides present keys
+	c.Editor.ConfirmQuit = true
 	data, err := os.ReadFile(Path())
 	if err != nil {
 		return c, nil // no config file is the normal case

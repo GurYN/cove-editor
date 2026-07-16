@@ -70,3 +70,50 @@ func TestExternalChangeDetection(t *testing.T) {
 		t.Fatalf("warning repeated on next tick: %q", m2.lastMsg)
 	}
 }
+
+// save() must confirm before overwriting a file that appeared on disk after
+// a not-yet-existing path was opened (e.g. `cove new.txt` + external create),
+// and must go through a temp file so a failed write can't truncate.
+func TestSaveGuards(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.txt")
+	d := newDoc(path, nil) // opened before the file exists
+	d.ed.InsertText("mine")
+
+	os.WriteFile(path, []byte("theirs"), 0o644)
+	if msg := d.save(); !strings.Contains(msg, "save again") {
+		t.Fatalf("externally-created file overwritten without confirm: %q", msg)
+	}
+	if msg := d.save(); msg != "saved" {
+		t.Fatalf("second save: %q", msg)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "mine" {
+		t.Fatalf("content: %q", data)
+	}
+	if _, err := os.Stat(path + ".cove~"); !os.IsNotExist(err) {
+		t.Fatal("temp file left behind")
+	}
+
+	// A custom mode survives the write-then-rename.
+	os.Chmod(path, 0o600)
+	d.ed.InsertText("!")
+	if msg := d.save(); msg != "saved" {
+		t.Fatalf("resave: %q", msg)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode not preserved: %v", fi.Mode())
+	}
+}
+
+// Non-UTF-8 text files open with a one-shot lossy-display warning.
+func TestInvalidUTF8Warns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latin1.txt")
+	os.WriteFile(path, []byte("caf\xe9\n"), 0o644) // Latin-1 é, no NUL
+	d, err := loadDoc(path)
+	if err != nil {
+		t.Fatalf("refused: %v", err)
+	}
+	if !strings.Contains(d.warn, "UTF-8") {
+		t.Fatalf("warn = %q", d.warn)
+	}
+}

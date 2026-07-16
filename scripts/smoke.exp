@@ -8,6 +8,8 @@ sleep 1
 send "\x13"
 sleep 1
 send "\x11"
+sleep 1
+send "y\r"
 expect eof
 catch wait result
 puts "app-exit=[lindex $result 3]"

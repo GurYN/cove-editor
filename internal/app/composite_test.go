@@ -39,7 +39,7 @@ func TestOverlayFloatsOverBase(t *testing.T) {
 	found := false
 	for _, l := range lines {
 		plain := ansi.Strip(l)
-		if strings.Contains(plain, "File: Save") {
+		if strings.Contains(plain, "File: Save") && !strings.Contains(plain, "Save All") {
 			found = true
 			if !strings.Contains(plain, "ctrl+s") {
 				t.Fatalf("label and key not on the same row: %q", plain)
