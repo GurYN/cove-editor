@@ -190,33 +190,41 @@ func encodeKey(k tea.KeyMsg) []byte {
 		}
 		return b
 	}
+	var b []byte
 	switch k.Type {
 	case tea.KeyUp:
-		return []byte("\x1b[A")
+		b = []byte("\x1b[A")
 	case tea.KeyDown:
-		return []byte("\x1b[B")
+		b = []byte("\x1b[B")
 	case tea.KeyRight:
-		return []byte("\x1b[C")
+		b = []byte("\x1b[C")
 	case tea.KeyLeft:
-		return []byte("\x1b[D")
+		b = []byte("\x1b[D")
 	case tea.KeyHome:
-		return []byte("\x1b[H")
+		b = []byte("\x1b[H")
 	case tea.KeyEnd:
-		return []byte("\x1b[F")
+		b = []byte("\x1b[F")
 	case tea.KeyPgUp:
-		return []byte("\x1b[5~")
+		b = []byte("\x1b[5~")
 	case tea.KeyPgDown:
-		return []byte("\x1b[6~")
+		b = []byte("\x1b[6~")
 	case tea.KeyDelete:
-		return []byte("\x1b[3~")
+		b = []byte("\x1b[3~")
 	case tea.KeyShiftTab:
-		return []byte("\x1b[Z")
+		b = []byte("\x1b[Z")
+	default:
+		// Control keys, enter, tab, esc, space, backspace: the KeyType IS
+		// the byte.
+		if k.Type >= 0 && k.Type < 128 {
+			b = []byte{byte(k.Type)}
+		}
 	}
-	// Control keys, enter, tab, esc, space, backspace: the KeyType IS the byte.
-	if k.Type >= 0 && k.Type < 128 {
-		return []byte{byte(k.Type)}
+	// Alt prefixes ESC in one write, so the child parses it as a chord
+	// (alt+enter = "\x1b\r" — how Claude Code sees Shift+Enter).
+	if b != nil && k.Alt {
+		b = append([]byte{0x1b}, b...)
 	}
-	return nil
+	return b
 }
 
 // View renders the visible window as styled rows: the live screen, shifted

@@ -408,6 +408,14 @@ func TestTerminalToggleAndType(t *testing.T) {
 	if h := app.doc().ed.Height; h != 24-2-app.panelRows() {
 		t.Fatalf("editor height %d not reduced by panel", h)
 	}
+	// Alt+enter ("\x1b\r" fused by bubbletea — e.g. Shift+Enter mapped to
+	// that sequence for Claude Code) must reach the shell as a chord, not
+	// unfuse into Esc + Enter or toggle the panel.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	app = m.(Model)
+	if !app.termOpen || app.focus != paneTerminal {
+		t.Fatal("alt+enter must stay in the terminal panel")
+	}
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ}) // hide
 	app = m.(Model)
 	if app.termOpen || app.focus != paneEditor {
