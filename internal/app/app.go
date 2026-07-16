@@ -317,8 +317,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		// The terminal never delivers a lone Esc: bubbletea's parser buffers
 		// the ESC byte until the next key arrives and fuses them into an
 		// alt-chord. Unfuse: treat as Esc, then the bare key. Deliberate
-		// alt-chords (alt+up/down add-cursor, alt+enter replace-all) stay.
-		if msg.Alt && msg.Type != tea.KeyUp && msg.Type != tea.KeyDown &&
+		// alt-chords (alt+up/down add-cursor, alt+enter replace-all) stay,
+		// and so does anything headed for the shell — the child app wants
+		// the raw ESC-prefixed bytes (e.g. Shift+Enter mapped to "\x1b\r"
+		// for Claude Code), not Cove's Esc semantics.
+		termFocus := m.ovKind == overlayNone && m.mode == modeEdit &&
+			m.focus == paneTerminal && m.activeTerm() != nil
+		if msg.Alt && !termFocus && msg.Type != tea.KeyUp && msg.Type != tea.KeyDown &&
 			!(msg.Type == tea.KeyEnter && m.mode == modeReplace) {
 			m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyEscape})
 			msg.Alt = false

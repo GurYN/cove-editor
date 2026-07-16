@@ -16,8 +16,8 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6` jumps between them.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
-- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
-- **Multi-cursor editing, find & replace, undo/redo.**
+- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull/fetch (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
+- **Multi-cursor editing, find & replace, undo/redo** — plus the line-editing staples: toggle comment (`Ctrl+_`), move line up/down (`Alt+Shift+Up`/`Down`), duplicate/delete line, indent/outdent, select all occurrences, and go to line (`Ctrl+L`).
 - **Plays nice with the outside world**: files edited outside Cove reload in place (undoable); a buffer with unsaved changes warns instead. The file tree and git status re-sync whenever the terminal regains focus, so changes from another shell or editor show up on their own.
 - **No terminal traps**: `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
 
@@ -86,17 +86,22 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Ctrl+E`        | Expand selection to syntax node |
 | `Ctrl+D`        | Add next occurrence to selection |
 | `Alt+Up` / `Alt+Down` | Add cursor above / below |
+| `Alt+Shift+Up` / `Alt+Shift+Down` | Move line up / down |
+| `Ctrl+_`        | Toggle line comment           |
+| `Ctrl+L`        | Go to line                    |
 | `F12` / `Shift+F12` | Go to definition / references |
 | `Ctrl+K`        | Hover documentation           |
 | `Ctrl+Space`    | Trigger completion            |
 | `Ctrl+T`        | Go to symbol (outline)        |
 | `F2`            | Rename symbol                 |
 | `F8`            | Problems list                 |
-| `Ctrl+Q`        | Quit                          |
+| `Ctrl+Q`        | Quit (asks for confirmation; warns about unsaved files) |
 
-Every action has a stable ID (shown in the palette footer) and can be rebound in the config file.
+Every action has a stable ID (shown in the palette footer) and can be rebound in the config file. *File: Save All*, *Edit: Duplicate Line*, *Edit: Delete Line*, and more live in the palette without a default binding.
 
 When the terminal panel has focus, every key goes to your shell except `Ctrl+J` (hide panel), `Ctrl+Q` (quit), and `Shift+PgUp`/`PgDn` (scrollback).
+
+> **Shift+Enter in the terminal panel** (Claude Code and other TUI apps): if your terminal is configured to send a newline (`\n`) for `Shift+Enter`, that byte is indistinguishable from `Ctrl+J` — so it toggles the panel instead of reaching your app. Configure it to send `\x1b\r` (ESC + CR) instead, which TUI apps read as the same "insert newline" chord. In Ghostty: `keybind = shift+enter=text:\x1b\r`. The same applies to any terminal with a custom `Shift+Enter` → `\n` mapping (iTerm2, WezTerm, Alacritty, …).
 
 `Ctrl+B` and `Ctrl+G` are tri-state: they open and focus their panel, refocus it if it's open but unfocused, and close it when it already has focus.
 
@@ -114,10 +119,11 @@ Inside the panel (all of this is also in the palette):
 | `b`       | Switch branch (fuzzy picker)               |
 | `a` / `u` | Stage all / unstage all                    |
 | `x`       | Discard the file's changes (with confirm)  |
+| `f`       | Fetch                                      |
 | `r`       | Refresh status                             |
 | `Esc`     | Back to the editor                         |
 
-Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, and *New Branch…* are in the palette.
+Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, fetch, and *New Branch…* are in the palette.
 
 Outside the panel, gutter signs next to the line numbers mark added, modified, and deleted lines as you type. *Git: Toggle Inline Blame* (palette) shows the last commit for the cursor line in the status bar: author, age, and summary; lines you have edited show *uncommitted changes*.
 
@@ -128,6 +134,9 @@ TOML at `~/.config/cove/config.toml` (or point `COVE_CONFIG` elsewhere). Open it
 ```toml
 theme = "cove-dark"   # or "cove-light"
 keymap = "default"    # or "vim" (opt-in)
+
+[editor]
+confirm_quit = true   # false: Ctrl+Q quits without asking
 
 [keys]
 "file.save" = "ctrl+shift+s"   # rebind any action by its ID
