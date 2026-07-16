@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -31,6 +32,7 @@ type doc struct {
 	blameBusy bool
 
 	seen time.Time // last disk mtime the watcher warned about (dirty buffers)
+	warn string    // one-shot load warning, surfaced by openFile
 }
 
 func newDoc(path string, data []byte) *doc {
@@ -40,6 +42,9 @@ func newDoc(path string, data []byte) *doc {
 	}
 	if fi, err := os.Stat(path); err == nil {
 		d.mtime = fi.ModTime()
+	}
+	if !utf8.Valid(data) {
+		d.warn = filepath.Base(path) + ": not valid UTF-8 — display may be lossy"
 	}
 	d.ed = editor.New(buffer.New(data))
 	if h := syntax.New(path, data); h != nil {
@@ -104,16 +109,30 @@ func (d *doc) save() string {
 	if d.virtual {
 		return "read-only view"
 	}
-	if fi, err := os.Stat(d.path); err == nil && !d.mtime.IsZero() && !fi.ModTime().Equal(d.mtime) && !d.confirm {
-		d.confirm = true
-		return "file changed on disk — save again to overwrite"
+	// mtime.IsZero (never-loaded new file) with a successful Stat means the
+	// file appeared on disk since we opened the tab — same confirm flow.
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(d.path); err == nil {
+		mode = fi.Mode()
+		if !fi.ModTime().Equal(d.mtime) && !d.confirm {
+			d.confirm = true
+			return "file changed on disk — save again to overwrite"
+		}
 	}
 	d.confirm = false
 	data := d.ed.Buf.Bytes()
 	if d.crlf {
 		data = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
 	}
-	if err := os.WriteFile(d.path, data, 0o644); err != nil {
+	// Write-then-rename so a mid-write failure (disk full, crash) never
+	// leaves the original truncated.
+	tmp := d.path + ".cove~"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		os.Remove(tmp)
+		return err.Error()
+	}
+	if err := os.Rename(tmp, d.path); err != nil {
+		os.Remove(tmp)
 		return err.Error()
 	}
 	if fi, err := os.Stat(d.path); err == nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +26,7 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # [editor]
 # tab_size = 4
 # line_numbers = true
+# confirm_quit = true        # false: ctrl+q quits without asking
 
 # Rebind any action by its ID. Open the command palette (ctrl+p) and
 # highlight an action: its ID appears in the footer.
@@ -40,6 +42,7 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # [lsp.zig]
 # command = ["zls"]
 # extensions = [".zig"]
+# language_id = "zig"       # LSP languageId sent to the server (defaults to the key)
 `
 
 // newRegistry declares every user action: ID, palette title, default key,
@@ -67,12 +70,33 @@ func newRegistry() *action.Registry {
 	}
 
 	// ---- global ----
-	reg("app.quit", "Quit", "ctrl+q", action.Global, func(m *Model) tea.Cmd {
+	quit := func(m *Model) tea.Cmd {
 		m.lspm.Shutdown()
 		for _, t := range m.terms {
 			t.Close()
 		}
 		return tea.Quit
+	}
+	reg("app.quit", "Quit", "ctrl+q", action.Global, func(m *Model) tea.Cmd {
+		if !m.confirmQuit {
+			return quit(m)
+		}
+		label := "Quit Cove? y/n:"
+		n := 0
+		for _, d := range m.docs {
+			if !d.virtual && d.ed.Dirty {
+				n++
+			}
+		}
+		if n > 0 {
+			label = fmt.Sprintf("Quit Cove? %d file(s) with unsaved changes — y/n:", n)
+		}
+		*m = m.prompt(label, "", func(m *Model, text string) {
+			if strings.EqualFold(text, "y") {
+				m.deferred = quit(m)
+			}
+		})
+		return nil
 	})
 	reg("app.palette", "Command Palette", "ctrl+p", action.Global, func(m *Model) tea.Cmd { *m = m.openPalette(); return nil })
 	hid("app.palette.f1", "f1", action.Global, func(m *Model) tea.Cmd { *m = m.openPalette(); return nil })
@@ -84,6 +108,28 @@ func newRegistry() *action.Registry {
 			if m.gitSnap.Top != "" {
 				m.refreshGit() // keep the panel/branch segment honest
 			}
+		}
+		return nil
+	})
+	reg("file.saveAll", "File: Save All", "", action.Global, func(m *Model) tea.Cmd {
+		n, fail := 0, ""
+		for _, d := range m.docs {
+			if d.virtual || !d.ed.Dirty {
+				continue
+			}
+			if s := d.save(); s != "saved" {
+				fail = filepath.Base(d.path) + ": " + s
+				continue
+			}
+			m.lspm.Save(d.path)
+			n++
+		}
+		m.lastMsg = fmt.Sprintf("saved %d file(s)", n)
+		if fail != "" {
+			m.lastMsg = fail
+		}
+		if n > 0 && m.gitSnap.Top != "" {
+			m.refreshGit()
 		}
 		return nil
 	})
@@ -151,11 +197,14 @@ func newRegistry() *action.Registry {
 	reg("git.commit", "Git: Commit Staged…", "", action.Global, func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
 	reg("git.push", "Git: Push", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("push") })
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
+	reg("git.fetch", "Git: Fetch", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("fetch") })
 	reg("git.branch", "Git: Switch Branch…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
 	reg("git.restore", "Git: Discard File Changes (Restore)", "", action.Global, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
 		m.blameOn = !m.blameOn
+		// No "blame on" message: lastMsg and the blame annotation share the
+		// status-bar slot, so it would mask the annotation it announces.
 		if !m.blameOn {
 			m.lastMsg = "blame off"
 		}
@@ -204,6 +253,7 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 	ghid("git.branch.b", "b", func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
+	ghid("git.fetch.f", "f", func(m *Model) tea.Cmd { return m.gitOp("fetch") })
 	ghid("git.stageAll.a", "a", func(m *Model) tea.Cmd {
 		if a := r.ByID("git.stageAll"); a != nil {
 			return a.Do(m)
@@ -246,6 +296,20 @@ func newRegistry() *action.Registry {
 	reg("edit.selectAll", "Selection: Select All", "ctrl+a", action.Editor, ed(func(e *editor.Model) { e.SelectAll() }))
 	reg("edit.selectNext", "Selection: Add Next Occurrence", "ctrl+d", action.Editor, ed(func(e *editor.Model) { e.SelectNext() }))
 	reg("edit.expand", "Selection: Expand to Syntax Node", "ctrl+e", action.Editor, ed(func(e *editor.Model) { e.ExpandSelection() }))
+	reg("edit.selectAllOccurrences", "Selection: Select All Occurrences", "", action.Editor, ed(func(e *editor.Model) { e.SelectAllOccurrences() }))
+	reg("edit.indent", "Edit: Indent Line", "", action.Editor, ed(func(e *editor.Model) { e.IndentLines(+1) }))
+	reg("edit.outdent", "Edit: Outdent Line", "shift+tab", action.Editor, ed(func(e *editor.Model) { e.IndentLines(-1) }))
+	// ctrl+_ is the byte terminals send for Ctrl+/ — the VSCode comment key.
+	reg("edit.toggleComment", "Edit: Toggle Line Comment", "ctrl+_", action.Editor, func(m *Model) tea.Cmd {
+		if d := m.doc(); d != nil {
+			d.ed.ToggleComment(commentPrefix(d.path))
+		}
+		return nil
+	})
+	reg("edit.duplicateLine", "Edit: Duplicate Line", "", action.Editor, ed(func(e *editor.Model) { e.DuplicateLine() }))
+	reg("edit.deleteLine", "Edit: Delete Line", "", action.Editor, ed(func(e *editor.Model) { e.DeleteLine() }))
+	reg("edit.moveLineUp", "Edit: Move Line Up", "alt+shift+up", action.Editor, ed(func(e *editor.Model) { e.MoveLine(-1) }))
+	reg("edit.moveLineDown", "Edit: Move Line Down", "alt+shift+down", action.Editor, ed(func(e *editor.Model) { e.MoveLine(+1) }))
 	reg("cursor.addAbove", "Cursor: Add Above", "alt+up", action.Editor, ed(func(e *editor.Model) { e.AddCursor(-1) }))
 	reg("cursor.addBelow", "Cursor: Add Below", "alt+down", action.Editor, ed(func(e *editor.Model) { e.AddCursor(+1) }))
 	reg("edit.collapse", "Selection: Collapse to Single Cursor", "esc", action.Editor, ed(func(e *editor.Model) { e.Collapse() }))
@@ -281,6 +345,22 @@ func newRegistry() *action.Registry {
 	}
 	reg("cursor.docStart", "Go to Beginning of File", "ctrl+home", action.Editor, ed(func(e *editor.Model) { e.Go(0, 0) }))
 	reg("cursor.docEnd", "Go to End of File", "ctrl+end", action.Editor, ed(func(e *editor.Model) { e.Go(e.Buf.LineCount()-1, 0) }))
+	reg("cursor.gotoLine", "Go to Line…", "ctrl+l", action.Editor, func(m *Model) tea.Cmd {
+		if m.doc() == nil {
+			return nil
+		}
+		*m = m.prompt("Go to line:", "", func(m *Model, text string) {
+			n, err := strconv.Atoi(strings.TrimSpace(text))
+			if err != nil || n < 1 {
+				return
+			}
+			if d := m.doc(); d != nil {
+				d.ed.Go(n-1, 0)
+				d.ed.Center()
+			}
+		})
+		return nil
+	})
 
 	reg("view.lineNumbers", "View: Toggle Line Numbers", "", action.Global, func(m *Model) tea.Cmd {
 		editor.SetLineNumbers(!editor.LineNumbersEnabled())
@@ -419,6 +499,26 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 	return r
+}
+
+// commentPrefix is the line-comment token for a file, by extension. Empty
+// means no line comments (toggle is a no-op).
+// ponytail: static map; move into the syntax langs registry if it outgrows this.
+func commentPrefix(path string) string {
+	switch filepath.Base(path) {
+	case "Dockerfile", "Makefile":
+		return "#"
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py", ".sh", ".bash", ".zsh", ".rb", ".pl", ".toml", ".yaml", ".yml", ".conf", ".ini", ".mk", ".dockerfile":
+		return "#"
+	case ".lua", ".sql":
+		return "--"
+	case ".html", ".htm", ".css", ".md", ".txt", ".json", "":
+		return ""
+	default:
+		return "//"
+	}
 }
 
 func rel(root, path string) string {

@@ -110,6 +110,11 @@ const historyMax = 2000
 // HistoryLen is the number of scrollback lines (call under Lock).
 func (t *State) HistoryLen() int { return len(t.history) }
 
+// ModeSet reports whether any flag in mask is set (call under Lock).
+// Cove patch: the host needs mode visibility (alt screen, mouse reporting)
+// to route wheel events.
+func (t *State) ModeSet(mask ModeFlag) bool { return t.mode&mask != 0 }
+
 // HistoryCell returns cell x of scrollback row i, 0 = oldest (call under
 // Lock). Rows keep the width they had when scrolled off; out-of-range cells
 // come back as blanks with default colors.

@@ -284,6 +284,7 @@ func TestGitOpStatusMessages(t *testing.T) {
 		{"push", "Everything up-to-date", "already up to date"},
 		{"pull", "Updating abc..def\nFast-forward", "pulled main"},
 		{"pull", "Already up to date.", "already up to date"},
+		{"fetch", "From /tmp/bare\n   abc..def  main -> origin/main", "fetched"},
 	} {
 		mm, _ := m.handleGitOp(gitOpMsg{op: tc.op, out: tc.out})
 		if mm.lastMsg != tc.want {

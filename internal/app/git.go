@@ -453,7 +453,7 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 		low := strings.ToLower(msg.out)
 		switch {
 		case msg.op == "fetch":
-			m.lastMsg = "" // refreshed panel/± counts are the result
+			m.lastMsg = "fetched"
 		case strings.Contains(low, "up to date") || strings.Contains(low, "up-to-date"):
 			m.lastMsg = "already up to date"
 		case strings.Contains(low, "set up to track"):

@@ -149,7 +149,13 @@ func (m *Model) handleKey(k tea.KeyMsg) {
 	case tea.KeyEnter:
 		m.InsertText("\n")
 	case tea.KeyTab:
-		m.InsertText("\t")
+		if m.selSpansLines() {
+			m.IndentLines(+1)
+		} else {
+			m.InsertText("\t")
+		}
+	case tea.KeyShiftTab:
+		m.IndentLines(-1)
 	case tea.KeyBackspace:
 		m.deleteAtCursors(-1)
 	case tea.KeyDelete:
@@ -480,6 +486,8 @@ func (m *Model) deleteAtCursors(dir int) {
 }
 
 // apply runs tx against the buffer, records it, and repositions cursors.
+// A tx with pre-set After keeps those cursors (line ops preserve selections);
+// otherwise one cursor lands at the end of each edit.
 func (m *Model) apply(tx Tx) {
 	if m.ReadOnly { // nothing ever enters hist, so undo/redo stay no-ops too
 		return
@@ -488,18 +496,22 @@ func (m *Model) apply(tx Tx) {
 	tx.at = time.Now()
 	m.applyEdits(tx.Edits)
 
-	// Place one cursor at the end of each edit, in post-tx coordinates.
-	after := make([]Cursor, len(tx.Edits))
-	delta := 0
-	for i, e := range tx.Edits {
-		end := e.Off + delta + len(e.New)
-		_, col := m.Buf.Pos(end)
-		after[i] = Cursor{Anchor: end, Head: end, wantCol: col}
-		delta += len(e.New) - len(e.Old)
+	if tx.After == nil {
+		// Place one cursor at the end of each edit, in post-tx coordinates.
+		after := make([]Cursor, len(tx.Edits))
+		delta := 0
+		for i, e := range tx.Edits {
+			end := e.Off + delta + len(e.New)
+			_, col := m.Buf.Pos(end)
+			after[i] = Cursor{Anchor: end, Head: end, wantCol: col}
+			delta += len(e.New) - len(e.Old)
+		}
+		tx.After = after
+		m.primary = len(tx.After) - 1
+	} else {
+		m.primary = min(m.primary, len(tx.After)-1)
 	}
-	tx.After = after
-	m.cursors = append([]Cursor(nil), after...)
-	m.primary = len(m.cursors) - 1
+	m.cursors = append([]Cursor(nil), tx.After...)
 	m.normalize()
 	m.hist.push(tx)
 	m.Dirty = true
@@ -672,6 +684,237 @@ func (m *Model) addCursorVert(dir int) {
 	m.cursors = append(m.cursors, Cursor{Anchor: off, Head: off, wantCol: src.wantCol})
 	m.primary = len(m.cursors) - 1
 	m.normalize()
+}
+
+// ---- line operations ----
+
+// selSpansLines reports whether any cursor's selection covers more than one
+// line — the Tab-means-indent test.
+func (m *Model) selSpansLines() bool {
+	for _, c := range m.cursors {
+		lo, hi := c.sel()
+		la, _ := m.Buf.Pos(lo)
+		lb, _ := m.Buf.Pos(hi)
+		if lb > la {
+			return true
+		}
+	}
+	return false
+}
+
+// selectedLines returns the sorted set of lines touched by any cursor.
+// A selection ending at column 0 excludes that line (matches VSCode).
+func (m *Model) selectedLines() []int {
+	seen := map[int]bool{}
+	for _, c := range m.cursors {
+		lo, hi := c.sel()
+		a, _ := m.Buf.Pos(lo)
+		b, bc := m.Buf.Pos(hi)
+		if b > a && bc == 0 {
+			b--
+		}
+		for l := a; l <= b; l++ {
+			seen[l] = true
+		}
+	}
+	lines := make([]int, 0, len(seen))
+	for l := range seen {
+		lines = append(lines, l)
+	}
+	sort.Ints(lines)
+	return lines
+}
+
+// remapCursors maps the current cursors through a set of ascending,
+// non-overlapping edits so line ops keep selections instead of collapsing
+// them the way typing does. Call before apply; pass the result as Tx.After.
+func (m *Model) remapCursors(edits []Edit) []Cursor {
+	shift := func(off int) int {
+		d := 0
+		for _, e := range edits {
+			if e.Off > off {
+				break
+			}
+			if off < e.Off+len(e.Old) { // inside an edited range: clamp into it
+				return e.Off + d + min(off-e.Off, len(e.New))
+			}
+			d += len(e.New) - len(e.Old)
+		}
+		return off + d
+	}
+	out := make([]Cursor, len(m.cursors))
+	for i, c := range m.cursors {
+		out[i] = Cursor{Anchor: shift(c.Anchor), Head: shift(c.Head), wantCol: c.wantCol}
+	}
+	return out
+}
+
+// IndentLines shifts every selected line right (dir>0: insert a tab) or
+// left (dir<0: strip one leading tab or up to 4 leading spaces).
+func (m *Model) IndentLines(dir int) {
+	var edits []Edit
+	for _, l := range m.selectedLines() {
+		off := m.Buf.Offset(l, 0)
+		if dir > 0 {
+			if m.Buf.LineLen(l) == 0 {
+				continue // don't indent blank lines
+			}
+			edits = append(edits, Edit{Off: off, New: []byte("\t")})
+			continue
+		}
+		head := m.Buf.Slice(off, off+min(4, m.Buf.LineLen(l)))
+		n := 0
+		if len(head) > 0 && head[0] == '\t' {
+			n = 1
+		} else {
+			for n < len(head) && head[n] == ' ' {
+				n++
+			}
+		}
+		if n > 0 {
+			edits = append(edits, Edit{Off: off, Old: append([]byte(nil), head[:n]...)})
+		}
+	}
+	if len(edits) == 0 {
+		return
+	}
+	m.apply(Tx{Edits: edits, After: m.remapCursors(edits)})
+}
+
+// ToggleComment strips prefix from every selected line if all non-blank
+// lines carry it, otherwise adds it after the leading whitespace.
+func (m *Model) ToggleComment(prefix string) {
+	if prefix == "" {
+		return // language without line comments
+	}
+	p, ins := []byte(prefix), []byte(prefix+" ")
+	lines := m.selectedLines()
+	any, all := false, true
+	for _, l := range lines {
+		off := m.Buf.Offset(l, 0)
+		body := bytes.TrimLeft(m.Buf.Slice(off, off+m.Buf.LineLen(l)), " \t")
+		if len(body) == 0 {
+			continue
+		}
+		any = true
+		if !bytes.HasPrefix(body, p) {
+			all = false
+		}
+	}
+	if !any {
+		return
+	}
+	var edits []Edit
+	for _, l := range lines {
+		off := m.Buf.Offset(l, 0)
+		text := m.Buf.Slice(off, off+m.Buf.LineLen(l))
+		ws := len(text) - len(bytes.TrimLeft(text, " \t"))
+		body := text[ws:]
+		if len(body) == 0 {
+			continue
+		}
+		if all { // uncomment: prefix plus one following space if present
+			n := len(p)
+			if len(body) > n && body[n] == ' ' {
+				n++
+			}
+			edits = append(edits, Edit{Off: off + ws, Old: append([]byte(nil), body[:n]...)})
+		} else if !bytes.HasPrefix(body, p) {
+			edits = append(edits, Edit{Off: off + ws, New: ins})
+		}
+	}
+	if len(edits) == 0 {
+		return
+	}
+	m.apply(Tx{Edits: edits, After: m.remapCursors(edits)})
+}
+
+// DuplicateLine copies each cursor's line below itself.
+func (m *Model) DuplicateLine() {
+	var edits []Edit
+	for _, l := range m.selectedLines() {
+		start := m.Buf.Offset(l, 0)
+		end := start + m.Buf.LineLen(l)
+		text := append([]byte("\n"), m.Buf.Slice(start, end)...)
+		edits = append(edits, Edit{Off: end, New: text})
+	}
+	m.apply(Tx{Edits: edits, After: m.remapCursors(edits)})
+}
+
+// DeleteLine removes each cursor's whole line.
+func (m *Model) DeleteLine() {
+	lines := m.selectedLines()
+	var edits []Edit
+	for i, l := range lines {
+		lo := m.Buf.Offset(l, 0)
+		hi := lo + m.Buf.LineLen(l)
+		if l+1 < m.Buf.LineCount() {
+			hi++ // trailing newline
+		} else if lo > 0 && (i == 0 || lines[i-1] != l-1) {
+			lo-- // last line: eat the preceding newline instead
+		}
+		edits = append(edits, Edit{Off: lo, Old: append([]byte(nil), m.Buf.Slice(lo, hi)...)})
+	}
+	m.apply(Tx{Edits: edits})
+}
+
+// MoveLine swaps the primary cursor's line with its neighbor above/below.
+// ponytail: primary cursor only; multi-cursor move-line when someone misses it.
+func (m *Model) MoveLine(dir int) {
+	line, col := m.Buf.Pos(m.cursors[m.primary].Head)
+	other := line + dir
+	if other < 0 || other >= m.Buf.LineCount() {
+		return
+	}
+	a := min(line, other) // moving always swaps lines a and a+1
+	aStart := m.Buf.Offset(a, 0)
+	bStart := m.Buf.Offset(a+1, 0)
+	bEnd := bStart + m.Buf.LineLen(a+1)
+	aText := append([]byte(nil), m.Buf.Slice(aStart, bStart-1)...)
+	bText := append([]byte(nil), m.Buf.Slice(bStart, bEnd)...)
+	swapped := append(append(append([]byte(nil), bText...), '\n'), aText...)
+	old := append([]byte(nil), m.Buf.Slice(aStart, bEnd)...)
+	var head int
+	if dir < 0 {
+		head = aStart + min(col, len(bText))
+	} else {
+		head = aStart + len(bText) + 1 + min(col, len(aText))
+	}
+	m.apply(Tx{Edits: []Edit{{Off: aStart, Old: old, New: swapped}},
+		After: []Cursor{{Anchor: head, Head: head, wantCol: col}}})
+}
+
+// SelectAllOccurrences selects every match of the primary selection (or of
+// the word under the cursor).
+func (m *Model) SelectAllOccurrences() {
+	p := &m.cursors[m.primary]
+	if !p.hasSel() {
+		lo := m.wordBoundary(m.nextRune(p.Head), -1)
+		hi := m.wordBoundary(lo, +1)
+		if lo == hi {
+			return
+		}
+		p.Anchor, p.Head = lo, hi
+	}
+	lo, hi := p.sel()
+	needle := append([]byte(nil), m.Buf.Slice(lo, hi)...)
+	src := m.Buf.Bytes()
+	var cs []Cursor
+	for i := 0; ; {
+		j := bytes.Index(src[i:], needle)
+		if j < 0 {
+			break
+		}
+		start := i + j
+		cs = append(cs, Cursor{Anchor: start, Head: start + len(needle)})
+		if start == lo {
+			m.primary = len(cs) - 1
+		}
+		i = start + len(needle)
+	}
+	m.cursors = cs
+	m.normalize()
+	m.scrollToCursor()
 }
 
 // ---- clipboard (internal) ----
