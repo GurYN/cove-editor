@@ -891,11 +891,14 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		if t == nil {
 			return m, nil
 		}
+		// Wheel coordinates are panel-relative: content starts one row below
+		// the chips strip, at the editor's left edge.
+		tx, ty := max(0, msg.X-m.editorX()), max(0, msg.Y-m.contentRows()-2)
 		switch {
 		case msg.Button == tea.MouseButtonWheelUp:
-			t.Scroll(+3)
+			t.Wheel(true, tx, ty)
 		case msg.Button == tea.MouseButtonWheelDown:
-			t.Scroll(-3)
+			t.Wheel(false, tx, ty)
 		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 			m.focus = paneTerminal
 			m.compl.active = false

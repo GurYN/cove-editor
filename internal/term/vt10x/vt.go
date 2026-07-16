@@ -53,6 +53,10 @@ type View interface {
 	HistoryLen() int
 	HistoryCell(i, x int) Glyph
 
+	// ModeSet reports whether any flag in mask is set (Cove patch);
+	// call under Lock.
+	ModeSet(mask ModeFlag) bool
+
 	// Lock locks the state object's mutex.
 	Lock()
 

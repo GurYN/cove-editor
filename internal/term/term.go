@@ -4,6 +4,7 @@
 package term
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -40,7 +41,10 @@ func New(dir string, cols, rows int) (*Term, error) {
 	}
 	cmd := exec.Command(shell)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// COLORTERM tells apps the emulator accepts 24-bit color (vt10x parses
+	// 38;2/48;2 and View re-emits it) — without it chalk/ink apps drop to
+	// 256 colors or none.
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		return nil, err
@@ -111,6 +115,51 @@ func (t *Term) Send(k tea.KeyMsg) {
 		t.vt.Unlock()
 		t.ptmx.Write(b)
 	}
+}
+
+// Wheel handles one wheel step at cell (x, y) of the panel. Apps that asked
+// for mouse reporting get a mouse code; alt-screen apps get arrow keys
+// (xterm's alternate-scroll convention — how less/vim/htop scroll in real
+// terminals); otherwise the view moves through Cove's scrollback.
+func (t *Term) Wheel(up bool, x, y int) {
+	t.vt.Lock()
+	seq := wheelSeq(t.vt.ModeSet(vt10x.ModeMouseMask), t.vt.ModeSet(vt10x.ModeMouseSgr),
+		t.vt.ModeSet(vt10x.ModeAltScreen), up, x, y)
+	if seq != nil {
+		t.scroll = 0 // the app owns the viewport; snap to live like typing does
+	}
+	t.vt.Unlock()
+	if seq == nil {
+		if up {
+			t.Scroll(+3)
+		} else {
+			t.Scroll(-3)
+		}
+		return
+	}
+	t.ptmx.Write(seq)
+}
+
+// wheelSeq encodes a wheel step for the child app; nil means the app doesn't
+// handle it (scroll the local view instead).
+func wheelSeq(mouse, sgr, alt, up bool, x, y int) []byte {
+	btn := 64 // wheel-up; 65 = wheel-down
+	if !up {
+		btn = 65
+	}
+	switch {
+	case mouse && sgr:
+		return fmt.Appendf(nil, "\x1b[<%d;%d;%dM", btn, x+1, y+1)
+	case mouse: // legacy X10 encoding: 32+code, coords offset by 33, cap 255
+		return []byte{0x1b, '[', 'M', byte(32 + btn), byte(33 + min(x, 222)), byte(33 + min(y, 222))}
+	case alt:
+		seq := "\x1b[A"
+		if !up {
+			seq = "\x1b[B"
+		}
+		return []byte(strings.Repeat(seq, 3))
+	}
+	return nil
 }
 
 // Scroll moves the view into scrollback: positive = older lines, negative =
@@ -214,8 +263,9 @@ func (t *Term) View(focused bool) string {
 }
 
 // sgr builds the escape sequence for a cell's color and attributes.
-// vt10x colors are indexed (0-255); its Default* sentinels map to the
-// terminal defaults (39/49).
+// vt10x colors are palette indexes (0-255) or packed truecolor RGB
+// (< 1<<24); its Default* sentinels (>= 1<<24) map to the terminal
+// defaults, emitted as nothing after the leading reset.
 func sgr(g vt10x.Glyph) string {
 	parts := []string{"0"}
 	if g.Mode&attrReverse != 0 {
@@ -227,11 +277,24 @@ func sgr(g vt10x.Glyph) string {
 	if g.Mode&attrBold != 0 {
 		parts = append(parts, "1")
 	}
-	if g.FG < 256 {
-		parts = append(parts, "38;5;"+strconv.Itoa(int(g.FG)))
+	if p := colorPart("38", g.FG); p != "" {
+		parts = append(parts, p)
 	}
-	if g.BG < 256 {
-		parts = append(parts, "48;5;"+strconv.Itoa(int(g.BG)))
+	if p := colorPart("48", g.BG); p != "" {
+		parts = append(parts, p)
 	}
 	return "\x1b[" + strings.Join(parts, ";") + "m"
+}
+
+// colorPart encodes one vt10x color as an SGR fragment.
+// ponytail: truecolor goes to the host as-is; termenv-profile downgrade for
+// 256-color-only hosts if anyone ever runs Cove on one.
+func colorPart(base string, c vt10x.Color) string {
+	switch {
+	case c < 256:
+		return base + ";5;" + strconv.Itoa(int(c))
+	case c < 1<<24:
+		return fmt.Sprintf("%s;2;%d;%d;%d", base, c>>16&0xff, c>>8&0xff, c&0xff)
+	}
+	return "" // DefaultFG/DefaultBG
 }

@@ -101,3 +101,56 @@ func TestScrollback(t *testing.T) {
 		t.Fatal("scroll back down should return to the live screen")
 	}
 }
+
+// Wheel routing: mouse-reporting apps get mouse codes, alt-screen apps get
+// arrow keys (alternate scroll), plain shells scroll the local view.
+func TestWheelSeq(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		mouse, sgr, alt  bool
+		up               bool
+		want             string
+	}{
+		{"plain shell -> local scroll", false, false, false, true, ""},
+		{"alt screen up -> arrows", false, false, true, true, "\x1b[A\x1b[A\x1b[A"},
+		{"alt screen down -> arrows", false, false, true, false, "\x1b[B\x1b[B\x1b[B"},
+		{"sgr mouse up", true, true, false, true, "\x1b[<64;5;3M"},
+		{"sgr mouse down", true, true, true, false, "\x1b[<65;5;3M"}, // mouse wins over alt
+		{"x10 mouse up", true, false, false, true, "\x1b[M\x60\x25\x23"},
+	} {
+		got := string(wheelSeq(tc.mouse, tc.sgr, tc.alt, tc.up, 4, 2))
+		if got != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The emulator must expose the modes wheel routing depends on.
+func TestModeTracking(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(20, 5))
+	if vt.ModeSet(vt10x.ModeAltScreen) || vt.ModeSet(vt10x.ModeMouseMask) {
+		t.Fatal("modes set on a fresh terminal")
+	}
+	vt.Write([]byte("\x1b[?1049h\x1b[?1002h\x1b[?1006h")) // alt screen + mouse + SGR
+	if !vt.ModeSet(vt10x.ModeAltScreen) || !vt.ModeSet(vt10x.ModeMouseMask) || !vt.ModeSet(vt10x.ModeMouseSgr) {
+		t.Fatal("modes not tracked after DECSET")
+	}
+	vt.Write([]byte("\x1b[?1049l\x1b[?1002l\x1b[?1006l"))
+	if vt.ModeSet(vt10x.ModeAltScreen) || vt.ModeSet(vt10x.ModeMouseMask) || vt.ModeSet(vt10x.ModeMouseSgr) {
+		t.Fatal("modes stuck after DECRST")
+	}
+}
+
+// Truecolor (38;2/48;2) output must survive the emulator round-trip into the
+// rendered view — full-color TUIs (Claude Code) were showing colorless.
+func TestTruecolorRendering(t *testing.T) {
+	tm := &Term{vt: vt10x.New(vt10x.WithSize(10, 2))}
+	tm.vt.Write([]byte("\x1b[38;2;255;100;0mX\x1b[48;5;27mY"))
+	v := tm.View(false)
+	if !strings.Contains(v, "38;2;255;100;0") {
+		t.Fatalf("truecolor fg dropped:\n%q", v)
+	}
+	if !strings.Contains(v, "48;5;27") {
+		t.Fatalf("indexed bg dropped:\n%q", v)
+	}
+}
