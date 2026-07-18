@@ -229,6 +229,19 @@ func Show(top, path string) ([]byte, error) {
 
 func Commit(top, msg string) (string, error) { return run(top, "commit", "-m", msg) }
 
+// UndoCommit un-commits HEAD (reset --soft HEAD~1): the commit's changes
+// return to the index, the working tree is untouched. Fails on the initial
+// commit (no parent to reset to).
+func UndoCommit(top string) error {
+	_, err := run(top, "reset", "--soft", "HEAD~1")
+	return err
+}
+
+// HeadSummary returns "abc1234 subject" for HEAD; errors before the first commit.
+func HeadSummary(top string) (string, error) {
+	return run(top, "log", "-1", "--format=%h %s")
+}
+
 // Push pushes the current branch; a branch with no upstream is published
 // (push -u origin HEAD) instead of failing.
 func Push(top string) (string, error) {

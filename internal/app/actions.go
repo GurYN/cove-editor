@@ -196,6 +196,7 @@ func newRegistry() *action.Registry {
 		return m.gitOp("fetch")
 	})
 	reg("git.commit", "Git: Commit Staged…", "", action.Global, func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
+	reg("git.undoCommit", "Git: Undo Last Commit (Keep Changes Staged)", "", action.Global, func(m *Model) tea.Cmd { m.gitUndoCommitPrompt(); return nil })
 	reg("git.push", "Git: Push", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("push") })
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
 	reg("git.fetch", "Git: Fetch", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("fetch") })
@@ -247,6 +248,7 @@ func newRegistry() *action.Registry {
 	})
 	ghid("git.restore.x", "x", func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	ghid("git.commit.c", "c", func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
+	ghid("git.undoCommit.z", "z", func(m *Model) tea.Cmd { m.gitUndoCommitPrompt(); return nil })
 	ghid("git.refresh.r", "r", func(m *Model) tea.Cmd {
 		if a := r.ByID("git.refresh"); a != nil {
 			return a.Do(m)

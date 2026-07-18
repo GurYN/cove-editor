@@ -365,6 +365,30 @@ func (m *Model) gitCommitPrompt() {
 	})
 }
 
+// gitUndoCommitPrompt un-commits HEAD (soft reset) after a y/n confirm —
+// the "committed on the wrong branch" escape hatch: undo, switch, recommit.
+func (m *Model) gitUndoCommitPrompt() {
+	if !m.gitRepo() {
+		return
+	}
+	head, err := git.HeadSummary(m.gitSnap.Top)
+	if err != nil {
+		m.lastMsg = "nothing to undo — no commits yet"
+		return
+	}
+	*m = m.prompt(fmt.Sprintf("Undo commit %q? Changes stay staged — y/n:", head), "", func(m *Model, text string) {
+		if !strings.EqualFold(text, "y") {
+			return
+		}
+		if err := git.UndoCommit(m.gitSnap.Top); err != nil {
+			m.lastMsg = err.Error()
+		} else {
+			m.lastMsg = "commit undone — changes are staged"
+		}
+		m.refreshGit()
+	})
+}
+
 func (m *Model) gitBranchPrompt() {
 	if !m.gitRepo() {
 		return

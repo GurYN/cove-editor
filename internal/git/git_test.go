@@ -210,3 +210,41 @@ func TestPushPublishesNewBranch(t *testing.T) {
 		t.Fatalf("second push failed: %v", err)
 	}
 }
+
+func TestUndoCommit(t *testing.T) {
+	top := initRepo(t)
+	os.WriteFile(filepath.Join(top, "b.txt"), []byte("two\n"), 0o644)
+	if err := StageAll(top); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Commit(top, "wrong branch"); err != nil {
+		t.Fatal(err)
+	}
+	if sum, err := HeadSummary(top); err != nil || !strings.Contains(sum, "wrong branch") {
+		t.Fatalf("HeadSummary = %q (%v), want subject 'wrong branch'", sum, err)
+	}
+	if err := UndoCommit(top); err != nil {
+		t.Fatal(err)
+	}
+	// Back to the initial commit, with b.txt staged again.
+	if sum, _ := HeadSummary(top); !strings.Contains(sum, "init") {
+		t.Fatalf("HEAD = %q, want the initial commit", sum)
+	}
+	snap, err := Status(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := false
+	for _, f := range snap.Files {
+		if f.Path == "b.txt" && f.Staged() {
+			staged = true
+		}
+	}
+	if !staged {
+		t.Fatal("b.txt not staged after undo — soft reset should keep the index")
+	}
+	// Initial commit has no parent: must error, not wipe anything.
+	if err := UndoCommit(top); err == nil {
+		t.Fatal("UndoCommit on the initial commit should fail")
+	}
+}
