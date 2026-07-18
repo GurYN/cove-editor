@@ -3,6 +3,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -879,6 +880,12 @@ func setPointer(shape string) {
 	os.Stdout.WriteString("\x1b]22;" + shape + "\x1b\\")
 }
 
+// copyOSC52 puts text on the system clipboard via OSC 52; terminals without
+// support ignore the sequence.
+func copyOSC52(s string) {
+	os.Stdout.WriteString("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\")
+}
+
 func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	// Buttonless motion = hover: only used to swap the pointer shape over
 	// the two dividers. Must never reach the drag paths below.
@@ -969,6 +976,13 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			m.focus = paneTerminal
 			m.compl.active = false
 			m.hoverText = ""
+			t.Press(tx, ty)
+		case msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft:
+			t.Drag(tx, ty)
+		case msg.Action == tea.MouseActionRelease:
+			if s := t.Release(tx, ty); s != "" {
+				copyOSC52(s)
+			}
 		}
 	case panePanelDivider:
 		// A press on an instance chip or the "+" button is a click, not a

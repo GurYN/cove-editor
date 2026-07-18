@@ -31,6 +31,13 @@ type Term struct {
 	notify chan struct{} // coalesced "output arrived"; closed when the shell exits
 	closed sync.Once
 	scroll int // rows scrolled back into history; 0 = live screen
+
+	// Mouse selection anchors in absolute rows (0 = oldest history line),
+	// so the highlight stays put while output or scrolling moves the view.
+	// ponytail: anchors drift if history gets trimmed mid-selection;
+	// cosmetic, re-select.
+	selA, selB [2]int // {x, absolute y}
+	selOn      bool
 }
 
 // New starts $SHELL (fallback /bin/sh) in dir on a cols×rows PTY.
@@ -162,6 +169,135 @@ func wheelSeq(mouse, sgr, alt, up bool, x, y int) []byte {
 	return nil
 }
 
+// ---- mouse selection ----
+//
+// Same convention as Wheel: an app that asked for mouse reporting owns the
+// mouse (press/drag/release are forwarded); otherwise the panel does
+// terminal-style text selection, copied by the app on release.
+
+// absY converts a panel-relative row to an absolute row. Lock held.
+func (t *Term) absY(y int) int { return t.vt.HistoryLen() - t.scroll + y }
+
+// Press handles a left press at panel cell (x, y).
+func (t *Term) Press(x, y int) {
+	t.vt.Lock()
+	t.selOn = false
+	if t.vt.ModeSet(vt10x.ModeMouseMask) {
+		sgr := t.vt.ModeSet(vt10x.ModeMouseSgr)
+		t.vt.Unlock()
+		t.ptmx.Write(mouseSeq(sgr, 0, x, y, false))
+		return
+	}
+	t.selA = [2]int{x, t.absY(y)}
+	t.selB = t.selA
+	t.selOn = true
+	t.vt.Unlock()
+}
+
+// Drag extends the selection while the left button is held.
+func (t *Term) Drag(x, y int) {
+	t.vt.Lock()
+	if t.vt.ModeSet(vt10x.ModeMouseMotion | vt10x.ModeMouseMany) {
+		sgr := t.vt.ModeSet(vt10x.ModeMouseSgr)
+		t.vt.Unlock()
+		t.ptmx.Write(mouseSeq(sgr, 32, x, y, false)) // 32 = motion with left held
+		return
+	}
+	if t.selOn {
+		t.selB = [2]int{x, t.absY(y)}
+	}
+	t.vt.Unlock()
+}
+
+// Release ends the drag and returns the selected text; "" means a plain
+// click (or the child app owns the mouse). The highlight stays until the
+// next press.
+func (t *Term) Release(x, y int) string {
+	t.vt.Lock()
+	if t.vt.ModeSet(vt10x.ModeMouseButton | vt10x.ModeMouseMotion | vt10x.ModeMouseMany) {
+		sgr := t.vt.ModeSet(vt10x.ModeMouseSgr)
+		t.vt.Unlock()
+		t.ptmx.Write(mouseSeq(sgr, 0, x, y, true))
+		return ""
+	}
+	if t.selOn {
+		t.selB = [2]int{x, t.absY(y)}
+	}
+	s := t.selText()
+	if s == "" {
+		t.selOn = false
+	}
+	t.vt.Unlock()
+	return s
+}
+
+// mouseSeq encodes a button event; btn is the xterm code (0 = left,
+// 32 = motion). Legacy X10 has no per-button release: code 3.
+func mouseSeq(sgr bool, btn, x, y int, release bool) []byte {
+	if sgr {
+		c := byte('M')
+		if release {
+			c = 'm'
+		}
+		return fmt.Appendf(nil, "\x1b[<%d;%d;%d%c", btn, x+1, y+1, c)
+	}
+	if release {
+		btn = 3
+	}
+	return []byte{0x1b, '[', 'M', byte(32 + btn), byte(33 + min(x, 222)), byte(33 + min(y, 222))}
+}
+
+// selOrder returns the selection endpoints in reading order. Lock held.
+func (t *Term) selOrder() (a, b [2]int) {
+	a, b = t.selA, t.selB
+	if a[1] > b[1] || (a[1] == b[1] && a[0] > b[0]) {
+		a, b = b, a
+	}
+	return a, b
+}
+
+// inSel reports whether cell (x, absY) falls in the a..b span (inclusive,
+// linear reading order — not rectangular).
+func inSel(x, y int, a, b [2]int) bool {
+	if y < a[1] || y > b[1] {
+		return false
+	}
+	return (y > a[1] || x >= a[0]) && (y < b[1] || x <= b[0])
+}
+
+// selText extracts the selected cells, trailing blanks trimmed per line.
+// Lock held.
+func (t *Term) selText() string {
+	if !t.selOn || t.selA == t.selB {
+		return ""
+	}
+	a, b := t.selOrder()
+	cols, rows := t.vt.Size()
+	hist := t.vt.HistoryLen()
+	var lines []string
+	for y := max(0, a[1]); y <= min(b[1], hist+rows-1); y++ {
+		var sb strings.Builder
+		for x := range cols {
+			if !inSel(x, y, a, b) {
+				continue
+			}
+			var g vt10x.Glyph
+			if y < hist {
+				g = t.vt.HistoryCell(y, x)
+			} else {
+				g = t.vt.Cell(x, y-hist)
+			}
+			if g.Char == 0 {
+				sb.WriteRune(' ')
+			} else {
+				sb.WriteRune(g.Char)
+			}
+		}
+		lines = append(lines, strings.TrimRight(sb.String(), " "))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // Scroll moves the view into scrollback: positive = older lines, negative =
 // toward the live screen. Clamped to available history.
 func (t *Term) Scroll(delta int) {
@@ -238,6 +374,8 @@ func (t *Term) View(focused bool) string {
 	scroll := min(t.scroll, hist) // history may have been trimmed
 	cur := t.vt.Cursor()
 	showCur := focused && t.vt.CursorVisible() && scroll == 0
+	selOn := t.selOn && t.selA != t.selB
+	selA, selB := t.selOrder()
 	var sb strings.Builder
 	for y := range rows {
 		last := ""
@@ -251,6 +389,9 @@ func (t *Term) View(focused bool) string {
 				if showCur && x == cur.X && hy-hist == cur.Y {
 					g.Mode ^= attrReverse
 				}
+			}
+			if selOn && inSel(x, hist-scroll+y, selA, selB) {
+				g.Mode ^= attrReverse
 			}
 			if s := sgr(g); s != last {
 				sb.WriteString(s)
