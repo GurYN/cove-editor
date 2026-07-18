@@ -248,3 +248,54 @@ func TestUndoCommit(t *testing.T) {
 		t.Fatal("UndoCommit on the initial commit should fail")
 	}
 }
+
+func TestLogAndShowCommit(t *testing.T) {
+	top := initRepo(t)
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("one\ntwo\n"), 0o644)
+	if _, err := run(top, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(top, "commit", "-q", "-m", "second"); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := Log(top, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 || cs[0].Subject != "second" || cs[1].Subject != "init" {
+		t.Fatalf("log = %+v", cs)
+	}
+	if cs[0].SHA == "" || cs[0].Author != "t" || cs[0].Time == 0 {
+		t.Fatalf("entry = %+v", cs[0])
+	}
+
+	out, err := ShowCommit(top, cs[0].SHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "second") || !strings.Contains(out, "+two") {
+		t.Fatalf("show = %q", out)
+	}
+
+	// no commits yet: empty, not an error
+	empty := t.TempDir()
+	if _, err := run(empty, "init", "-q"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err = Log(empty, 10)
+	if err != nil || cs != nil {
+		t.Fatalf("empty repo: %v %+v", cs, err)
+	}
+}
+
+func TestLogGraph(t *testing.T) {
+	top := initRepo(t)
+	out, err := LogGraph(top, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "* ") || !strings.Contains(out, "init") {
+		t.Fatalf("graph = %q", out)
+	}
+}

@@ -200,6 +200,8 @@ func newRegistry() *action.Registry {
 	reg("git.push", "Git: Push", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("push") })
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
 	reg("git.fetch", "Git: Fetch", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("fetch") })
+	reg("git.log", "Git: History…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openHistoryPicker(); return nil })
+	reg("git.graph", "Git: Commit Graph", "", action.Global, func(m *Model) tea.Cmd { m.gitOpenGraph(); return nil })
 	reg("git.branch", "Git: Switch Branch…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
 	reg("git.restore", "Git: Discard File Changes (Restore)", "", action.Global, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
@@ -256,6 +258,8 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 	ghid("git.branch.b", "b", func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
+	ghid("git.log.l", "l", func(m *Model) tea.Cmd { *m = m.openHistoryPicker(); return nil })
+	ghid("git.graph.g", "g", func(m *Model) tea.Cmd { m.gitOpenGraph(); return nil })
 	ghid("git.fetch.f", "f", func(m *Model) tea.Cmd { return m.gitOp("fetch") })
 	ghid("git.stageAll.a", "a", func(m *Model) tea.Cmd {
 		if a := r.ByID("git.stageAll"); a != nil {

@@ -237,6 +237,45 @@ func UndoCommit(top string) error {
 	return err
 }
 
+// LogEntry is one `git log` commit line.
+type LogEntry struct {
+	SHA     string // short hash
+	Author  string
+	Time    int64 // author-time, unix seconds
+	Subject string
+}
+
+// Log returns the most recent commits, newest first, capped at n.
+// Empty (not an error) before the first commit.
+func Log(top string, n int) ([]LogEntry, error) {
+	out, err := run(top, "log", "-n", strconv.Itoa(n), "--format=%h%x1f%an%x1f%at%x1f%s")
+	if err != nil {
+		if _, headErr := run(top, "rev-parse", "HEAD"); headErr != nil {
+			return nil, nil // no commits yet
+		}
+		return nil, err
+	}
+	var cs []LogEntry
+	for ln := range strings.SplitSeq(out, "\n") {
+		if f := strings.SplitN(ln, "\x1f", 4); len(f) == 4 {
+			t, _ := strconv.ParseInt(f[2], 10, 64)
+			cs = append(cs, LogEntry{SHA: f[0], Author: f[1], Time: t, Subject: f[3]})
+		}
+	}
+	return cs, nil
+}
+
+// LogGraph returns git's own ASCII commit graph across all branches,
+// newest first, capped at n commits.
+func LogGraph(top string, n int) (string, error) {
+	return run(top, "log", "--graph", "--oneline", "--decorate", "--all", "-n", strconv.Itoa(n))
+}
+
+// ShowCommit returns a commit's message, stat, and full diff (`git show`).
+func ShowCommit(top, sha string) (string, error) {
+	return run(top, "show", "--stat", "--patch", sha)
+}
+
 // HeadSummary returns "abc1234 subject" for HEAD; errors before the first commit.
 func HeadSummary(top string) (string, error) {
 	return run(top, "log", "-1", "--format=%h %s")

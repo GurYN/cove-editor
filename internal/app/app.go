@@ -84,6 +84,7 @@ const (
 	overlayRefs
 	overlayDiags
 	overlayBranches
+	overlayHistory
 )
 
 // problemRef is one row of the Problems list: where Enter should land.
@@ -116,6 +117,7 @@ type Model struct {
 	ovRefs     []lsp.Location  // references payload
 	ovDiags    []problemRef    // problems payload
 	ovBranches []string        // branch picker payload
+	ovCommits  []git.LogEntry  // history picker payload
 	aboutOpen  bool            // about box: any key or click closes
 
 	lspm          *lsp.Manager
@@ -473,6 +475,12 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 	if m.focus == paneEditor {
 		if d := m.doc(); d != nil {
+			// Enter on a Git Graph line drills into that commit's diff.
+			if msg.Type == tea.KeyEnter && d.virtual && d.path == gitGraphTitle {
+				m.gitOpenCommitAtCursor(d)
+				m.layout()
+				return m, nil
+			}
 			var cmd tea.Cmd
 			d.ed, cmd = d.ed.Update(msg)
 			// Auto-trigger completion after a member access dot.
@@ -560,6 +568,14 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files
+	case overlayHistory:
+		c := m.ovCommits[chosen]
+		text, err := git.ShowCommit(m.gitSnap.Top, c.SHA)
+		if err != nil {
+			m.lastMsg = err.Error()
+			return m, nil
+		}
+		m.openVirtual(c.SHA+" (commit)", text)
 	case overlayDiags:
 		ref := m.ovDiags[chosen]
 		m.openFile(ref.path)
