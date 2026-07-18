@@ -112,6 +112,10 @@ func TestEscCtrlQQuits(t *testing.T) {
 func TestPaletteListsAndRuns(t *testing.T) {
 	m := setup(t)
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	// Sorted list shows A… first; search for the save row.
+	for _, r := range "save" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
 	frame := m.View()
 	for _, want := range []string{"Command:", "File: Save", "ctrl+s"} {
 		if !strings.Contains(frame, want) {
@@ -119,6 +123,8 @@ func TestPaletteListsAndRuns(t *testing.T) {
 		}
 	}
 	// Fuzzy-run "Sidebar: Toggle" -> sidebar reopens.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
 	for _, r := range "sidebtog" {
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
