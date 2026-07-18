@@ -11,13 +11,19 @@ import (
 )
 
 // version is stamped by the release build via -ldflags "-X main.version=…".
-var version = "dev"
+// date is optional (-X main.date=…): needed only for builds without a git
+// checkout (Homebrew source tarball); git builds derive it from vcs.time.
+var (
+	version = "dev"
+	date    = ""
+)
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Println("cove", version)
 		return
 	}
+	app.Version, app.Date = version, date
 	// Skip the OSC background-color query: it hangs on PTYs that never
 	// answer (CI, expect, some SSH hops), and nothing we render depends
 	// on light/dark yet.

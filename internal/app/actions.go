@@ -98,6 +98,7 @@ func newRegistry() *action.Registry {
 		})
 		return nil
 	})
+	reg("app.about", "About Cove", "", action.Global, func(m *Model) tea.Cmd { m.aboutOpen = true; return nil })
 	reg("app.palette", "Command Palette", "ctrl+p", action.Global, func(m *Model) tea.Cmd { *m = m.openPalette(); return nil })
 	hid("app.palette.f1", "f1", action.Global, func(m *Model) tea.Cmd { *m = m.openPalette(); return nil })
 	reg("file.open", "Go to File…", "ctrl+o", action.Global, func(m *Model) tea.Cmd { *m = m.openFinder(); return nil })

@@ -116,6 +116,7 @@ type Model struct {
 	ovRefs     []lsp.Location  // references payload
 	ovDiags    []problemRef    // problems payload
 	ovBranches []string        // branch picker payload
+	aboutOpen  bool            // about box: any key or click closes
 
 	lspm          *lsp.Manager
 	lspStatus     map[string]string
@@ -396,6 +397,10 @@ func (m *Model) layout() {
 }
 
 func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.aboutOpen {
+		m.aboutOpen = false
+		return m, nil
+	}
 	if m.ovKind != overlayNone {
 		return m.updateOverlay(msg)
 	}
@@ -840,9 +845,10 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.ovKind != overlayNone { // overlays are keyboard-driven; click closes
+	if m.ovKind != overlayNone || m.aboutOpen { // overlays are keyboard-driven; click closes
 		if msg.Action == tea.MouseActionPress {
 			m.ovKind = overlayNone
+			m.aboutOpen = false
 		}
 		return m, nil
 	}
@@ -1107,7 +1113,10 @@ func (m Model) View() string {
 		side += "\n" + m.sideSwitcher() + "\n" + strings.Repeat(" ", m.side.Width)
 		middle = lipgloss.JoinHorizontal(lipgloss.Top, side, border, middle)
 	}
-	if m.ovKind != overlayNone {
+	if m.aboutOpen {
+		box := m.aboutView()
+		middle = m.composite(middle, box, max(1, (m.height-2-lipgloss.Height(box))/2), -1)
+	} else if m.ovKind != overlayNone {
 		middle = m.composite(middle, m.ov.View(), 1, -1)
 	} else if d := m.doc(); d != nil && m.focus == paneEditor {
 		cx, cy := d.ed.CursorScreen()
