@@ -210,3 +210,92 @@ func TestPushPublishesNewBranch(t *testing.T) {
 		t.Fatalf("second push failed: %v", err)
 	}
 }
+
+func TestUndoCommit(t *testing.T) {
+	top := initRepo(t)
+	os.WriteFile(filepath.Join(top, "b.txt"), []byte("two\n"), 0o644)
+	if err := StageAll(top); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Commit(top, "wrong branch"); err != nil {
+		t.Fatal(err)
+	}
+	if sum, err := HeadSummary(top); err != nil || !strings.Contains(sum, "wrong branch") {
+		t.Fatalf("HeadSummary = %q (%v), want subject 'wrong branch'", sum, err)
+	}
+	if err := UndoCommit(top); err != nil {
+		t.Fatal(err)
+	}
+	// Back to the initial commit, with b.txt staged again.
+	if sum, _ := HeadSummary(top); !strings.Contains(sum, "init") {
+		t.Fatalf("HEAD = %q, want the initial commit", sum)
+	}
+	snap, err := Status(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := false
+	for _, f := range snap.Files {
+		if f.Path == "b.txt" && f.Staged() {
+			staged = true
+		}
+	}
+	if !staged {
+		t.Fatal("b.txt not staged after undo — soft reset should keep the index")
+	}
+	// Initial commit has no parent: must error, not wipe anything.
+	if err := UndoCommit(top); err == nil {
+		t.Fatal("UndoCommit on the initial commit should fail")
+	}
+}
+
+func TestLogAndShowCommit(t *testing.T) {
+	top := initRepo(t)
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("one\ntwo\n"), 0o644)
+	if _, err := run(top, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(top, "commit", "-q", "-m", "second"); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := Log(top, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 || cs[0].Subject != "second" || cs[1].Subject != "init" {
+		t.Fatalf("log = %+v", cs)
+	}
+	if cs[0].SHA == "" || cs[0].Author != "t" || cs[0].Time == 0 {
+		t.Fatalf("entry = %+v", cs[0])
+	}
+
+	out, err := ShowCommit(top, cs[0].SHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "second") || !strings.Contains(out, "+two") {
+		t.Fatalf("show = %q", out)
+	}
+
+	// no commits yet: empty, not an error
+	empty := t.TempDir()
+	if _, err := run(empty, "init", "-q"); err != nil {
+		t.Fatal(err)
+	}
+	cs, err = Log(empty, 10)
+	if err != nil || cs != nil {
+		t.Fatalf("empty repo: %v %+v", cs, err)
+	}
+}
+
+func TestLogGraph(t *testing.T) {
+	top := initRepo(t)
+	out, err := LogGraph(top, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "* ") || !strings.Contains(out, "init") {
+		t.Fatalf("graph = %q", out)
+	}
+}

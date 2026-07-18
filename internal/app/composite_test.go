@@ -19,6 +19,10 @@ func TestOverlayFloatsOverBase(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	m := setup(t) // sidebar closed, width 100
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	// Sorted list shows A… first; search so "File: Save" is on screen.
+	for _, r := range "save" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
 	frame := m.View()
 
 	lines := strings.Split(frame, "\n")

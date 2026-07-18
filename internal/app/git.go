@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -315,9 +316,13 @@ func (m *Model) gitOpenDiff(r gitRow) {
 // openVirtual shows text in a read-only, diff-highlighted tab; reopening the
 // same title replaces the content.
 func (m *Model) openVirtual(title, text string) {
+	m.openVirtualSyn(title, text, diffSyntax{})
+}
+
+func (m *Model) openVirtualSyn(title, text string, syn editor.Syntax) {
 	ed := editor.New(buffer.New([]byte(text)))
 	ed.ReadOnly = true
-	ed.Syntax = diffSyntax{}
+	ed.Syntax = syn
 	for i, d := range m.docs {
 		if d.virtual && d.path == title {
 			d.ed = ed
@@ -360,6 +365,30 @@ func (m *Model) gitCommitPrompt() {
 			m.lastMsg = err.Error()
 		} else {
 			m.lastMsg = firstLine(out)
+		}
+		m.refreshGit()
+	})
+}
+
+// gitUndoCommitPrompt un-commits HEAD (soft reset) after a y/n confirm —
+// the "committed on the wrong branch" escape hatch: undo, switch, recommit.
+func (m *Model) gitUndoCommitPrompt() {
+	if !m.gitRepo() {
+		return
+	}
+	head, err := git.HeadSummary(m.gitSnap.Top)
+	if err != nil {
+		m.lastMsg = "nothing to undo — no commits yet"
+		return
+	}
+	*m = m.prompt(fmt.Sprintf("Undo commit %q? Changes stay staged — y/n:", head), "", func(m *Model, text string) {
+		if !strings.EqualFold(text, "y") {
+			return
+		}
+		if err := git.UndoCommit(m.gitSnap.Top); err != nil {
+			m.lastMsg = err.Error()
+		} else {
+			m.lastMsg = "commit undone — changes are staged"
 		}
 		m.refreshGit()
 	})
@@ -409,6 +438,76 @@ func (m Model) openBranchPicker() Model {
 	}
 	m.ov = overlay.New("Branch:", items, m.width)
 	return m
+}
+
+// openHistoryPicker lists recent commits in the fuzzy overlay; Enter opens
+// the commit's full diff in a read-only tab.
+// ponytail: last 200 commits, one sync exec (~10ms); paging if anyone asks.
+func (m Model) openHistoryPicker() Model {
+	if !m.gitRepo() {
+		return m
+	}
+	commits, err := git.Log(m.gitSnap.Top, 200)
+	if err != nil {
+		m.lastMsg = err.Error()
+		return m
+	}
+	if len(commits) == 0 {
+		m.lastMsg = "no commits yet"
+		return m
+	}
+	m.ovKind = overlayHistory
+	m.ovCommits = commits
+	items := make([]overlay.Item, len(commits))
+	for i, c := range commits {
+		items[i] = overlay.Item{
+			Label:  c.SHA + " " + c.Subject,
+			Detail: c.Author + ", " + age(c.Time),
+		}
+	}
+	m.ov = overlay.New("Commit:", items, m.width)
+	return m
+}
+
+// ---- commit graph (git draws it; we just show the text) ----
+
+const gitGraphTitle = "Git Graph"
+
+// gitOpenGraph shows `git log --graph --all` in a read-only tab. Enter on a
+// line opens that commit's diff (see the dispatchKey hook).
+func (m *Model) gitOpenGraph() {
+	if !m.gitRepo() {
+		return
+	}
+	text, err := git.LogGraph(m.gitSnap.Top, 500)
+	if err != nil {
+		m.lastMsg = err.Error()
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		m.lastMsg = "no commits yet"
+		return
+	}
+	m.openVirtualSyn(gitGraphTitle, text, logSyntax{})
+	m.lastMsg = "enter: open commit"
+}
+
+var shaRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+
+// gitOpenCommitAtCursor opens the commit named on the graph line under the
+// cursor. Graph-only lines ("|/", "| *") have no sha and are ignored.
+func (m *Model) gitOpenCommitAtCursor(d *doc) {
+	line, _ := d.ed.Cursor()
+	sha := shaRe.FindString(string(d.ed.Buf.Line(line)))
+	if sha == "" {
+		return
+	}
+	text, err := git.ShowCommit(m.gitSnap.Top, sha)
+	if err != nil {
+		m.lastMsg = err.Error()
+		return
+	}
+	m.openVirtual(sha+" (commit)", text)
 }
 
 // ---- push / pull (async: exec runs in the tea.Cmd goroutine) ----
@@ -682,6 +781,37 @@ func gitPad(s string, w int) string {
 		return string(r[:w])
 	}
 	return s + strings.Repeat(" ", w-len(r))
+}
+
+// ---- log-graph highlighting: sha and (refs) per line ----
+
+type logSyntax struct{}
+
+func (logSyntax) Edit(int, int, int, [2]int, [2]int, [2]int)    {}
+func (logSyntax) Expand([]byte, int, int) (lo, hi int, ok bool) { return 0, 0, false }
+
+var logDecoRe = regexp.MustCompile(`\([^)]*\)`)
+
+func (logSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
+	var spans []editor.HLSpan
+	lo := bytes.LastIndexByte(src[:min(startOff, len(src))], '\n') + 1
+	for lo < endOff && lo < len(src) {
+		hi := bytes.IndexByte(src[lo:], '\n')
+		if hi < 0 {
+			hi = len(src)
+		} else {
+			hi += lo + 1
+		}
+		line := src[lo:hi]
+		if m := shaRe.FindIndex(line); m != nil {
+			spans = append(spans, editor.HLSpan{Start: lo + m[0], End: lo + m[1], Class: editor.ClassFunction})
+		}
+		if m := logDecoRe.FindIndex(line); m != nil {
+			spans = append(spans, editor.HLSpan{Start: lo + m[0], End: lo + m[1], Class: editor.ClassKeyword})
+		}
+		lo = hi
+	}
+	return spans
 }
 
 // ---- diff highlighting (a static editor.Syntax over unified diff text) ----

@@ -94,7 +94,20 @@ func (m *Model) NextMatch(dir int) bool {
 	}
 	head := m.cursors[m.primary].Head
 	pick := -1
-	if dir >= 0 {
+	if dir == 0 {
+		// Re-anchor after a query edit: stay on the match at the current
+		// selection start (typing extends it in place), else the next one.
+		start := min(m.cursors[m.primary].Anchor, head)
+		for i, r := range ms {
+			if r[1] > start {
+				pick = i
+				break
+			}
+		}
+		if pick < 0 {
+			pick = 0
+		}
+	} else if dir > 0 {
 		for i, r := range ms {
 			if r[0] > head || (r[0] == head && r[1] > m.cursors[m.primary].Head) {
 				if r[1] != m.cursors[m.primary].Head || r[0] != m.cursors[m.primary].Anchor {

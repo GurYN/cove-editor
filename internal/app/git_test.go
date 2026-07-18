@@ -399,3 +399,25 @@ func TestRefreshFetchesRemote(t *testing.T) {
 		t.Fatalf("gitBusy stuck at %q", m2.gitBusy)
 	}
 }
+
+func TestGitGraphTabAndDrillIn(t *testing.T) {
+	m, _ := gitSetup(t)
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}}) // graph from panel
+	if len(m.docs) != 1 || !m.docs[0].virtual || m.docs[0].path != gitGraphTitle {
+		t.Fatalf("expected graph tab, got %+v", m.docs)
+	}
+	v := frame(m)
+	if !strings.Contains(v, "* ") || !strings.Contains(v, "init") {
+		t.Fatalf("graph tab missing content:\n%s", v)
+	}
+
+	// Enter on the first graph line opens that commit's diff tab.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(m.docs) != 2 || !strings.HasSuffix(m.docs[1].path, " (commit)") {
+		t.Fatalf("drill-in failed, docs = %+v", m.docs)
+	}
+	v = frame(m)
+	if !strings.Contains(v, "init") || !strings.Contains(v, "+one") {
+		t.Fatalf("commit tab wrong:\n%s", v)
+	}
+}

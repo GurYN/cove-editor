@@ -84,6 +84,7 @@ const (
 	overlayRefs
 	overlayDiags
 	overlayBranches
+	overlayHistory
 )
 
 // problemRef is one row of the Problems list: where Enter should land.
@@ -116,6 +117,8 @@ type Model struct {
 	ovRefs     []lsp.Location  // references payload
 	ovDiags    []problemRef    // problems payload
 	ovBranches []string        // branch picker payload
+	ovCommits  []git.LogEntry  // history picker payload
+	aboutOpen  bool            // about box: any key or click closes
 
 	lspm          *lsp.Manager
 	lspStatus     map[string]string
@@ -126,11 +129,13 @@ type Model struct {
 	mode     mode
 	query    string
 	repl     string
+	miniCur  int // cursor, in runes, into the active find/replace input
 	useRegex bool
 
 	// prompt (new file / rename / confirm delete)
 	promptLabel string
 	promptText  string
+	promptCur   int // cursor, in runes, 0..len(promptText)
 	promptDo    func(*Model, string)
 	deferred    tea.Cmd // set by prompt callbacks that need a follow-up Cmd
 
@@ -396,6 +401,10 @@ func (m *Model) layout() {
 }
 
 func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.aboutOpen {
+		m.aboutOpen = false
+		return m, nil
+	}
 	if m.ovKind != overlayNone {
 		return m.updateOverlay(msg)
 	}
@@ -466,6 +475,12 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 	if m.focus == paneEditor {
 		if d := m.doc(); d != nil {
+			// Enter on a Git Graph line drills into that commit's diff.
+			if msg.Type == tea.KeyEnter && d.virtual && d.path == gitGraphTitle {
+				m.gitOpenCommitAtCursor(d)
+				m.layout()
+				return m, nil
+			}
 			var cmd tea.Cmd
 			d.ed, cmd = d.ed.Update(msg)
 			// Auto-trigger completion after a member access dot.
@@ -553,6 +568,14 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files
+	case overlayHistory:
+		c := m.ovCommits[chosen]
+		text, err := git.ShowCommit(m.gitSnap.Top, c.SHA)
+		if err != nil {
+			m.lastMsg = err.Error()
+			return m, nil
+		}
+		m.openVirtual(c.SHA+" (commit)", text)
 	case overlayDiags:
 		ref := m.ovDiags[chosen]
 		m.openFile(ref.path)
@@ -674,6 +697,7 @@ func (m Model) openProblems() Model {
 func (m Model) prompt(label, initial string, do func(*Model, string)) Model {
 	m.mode = modePrompt
 	m.promptLabel, m.promptText, m.promptDo = label, initial, do
+	m.promptCur = len([]rune(initial))
 	return m
 }
 
@@ -690,18 +714,54 @@ func (m Model) updatePrompt(k tea.KeyMsg) (Model, tea.Cmd) {
 			m.deferred = nil
 			return m, cmd
 		}
-	case tea.KeyBackspace:
-		if r := []rune(m.promptText); len(r) > 0 {
-			m.promptText = string(r[:len(r)-1])
-		}
-	case tea.KeySpace:
-		m.promptText += " "
-	case tea.KeyRunes:
-		if !k.Alt {
-			m.promptText += string(k.Runes)
-		}
+	default:
+		m.promptText, m.promptCur, _ = lineEdit(m.promptText, m.promptCur, k)
 	}
 	return m, nil
+}
+
+// lineEdit applies one key to a single-line input with a rune cursor:
+// arrows/Home/End/^A/^E move, Backspace/Delete edit, runes/space insert.
+// ok=false means the key is not a text-editing key.
+func lineEdit(s string, cur int, k tea.KeyMsg) (out string, ncur int, ok bool) {
+	r := []rune(s)
+	cur = clampInt(cur, 0, len(r))
+	switch k.Type {
+	case tea.KeyLeft:
+		return s, max(0, cur-1), true
+	case tea.KeyRight:
+		return s, min(len(r), cur+1), true
+	case tea.KeyHome, tea.KeyCtrlA:
+		return s, 0, true
+	case tea.KeyEnd, tea.KeyCtrlE:
+		return s, len(r), true
+	case tea.KeyBackspace:
+		if cur > 0 {
+			return string(r[:cur-1]) + string(r[cur:]), cur - 1, true
+		}
+		return s, cur, true
+	case tea.KeyDelete:
+		if cur < len(r) {
+			return string(r[:cur]) + string(r[cur+1:]), cur, true
+		}
+		return s, cur, true
+	case tea.KeySpace:
+		return string(r[:cur]) + " " + string(r[cur:]), cur + 1, true
+	case tea.KeyRunes:
+		if k.Alt {
+			return s, cur, false
+		}
+		ins := string(k.Runes)
+		return string(r[:cur]) + ins + string(r[cur:]), cur + len([]rune(ins)), true
+	}
+	return s, cur, false
+}
+
+// cursorInto renders s with the block cursor at rune position cur.
+func cursorInto(s string, cur int) string {
+	r := []rune(s)
+	cur = clampInt(cur, 0, len(r))
+	return string(r[:cur]) + "█" + string(r[cur:])
 }
 
 // ---- tabs ----
@@ -840,9 +900,10 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.ovKind != overlayNone { // overlays are keyboard-driven; click closes
+	if m.ovKind != overlayNone || m.aboutOpen { // overlays are keyboard-driven; click closes
 		if msg.Action == tea.MouseActionPress {
 			m.ovKind = overlayNone
+			m.aboutOpen = false
 		}
 		return m, nil
 	}
@@ -1028,22 +1089,15 @@ func (m Model) updateMinibar(k tea.KeyMsg) (Model, tea.Cmd) {
 			return m, a.Do(&m)
 		}
 		return m, tea.Quit
-	case tea.KeyRunes:
-		*input += string(k.Runes)
-	case tea.KeySpace:
-		*input += " "
-	case tea.KeyBackspace:
-		if s := *input; len(s) > 0 {
-			r := []rune(s)
-			*input = string(r[:len(r)-1])
-		}
 	case tea.KeyCtrlT:
 		m.useRegex = !m.useRegex
 	case tea.KeyCtrlR:
 		if m.mode == modeFind {
 			m.mode = modeReplace
+			m.miniCur = len([]rune(m.repl))
 		} else {
 			m.mode = modeFind
+			m.miniCur = len([]rune(m.query))
 		}
 		return m, nil
 	case tea.KeyUp:
@@ -1067,7 +1121,15 @@ func (m Model) updateMinibar(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
-		return m, nil
+		s, cur, ok := lineEdit(*input, m.miniCur, k)
+		if !ok {
+			return m, nil
+		}
+		changed := s != *input
+		*input, m.miniCur = s, cur
+		if !changed { // pure cursor movement: don't re-anchor the search
+			return m, nil
+		}
 	}
 	if m.mode != modeReplace {
 		d.ed.SetSearch(m.query, m.useRegex)
@@ -1107,7 +1169,10 @@ func (m Model) View() string {
 		side += "\n" + m.sideSwitcher() + "\n" + strings.Repeat(" ", m.side.Width)
 		middle = lipgloss.JoinHorizontal(lipgloss.Top, side, border, middle)
 	}
-	if m.ovKind != overlayNone {
+	if m.aboutOpen {
+		box := m.aboutView()
+		middle = m.composite(middle, box, max(1, (m.height-2-lipgloss.Height(box))/2), -1)
+	} else if m.ovKind != overlayNone {
 		middle = m.composite(middle, m.ov.View(), 1, -1)
 	} else if d := m.doc(); d != nil && m.focus == paneEditor {
 		cx, cy := d.ed.CursorScreen()
@@ -1234,13 +1299,14 @@ func (m Model) bottomBar() string {
 	case modeFind, modeReplace:
 		return m.minibar()
 	case modePrompt:
-		text := m.promptText
-		// Keep the tail of a long input visible while typing.
-		if over := lipgloss.Width(m.promptLabel) + len([]rune(text)) + 8 - m.width; over > 0 {
-			r := []rune(text)
-			text = "…" + string(r[min(len(r), over+1):])
+		cur := clampInt(m.promptCur, 0, len([]rune(m.promptText)))
+		text := cursorInto(m.promptText, cur)
+		// Keep the cursor visible when the input outgrows the bar.
+		if over := lipgloss.Width(m.promptLabel) + cur + 8 - m.width; over > 0 {
+			tr := []rune(text)
+			text = "…" + string(tr[min(len(tr), over+1):])
 		}
-		left := promptStyle.Render(" "+m.promptLabel) + " " + text + "█"
+		left := promptStyle.Render(" "+m.promptLabel) + " " + text
 		pad := max(1, m.width-lipgloss.Width(left)-5)
 		return m.bar(left + fmt.Sprintf("%*s", pad, "esc  "))
 	}
@@ -1297,9 +1363,9 @@ func (m Model) minibar() string {
 	}
 	var left string
 	if m.mode == modeFind {
-		left = promptStyle.Render(" Find: ") + m.query + "█"
+		left = promptStyle.Render(" Find: ") + cursorInto(m.query, m.miniCur)
 	} else {
-		left = promptStyle.Render(" Replace ") + m.query + promptStyle.Render(" with: ") + m.repl + "█"
+		left = promptStyle.Render(" Replace ") + m.query + promptStyle.Render(" with: ") + cursorInto(m.repl, m.miniCur)
 	}
 	right := fmt.Sprintf("%s%s  ↓↑ next/prev  ^R %s  ^T regex  ⏎ go  esc ",
 		counter, re, map[mode]string{modeFind: "replace", modeReplace: "find"}[m.mode])

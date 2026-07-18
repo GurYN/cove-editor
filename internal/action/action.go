@@ -5,7 +5,11 @@
 // the registry does not exist.
 package action
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"sort"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // Context scopes a binding to whichever pane has focus. Global actions fire
 // anywhere in edit mode.
@@ -89,7 +93,9 @@ func (r *Registry) ByID(id string) *Action {
 	return nil
 }
 
-// Palette returns all palette-visible actions in registration order.
+// Palette returns all palette-visible actions sorted by title, so the
+// "Category:" prefixes group together instead of surfacing in whatever
+// order newRegistry happens to declare them.
 func (r *Registry) Palette() []Action {
 	out := make([]Action, 0, len(r.list))
 	for _, a := range r.list {
@@ -97,5 +103,6 @@ func (r *Registry) Palette() []Action {
 			out = append(out, a)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Title < out[j].Title })
 	return out
 }

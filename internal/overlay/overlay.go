@@ -4,6 +4,7 @@
 package overlay
 
 import (
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,6 +71,21 @@ func (m *Model) filter() {
 		return
 	}
 	m.matches = fuzzy.FindFrom(m.query, source(m.items))
+	// The fuzzy scorer ranks scattered matches ("Go to … in … Outline" for
+	// "git") close to contiguous ones. Boost labels containing the query as
+	// a substring — more when it starts a word — so they always sort first.
+	q := strings.ToLower(m.query)
+	for i, match := range m.matches {
+		label := strings.ToLower(m.items[match.Index].Label)
+		if at := strings.Index(label, q); at >= 0 {
+			if at == 0 || label[at-1] == ' ' {
+				m.matches[i].Score += 2000
+			} else {
+				m.matches[i].Score += 1000
+			}
+		}
+	}
+	sort.SliceStable(m.matches, func(a, b int) bool { return m.matches[a].Score > m.matches[b].Score })
 }
 
 // Update handles a key. done=true means the overlay is finished: chosen is
