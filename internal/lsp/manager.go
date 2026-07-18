@@ -60,9 +60,6 @@ type Manager struct {
 	mu       sync.Mutex
 	clients  map[string]*Client
 	restarts map[string]int
-
-	dmu     sync.Mutex
-	pending map[string]*time.Timer // didChange debounce per URI
 }
 
 func NewManager(root string) *Manager {
@@ -72,7 +69,6 @@ func NewManager(root string) *Manager {
 		events:   make(chan Event, 64),
 		clients:  map[string]*Client{},
 		restarts: map[string]int{},
-		pending:  map[string]*time.Timer{},
 	}
 }
 
@@ -125,22 +121,13 @@ func (m *Manager) Open(path string, text []byte, version int) bool {
 	return true
 }
 
-// Change schedules a debounced full-text didChange.
+// Change sends a full-text didChange. Debouncing is the caller's job — the
+// app loop already coalesces edits (syncLSP); a second timer here just added
+// latency and a duplicate interval to keep in sync.
 func (m *Manager) Change(path string, version int, text []byte) {
-	c := m.clientFor(path)
-	if c == nil {
-		return
+	if c := m.clientFor(path); c != nil {
+		c.DidChange(PathToURI(path), version, string(text))
 	}
-	uri := PathToURI(path)
-	s := string(text)
-	m.dmu.Lock()
-	defer m.dmu.Unlock()
-	if t := m.pending[uri]; t != nil {
-		t.Stop()
-	}
-	m.pending[uri] = time.AfterFunc(150*time.Millisecond, func() {
-		c.DidChange(uri, version, s)
-	})
 }
 
 func (m *Manager) Save(path string) {

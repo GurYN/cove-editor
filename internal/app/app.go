@@ -3,6 +3,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,16 +140,9 @@ type Model struct {
 	promptDo    func(*Model, string)
 	deferred    tea.Cmd // set by prompt callbacks that need a follow-up Cmd
 
-	gitView bool // left pane shows the git panel instead of the file tree
-	gitSnap git.Snapshot
+	git gitPanel
 
 	lastMouse time.Time // last mouse event; gates the broken-report alt+[ drop
-	gitRows []gitRow
-	gitSel  int
-	gitTop  int
-	gitErr  string
-	gitBusy string // "push"/"pull" while one is in flight
-	blameOn bool   // inline blame for the cursor line (git.blame toggle)
 
 	terms      []*term.Term // shell instances; empty until first opened
 	termActive int
@@ -203,7 +197,7 @@ func New(path string, data []byte) Model {
 	}
 	m.side = sidebar.New(root)
 	m.refreshGit() // branch segment in the status bar from the first frame
-	m.gitErr = ""  // not being a repo is fine until the panel is opened
+	m.git.err = "" // not being a repo is fine until the panel is opened
 	m.reg = newRegistry()
 	for id, key := range cfg.Keys {
 		if !m.reg.Rebind(id, key) {
@@ -291,12 +285,16 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.hoverText = msg.text
 		return m, nil
 	case wsEditMsg:
-		m.applyWorkspaceEdit(msg.edit)
+		m.applyWorkspaceEdit(msg.edit, msg.revs)
 		return m, m.syncLSP()
 	case fmtMsg:
 		if d := m.docByPath(msg.path); d != nil && len(msg.edits) > 0 {
-			d.ed.ApplyEdits(toEditorEdits(d.ed.Buf, msg.edits))
-			m.lastMsg = "formatted"
+			if d.ed.Rev != msg.rev {
+				m.lastMsg = "buffer changed — format skipped"
+			} else {
+				d.ed.ApplyEdits(toEditorEdits(d.ed.Buf, msg.edits))
+				m.lastMsg = "formatted"
+			}
 		}
 		return m, m.syncLSP()
 	case complMsg:
@@ -329,6 +327,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		termFocus := m.ovKind == overlayNone && m.mode == modeEdit &&
 			m.focus == paneTerminal && m.activeTerm() != nil
 		if msg.Alt && !termFocus && msg.Type != tea.KeyUp && msg.Type != tea.KeyDown &&
+			msg.Type != tea.KeyShiftUp && msg.Type != tea.KeyShiftDown && // alt+shift+up/down move-line
 			!(msg.Type == tea.KeyEnter && m.mode == modeReplace) {
 			m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyEscape})
 			msg.Alt = false
@@ -532,12 +531,12 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		// off the current branch (Escape still just closes).
 		if kind == overlayBranches && k.Type == tea.KeyEnter {
 			if name := strings.TrimSpace(m.ov.Query()); name != "" {
-				return m.prompt(fmt.Sprintf("No branch %q — create from %s? y/n:", name, m.gitSnap.Branch), "",
+				return m.prompt(fmt.Sprintf("No branch %q — create from %s? y/n:", name, m.git.snap.Branch), "",
 					func(m *Model, text string) {
 						if !strings.EqualFold(text, "y") {
 							return
 						}
-						if err := git.CreateBranch(m.gitSnap.Top, name); err != nil {
+						if err := git.CreateBranch(m.git.snap.Top, name); err != nil {
 							m.lastMsg = err.Error()
 						} else {
 							m.lastMsg = "on new branch " + name
@@ -561,7 +560,7 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		m.layout()
 	case overlayBranches:
 		name := m.ovBranches[chosen]
-		if err := git.Checkout(m.gitSnap.Top, name); err != nil {
+		if err := git.Checkout(m.git.snap.Top, name); err != nil {
 			m.lastMsg = err.Error()
 		} else {
 			m.lastMsg = "switched to " + name
@@ -570,7 +569,7 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		m.side.Refresh() // checkout swaps working-tree files
 	case overlayHistory:
 		c := m.ovCommits[chosen]
-		text, err := git.ShowCommit(m.gitSnap.Top, c.SHA)
+		text, err := git.ShowCommit(m.git.snap.Top, c.SHA)
 		if err != nil {
 			m.lastMsg = err.Error()
 			return m, nil
@@ -812,6 +811,11 @@ func (m Model) closeActive() Model {
 
 func (m *Model) forceClose() {
 	m.lspm.Close(m.docs[m.active].path)
+	// Free the highlighter's tree-sitter C memory; the editor.Syntax
+	// interface stays CGo-free, so reach Close via assertion.
+	if c, ok := m.docs[m.active].ed.Syntax.(interface{ Close() }); ok {
+		c.Close()
+	}
 	closed := m.active
 	m.docs = append(m.docs[:m.active], m.docs[m.active+1:]...)
 	if m.active >= len(m.docs) {
@@ -879,6 +883,12 @@ func setPointer(shape string) {
 	os.Stdout.WriteString("\x1b]22;" + shape + "\x1b\\")
 }
 
+// copyOSC52 puts text on the system clipboard via OSC 52; terminals without
+// support ignore the sequence.
+func copyOSC52(s string) {
+	os.Stdout.WriteString("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\")
+}
+
 func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	// Buttonless motion = hover: only used to swap the pointer shape over
 	// the two dividers. Must never reach the drag paths below.
@@ -915,11 +925,11 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		for i, r := range m.sideSwitcherRanges() {
 			if msg.X >= r.start && msg.X < r.end {
 				if i == 1 {
-					m.gitView = true
+					m.git.view = true
 					m.focus = paneGit
 					m.refreshGit()
 				} else {
-					m.gitView = false
+					m.git.view = false
 					m.focus = paneSidebar
 				}
 				break
@@ -937,7 +947,7 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		target = paneDivider
 	case m.sidebarOpen && msg.X < m.editorX():
 		target = paneSidebar
-		if m.gitView {
+		if m.git.view {
 			target = paneGit
 		}
 	case m.split && len(m.docs) > 0 && msg.Y <= m.contentRows() && msg.X == m.splitX():
@@ -969,6 +979,13 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			m.focus = paneTerminal
 			m.compl.active = false
 			m.hoverText = ""
+			t.Press(tx, ty)
+		case msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft:
+			t.Drag(tx, ty)
+		case msg.Action == tea.MouseActionRelease:
+			if s := t.Release(tx, ty); s != "" {
+				copyOSC52(s)
+			}
 		}
 	case panePanelDivider:
 		// A press on an instance chip or the "+" button is a click, not a
@@ -1022,9 +1039,9 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	case paneGit:
 		switch {
 		case msg.Button == tea.MouseButtonWheelUp:
-			m.gitWheel(-3)
+			m.git.wheel(-3, m.gitHeight())
 		case msg.Button == tea.MouseButtonWheelDown:
-			m.gitWheel(3)
+			m.git.wheel(3, m.gitHeight())
 		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 			m.focus = paneGit
 			m.gitClick(msg.Y-2, msg.X) // -1 tab bar, -1 header
@@ -1162,7 +1179,7 @@ func (m Model) View() string {
 		rows := max(1, m.height-2)
 		border := strings.TrimSuffix(strings.Repeat(borderStyle.Render("│")+"\n", rows), "\n")
 		side := m.side.View(m.focus == paneSidebar)
-		if m.gitView {
+		if m.git.view {
 			side = m.gitPanelView()
 		}
 		// switcher plus a spacer row so the buttons don't sit on the bottom bar
@@ -1200,8 +1217,8 @@ var sideButtons = [2]string{"Files", "Git"}
 // sideSwitcherRanges returns each button's [start, end) x-range within the
 // sidebar, matching sideSwitcher exactly so render and hit-test can't drift.
 func (m Model) sideSwitcherRanges() [2]struct{ start, end int } {
-	const margin = 2 // cells left and right of the control
-	half := (m.side.Width - 2*margin) / 2
+	const margin = 2                          // cells left and right of the control
+	half := max(0, (m.side.Width-2*margin)/2) // tiny windows: zero-width buttons, not negative
 	return [2]struct{ start, end int }{{margin, margin + half}, {margin + half, m.side.Width - margin}}
 }
 
@@ -1215,7 +1232,7 @@ func (m Model) sideSwitcher() string {
 	row.WriteString(strings.Repeat(" ", ranges[0].start))
 	for i, r := range ranges {
 		st := tabStyle.Faint(true)
-		if (i == 1) == m.gitView {
+		if (i == 1) == m.git.view {
 			st = tabActiveStyle
 		}
 		row.WriteString(st.Render(centerCell(sideButtons[i], r.end-r.start)))
@@ -1227,6 +1244,9 @@ func (m Model) sideSwitcher() string {
 // centerCell pads s to exactly w cells, label centered. ponytail: rune==cell
 // assumption, same as the sidebar.
 func centerCell(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
 	r := []rune(s)
 	if len(r) >= w {
 		return string(r[:w])

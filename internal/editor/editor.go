@@ -130,14 +130,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleKey covers typing only (runes, space, enter, tab, deletion) — every
+// other key is a registry action so rebinding stays the single source of truth.
 func (m *Model) handleKey(k tea.KeyMsg) {
-	extend := false
-	switch k.Type {
-	case tea.KeyShiftLeft, tea.KeyShiftRight, tea.KeyShiftUp, tea.KeyShiftDown,
-		tea.KeyShiftHome, tea.KeyShiftEnd, tea.KeyCtrlShiftLeft, tea.KeyCtrlShiftRight:
-		extend = true
-	}
-
 	switch k.Type {
 	case tea.KeyRunes:
 		if k.Alt {
@@ -154,90 +149,17 @@ func (m *Model) handleKey(k tea.KeyMsg) {
 		} else {
 			m.InsertText("\t")
 		}
-	case tea.KeyShiftTab:
-		m.IndentLines(-1)
 	case tea.KeyBackspace:
 		m.deleteAtCursors(-1)
 	case tea.KeyDelete:
 		m.deleteAtCursors(+1)
-
-	case tea.KeyLeft, tea.KeyShiftLeft:
-		m.moveH(-1, extend)
-	case tea.KeyRight, tea.KeyShiftRight:
-		m.moveH(+1, extend)
-	case tea.KeyCtrlLeft, tea.KeyCtrlShiftLeft:
-		m.moveWord(-1, extend)
-	case tea.KeyCtrlRight, tea.KeyCtrlShiftRight:
-		m.moveWord(+1, extend)
-	case tea.KeyUp, tea.KeyShiftUp:
-		if k.Alt {
-			m.addCursorVert(-1)
-		} else {
-			m.moveV(-1, extend)
-		}
-	case tea.KeyDown, tea.KeyShiftDown:
-		if k.Alt {
-			m.addCursorVert(+1)
-		} else {
-			m.moveV(+1, extend)
-		}
-	case tea.KeyPgUp:
-		m.moveV(-max(1, m.Height-1), false)
-	case tea.KeyPgDown:
-		m.moveV(max(1, m.Height-1), false)
-	case tea.KeyHome, tea.KeyShiftHome:
-		m.eachCursor(func(c *Cursor) {
-			line, _ := m.Buf.Pos(c.Head)
-			c.Head = m.Buf.Offset(line, 0)
-			c.wantCol = 0
-			if !extend {
-				c.Anchor = c.Head
-			}
-		})
-	case tea.KeyEnd, tea.KeyShiftEnd:
-		m.eachCursor(func(c *Cursor) {
-			line, _ := m.Buf.Pos(c.Head)
-			c.Head = m.Buf.Offset(line, m.Buf.LineLen(line))
-			_, c.wantCol = m.Buf.Pos(c.Head)
-			if !extend {
-				c.Anchor = c.Head
-			}
-		})
-	case tea.KeyCtrlHome:
-		m.Go(0, 0)
-	case tea.KeyCtrlEnd:
-		m.Go(m.Buf.LineCount()-1, 0)
-
-	case tea.KeyCtrlA:
-		m.cursors = []Cursor{{Anchor: 0, Head: m.Buf.Len()}}
-		m.primary = 0
-	case tea.KeyCtrlZ:
-		m.UndoStep()
-	case tea.KeyCtrlY:
-		m.RedoStep()
-	case tea.KeyCtrlD:
-		m.selectNextOccurrence()
-	case tea.KeyCtrlE:
-		m.expandSelection()
-	case tea.KeyCtrlC:
-		m.copySelection(false)
-	case tea.KeyCtrlX:
-		m.copySelection(true)
-	case tea.KeyCtrlV:
-		m.paste()
-	case tea.KeyEscape:
-		m.cursors = []Cursor{m.cursors[m.primary]}
-		m.cursors[0].Anchor = m.cursors[0].Head
-		m.primary = 0
-		m.search.clear()
 	default:
 		return
 	}
 	m.scrollToCursor()
 }
 
-// ---- exported operations (the registry calls these; the internal key
-// switch below stays as a fallback so the editor works standalone) ----
+// ---- exported operations (the registry calls these) ----
 
 func (m *Model) MoveH(dir int, extend bool)    { m.moveH(dir, extend); m.scrollToCursor() }
 func (m *Model) MoveV(delta int, extend bool)  { m.moveV(delta, extend); m.scrollToCursor() }
@@ -329,11 +251,20 @@ func (m *Model) moveV(delta int, extend bool) {
 	m.eachCursor(func(c *Cursor) {
 		line, _ := m.Buf.Pos(c.Head)
 		line = clamp(line+delta, 0, m.Buf.LineCount()-1)
-		c.Head = m.Buf.Offset(line, c.wantCol)
+		c.Head = m.snapRune(m.Buf.Offset(line, c.wantCol))
 		if !extend {
 			c.Anchor = c.Head
 		}
 	})
+}
+
+// snapRune steps off back to the start of the rune it falls inside — wantCol
+// is a byte column from a different line and can land mid-sequence.
+func (m *Model) snapRune(off int) int {
+	for off > 0 && off < m.Buf.Len() && isCont(m.byteAt(off)) {
+		off--
+	}
+	return off
 }
 
 // prevRune/nextRune step one rune, crossing line boundaries.
@@ -613,17 +544,28 @@ func (m *Model) RedoStep() {
 
 // ---- multi-cursor ----
 
+// selectWordAtPrimary selects the word under the primary cursor when it has
+// no selection. Reports whether the primary ends up with one.
+func (m *Model) selectWordAtPrimary() bool {
+	p := &m.cursors[m.primary]
+	if p.hasSel() {
+		return true
+	}
+	lo := m.wordBoundary(m.nextRune(p.Head), -1)
+	hi := m.wordBoundary(lo, +1)
+	if lo == hi {
+		return false
+	}
+	p.Anchor, p.Head = lo, hi
+	return true
+}
+
 // selectNextOccurrence (Ctrl+D): select word under cursor, or add a cursor
 // at the next occurrence of the current selection.
 func (m *Model) selectNextOccurrence() {
 	p := &m.cursors[m.primary]
 	if !p.hasSel() {
-		lo := m.wordBoundary(m.nextRune(p.Head), -1)
-		hi := m.wordBoundary(lo, +1)
-		if lo == hi {
-			return
-		}
-		p.Anchor, p.Head = lo, hi
+		m.selectWordAtPrimary()
 		return
 	}
 	lo, hi := p.sel()
@@ -680,7 +622,7 @@ func (m *Model) addCursorVert(dir int) {
 	if line < 0 || line >= m.Buf.LineCount() {
 		return
 	}
-	off := m.Buf.Offset(line, src.wantCol)
+	off := m.snapRune(m.Buf.Offset(line, src.wantCol))
 	m.cursors = append(m.cursors, Cursor{Anchor: off, Head: off, wantCol: src.wantCol})
 	m.primary = len(m.cursors) - 1
 	m.normalize()
@@ -887,15 +829,10 @@ func (m *Model) MoveLine(dir int) {
 // SelectAllOccurrences selects every match of the primary selection (or of
 // the word under the cursor).
 func (m *Model) SelectAllOccurrences() {
-	p := &m.cursors[m.primary]
-	if !p.hasSel() {
-		lo := m.wordBoundary(m.nextRune(p.Head), -1)
-		hi := m.wordBoundary(lo, +1)
-		if lo == hi {
-			return
-		}
-		p.Anchor, p.Head = lo, hi
+	if !m.selectWordAtPrimary() {
+		return
 	}
+	p := &m.cursors[m.primary]
 	lo, hi := p.sel()
 	needle := append([]byte(nil), m.Buf.Slice(lo, hi)...)
 	src := m.Buf.Bytes()

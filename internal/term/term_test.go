@@ -108,10 +108,10 @@ func TestScrollback(t *testing.T) {
 // arrow keys (alternate scroll), plain shells scroll the local view.
 func TestWheelSeq(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		mouse, sgr, alt  bool
-		up               bool
-		want             string
+		name            string
+		mouse, sgr, alt bool
+		up              bool
+		want            string
 	}{
 		{"plain shell -> local scroll", false, false, false, true, ""},
 		{"alt screen up -> arrows", false, false, true, true, "\x1b[A\x1b[A\x1b[A"},
@@ -122,6 +122,50 @@ func TestWheelSeq(t *testing.T) {
 	} {
 		got := string(wheelSeq(tc.mouse, tc.sgr, tc.alt, tc.up, 4, 2))
 		if got != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Drag-select across two rows: text out in reading order, highlight in View,
+// plain click clears it.
+func TestMouseSelection(t *testing.T) {
+	tm := &Term{vt: vt10x.New(vt10x.WithSize(20, 4))}
+	tm.vt.Write([]byte("hello world\r\nsecond line\r\n"))
+
+	tm.Press(6, 0)
+	tm.Drag(5, 1)
+	if got := tm.Release(5, 1); got != "world\nsecond" {
+		t.Fatalf("selection = %q, want %q", got, "world\nsecond")
+	}
+	if !strings.Contains(tm.View(false), ";7") {
+		t.Fatal("selection not highlighted in View")
+	}
+
+	tm.Press(0, 3)
+	if got := tm.Release(0, 3); got != "" {
+		t.Fatalf("click returned %q, want empty", got)
+	}
+	if tm.selOn {
+		t.Fatal("plain click left selection active")
+	}
+}
+
+func TestMouseSeq(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sgr     bool
+		btn     int
+		release bool
+		want    string
+	}{
+		{"sgr press", true, 0, false, "\x1b[<0;5;3M"},
+		{"sgr release", true, 0, true, "\x1b[<0;5;3m"},
+		{"sgr motion", true, 32, false, "\x1b[<32;5;3M"},
+		{"x10 press", false, 0, false, "\x1b[M\x20\x25\x23"},
+		{"x10 release", false, 0, true, "\x1b[M\x23\x25\x23"},
+	} {
+		if got := string(mouseSeq(tc.sgr, tc.btn, 4, 2, tc.release)); got != tc.want {
 			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}

@@ -52,7 +52,7 @@ func main() {
 	p := tea.NewProgram(app.New(path, data),
 		tea.WithAltScreen(),
 		tea.WithMouseAllMotion(), // hover events: divider resize pointer needs them
-		tea.WithReportFocus(),   // refresh tree + git status when the terminal regains focus
+		tea.WithReportFocus(),    // refresh tree + git status when the terminal regains focus
 	)
 	_, err := p.Run()
 	os.Stdout.WriteString("\x1b]22;default\x1b\\") // restore pointer shape (OSC 22)

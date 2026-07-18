@@ -37,7 +37,7 @@ func (m *Model) SearchInfo() (int, int) {
 	cur := 0
 	head := m.cursors[m.primary].Head
 	for i, r := range m.search.matches {
-		if r[1] <= head {
+		if r[1] < head {
 			cur = (i + 1) % len(m.search.matches)
 		}
 	}

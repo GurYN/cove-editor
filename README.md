@@ -16,7 +16,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6` jumps between them.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
-- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, push/pull/fetch (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
+- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Commit history opens in a fuzzy picker, and a commit-graph view renders `git log --graph` in a tab — press Enter on any line of either to open that commit's full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **Multi-cursor editing, find & replace, undo/redo** — plus the line-editing staples: toggle comment (`Ctrl+_`), move line up/down (`Alt+Shift+Up`/`Down`), duplicate/delete line, indent/outdent, select all occurrences, and go to line (`Ctrl+L`).
 - **Plays nice with the outside world**: files edited outside Cove reload in place (undoable); a buffer with unsaved changes warns instead. The file tree and git status re-sync whenever the terminal regains focus, so changes from another shell or editor show up on their own.
 - **No terminal traps**: `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
@@ -116,6 +116,9 @@ Inside the panel (all of this is also in the palette):
 | `Space`   | Stage / unstage the selected file          |
 | `Enter`   | Open the file's diff (read-only tab)       |
 | `c`       | Commit staged files                        |
+| `z`       | Undo last commit (keeps changes staged, with confirm) |
+| `l`       | Commit history (fuzzy picker; Enter opens the commit's diff) |
+| `g`       | Commit graph (read-only tab; Enter on a line opens that commit's diff) |
 | `b`       | Switch branch (fuzzy picker)               |
 | `a` / `u` | Stage all / unstage all                    |
 | `x`       | Discard the file's changes (with confirm)  |
@@ -150,7 +153,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, push/pull, branches, restore, gutter signs, inline blame, file-tree markers), and split panes — all built. Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & graph, push/pull, branches, restore, gutter signs, inline blame, file-tree markers), and split panes — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
 
 ## Contributing
 

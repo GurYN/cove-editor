@@ -108,6 +108,29 @@ func TestStatusStageCommitFlow(t *testing.T) {
 	}
 }
 
+// Non-ASCII filenames must round-trip: git's default core.quotePath would
+// C-quote them ("caf\303\251.go") and every later pathspec would miss.
+func TestStatusNonASCIIPath(t *testing.T) {
+	top := initRepo(t)
+	os.WriteFile(filepath.Join(top, "café.go"), []byte("x\n"), 0o644)
+	snap, err := Status(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range snap.Files {
+		if f.Path == "café.go" {
+			found = true
+			if err := Stage(top, f.Path); err != nil {
+				t.Fatalf("stage via parsed path: %v", err)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("café.go not in status: %+v", snap.Files)
+	}
+}
+
 func TestBlame(t *testing.T) {
 	top := initRepo(t)
 	lines, err := Blame(top, "a.txt")

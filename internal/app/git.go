@@ -16,6 +16,7 @@ import (
 	"github.com/GurYN/cove-editor/internal/editor"
 	"github.com/GurYN/cove-editor/internal/git"
 	"github.com/GurYN/cove-editor/internal/overlay"
+	"github.com/GurYN/cove-editor/internal/sidebar"
 )
 
 var (
@@ -48,26 +49,39 @@ type gitRow struct {
 	staged bool // row lives in the Staged section
 }
 
+// gitPanel is the git panel's state — the sidebar-slot component showing
+// staged/changed files, plus the blame toggle it shares a subsystem with.
+type gitPanel struct {
+	view    bool // left pane shows the git panel instead of the file tree
+	snap    git.Snapshot
+	rows    []gitRow
+	sel     int
+	top     int
+	err     string
+	busy    string // "push"/"pull" while one is in flight
+	blameOn bool   // inline blame for the cursor line (git.blame toggle)
+}
+
 // refreshGit re-reads repo status synchronously. ponytail: one exec per
 // refresh (~10ms); a background watcher if it ever shows up in lastCost.
 func (m *Model) refreshGit() {
-	m.gitErr = ""
-	if m.gitSnap.Top == "" {
+	m.git.err = ""
+	if m.git.snap.Top == "" {
 		top, err := git.Top(m.side.Root)
 		if err != nil {
-			m.gitRows = nil
-			m.gitErr = "not a git repository"
+			m.git.rows = nil
+			m.git.err = "not a git repository"
 			return
 		}
-		m.gitSnap.Top = top
+		m.git.snap.Top = top
 	}
-	snap, err := git.Status(m.gitSnap.Top)
+	snap, err := git.Status(m.git.snap.Top)
 	if err != nil {
-		m.gitErr = err.Error()
+		m.git.err = err.Error()
 	}
-	headMoved := snap.Oid != m.gitSnap.Oid
-	m.gitSnap = snap
-	m.buildGitRows()
+	headMoved := snap.Oid != m.git.snap.Oid
+	m.git.snap = snap
+	m.git.build(m.gitHeight())
 	m.syncTreeGit()
 	if headMoved { // commit/checkout/pull: gutter baselines are stale
 		for _, d := range m.docs {
@@ -78,9 +92,9 @@ func (m *Model) refreshGit() {
 
 // syncTreeGit mirrors the snapshot's change markers into the file tree.
 func (m *Model) syncTreeGit() {
-	st := make(map[string]byte, len(m.gitSnap.Files))
-	for _, f := range m.gitSnap.Files {
-		abs := filepath.Join(m.gitSnap.Top, filepath.FromSlash(f.Path))
+	st := make(map[string]byte, len(m.git.snap.Files))
+	for _, f := range m.git.snap.Files {
+		abs := filepath.Join(m.git.snap.Top, filepath.FromSlash(f.Path))
 		switch {
 		case f.Conflict():
 			st[abs] = '!'
@@ -94,20 +108,21 @@ func (m *Model) syncTreeGit() {
 }
 
 func (m *Model) gitRepo() bool {
-	if m.gitSnap.Top == "" {
+	if m.git.snap.Top == "" {
 		m.refreshGit()
 	}
-	if m.gitSnap.Top == "" {
+	if m.git.snap.Top == "" {
 		m.lastMsg = "not a git repository"
 		return false
 	}
 	return true
 }
 
-func (m *Model) buildGitRows() {
-	m.gitRows = m.gitRows[:0]
+// build regenerates the row list from the snapshot; h is the visible height.
+func (p *gitPanel) build(h int) {
+	p.rows = p.rows[:0]
 	var staged, changed []git.FileStatus
-	for _, f := range m.gitSnap.Files {
+	for _, f := range p.snap.Files {
 		if f.Staged() {
 			staged = append(staged, f)
 		}
@@ -116,74 +131,74 @@ func (m *Model) buildGitRows() {
 		}
 	}
 	if len(staged) > 0 {
-		m.gitRows = append(m.gitRows, gitRow{header: fmt.Sprintf("Staged (%d)", len(staged))})
+		p.rows = append(p.rows, gitRow{header: fmt.Sprintf("Staged (%d)", len(staged))})
 		for _, f := range staged {
-			m.gitRows = append(m.gitRows, gitRow{fs: f, staged: true})
+			p.rows = append(p.rows, gitRow{fs: f, staged: true})
 		}
 	}
 	if len(changed) > 0 {
-		m.gitRows = append(m.gitRows, gitRow{header: fmt.Sprintf("Changes (%d)", len(changed))})
+		p.rows = append(p.rows, gitRow{header: fmt.Sprintf("Changes (%d)", len(changed))})
 		for _, f := range changed {
-			m.gitRows = append(m.gitRows, gitRow{fs: f})
+			p.rows = append(p.rows, gitRow{fs: f})
 		}
 	}
 	// keep the selection on a file row
-	m.gitSel = clampInt(m.gitSel, 0, max(0, len(m.gitRows)-1))
-	for m.gitSel < len(m.gitRows) && m.gitRows[m.gitSel].header != "" {
-		m.gitSel++
+	p.sel = clampInt(p.sel, 0, max(0, len(p.rows)-1))
+	for p.sel < len(p.rows) && p.rows[p.sel].header != "" {
+		p.sel++
 	}
-	if m.gitSel >= len(m.gitRows) {
-		for m.gitSel = len(m.gitRows) - 1; m.gitSel > 0 && m.gitRows[m.gitSel].header != ""; m.gitSel-- {
+	if p.sel >= len(p.rows) {
+		for p.sel = len(p.rows) - 1; p.sel > 0 && p.rows[p.sel].header != ""; p.sel-- {
 		}
 	}
-	m.gitSel = max(0, m.gitSel)
-	m.gitTop = clampInt(m.gitTop, 0, max(0, len(m.gitRows)-m.gitHeight()))
+	p.sel = max(0, p.sel)
+	p.top = clampInt(p.top, 0, max(0, len(p.rows)-h))
 }
 
 // toggleGit shows the git panel in the sidebar slot (Zed's left dock).
 // Open but unfocused (e.g. after Enter jumped to a diff tab): reclaim focus;
 // only a focused panel closes on toggle.
 func (m *Model) toggleGit() {
-	if m.gitView && m.sidebarOpen && m.focus == paneGit {
-		m.sidebarOpen, m.gitView = false, false
+	if m.git.view && m.sidebarOpen && m.focus == paneGit {
+		m.sidebarOpen, m.git.view = false, false
 		m.focus = paneEditor
 		return
 	}
-	m.gitView, m.sidebarOpen = true, true
+	m.git.view, m.sidebarOpen = true, true
 	m.focus = paneGit
 	m.refreshGit()
 }
 
 func (m *Model) gitHeight() int { return max(1, m.height-5) } // tab bar + header + switcher + spacer + bottom bar
 
-func (m *Model) gitScroll() {
-	h := m.gitHeight()
-	if m.gitSel < m.gitTop {
-		m.gitTop = m.gitSel
+// scroll keeps the selection visible within h rows.
+func (p *gitPanel) scroll(h int) {
+	if p.sel < p.top {
+		p.top = p.sel
 	}
-	if m.gitSel >= m.gitTop+h {
-		m.gitTop = m.gitSel - h + 1
+	if p.sel >= p.top+h {
+		p.top = p.sel - h + 1
 	}
 }
 
-// gitMove moves the selection to the next file row, skipping headers.
-func (m *Model) gitMove(d int) {
-	for i := m.gitSel + d; i >= 0 && i < len(m.gitRows); i += d {
-		if m.gitRows[i].header == "" {
-			m.gitSel = i
-			m.gitScroll()
+// move moves the selection to the next file row, skipping headers.
+func (p *gitPanel) move(d, h int) {
+	for i := p.sel + d; i >= 0 && i < len(p.rows); i += d {
+		if p.rows[i].header == "" {
+			p.sel = i
+			p.scroll(h)
 			return
 		}
 	}
 }
 
-func (m *Model) gitWheel(delta int) {
-	m.gitTop = clampInt(m.gitTop+delta, 0, max(0, len(m.gitRows)-m.gitHeight()))
+func (p *gitPanel) wheel(delta, h int) {
+	p.top = clampInt(p.top+delta, 0, max(0, len(p.rows)-h))
 }
 
-func (m *Model) gitSelected() (gitRow, bool) {
-	if m.gitSel < len(m.gitRows) && m.gitRows[m.gitSel].header == "" {
-		return m.gitRows[m.gitSel], true
+func (p *gitPanel) selected() (gitRow, bool) {
+	if p.sel < len(p.rows) && p.rows[p.sel].header == "" {
+		return p.rows[p.sel], true
 	}
 	return gitRow{}, false
 }
@@ -194,7 +209,7 @@ func (m *Model) gitSelected() (gitRow, bool) {
 // confirm: tracked files go back to their HEAD content, untracked files are
 // deleted. An open tab reloads (as one undoable edit — ctrl+z un-discards).
 func (m *Model) gitRestorePrompt() {
-	r, ok := m.gitSelected()
+	r, ok := m.git.selected()
 	if !ok {
 		return
 	}
@@ -206,7 +221,7 @@ func (m *Model) gitRestorePrompt() {
 		if !strings.EqualFold(text, "y") {
 			return
 		}
-		abs := filepath.Join(m.gitSnap.Top, filepath.FromSlash(r.fs.Path))
+		abs := filepath.Join(m.git.snap.Top, filepath.FromSlash(r.fs.Path))
 		if r.fs.Untracked() {
 			if err := os.Remove(abs); err != nil {
 				m.lastMsg = err.Error()
@@ -220,7 +235,7 @@ func (m *Model) gitRestorePrompt() {
 					}
 				}
 			}
-		} else if err := git.Restore(m.gitSnap.Top, r.fs.Path); err != nil {
+		} else if err := git.Restore(m.git.snap.Top, r.fs.Path); err != nil {
 			m.lastMsg = err.Error()
 		} else {
 			m.lastMsg = "restored " + r.fs.Path
@@ -258,15 +273,15 @@ func (m *Model) reloadDoc(abs string) {
 }
 
 func (m *Model) gitStageToggle() {
-	r, ok := m.gitSelected()
+	r, ok := m.git.selected()
 	if !ok {
 		return
 	}
 	var err error
 	if r.staged {
-		err = git.Unstage(m.gitSnap.Top, r.fs.Path)
+		err = git.Unstage(m.git.snap.Top, r.fs.Path)
 	} else {
-		err = git.Stage(m.gitSnap.Top, r.fs.Path)
+		err = git.Stage(m.git.snap.Top, r.fs.Path)
 	}
 	if err != nil {
 		m.lastMsg = err.Error()
@@ -277,16 +292,16 @@ func (m *Model) gitStageToggle() {
 // gitClick handles a left press at panel row y / column x (header already
 // subtracted): the letter cell toggles staging, the rest opens the diff.
 func (m *Model) gitClick(y, x int) {
-	i := m.gitTop + y
-	if i < 0 || i >= len(m.gitRows) || m.gitRows[i].header != "" {
+	i := m.git.top + y
+	if i < 0 || i >= len(m.git.rows) || m.git.rows[i].header != "" {
 		return
 	}
-	m.gitSel = i
+	m.git.sel = i
 	if x <= 2 {
 		m.gitStageToggle()
 		return
 	}
-	m.gitOpenDiff(m.gitRows[i])
+	m.gitOpenDiff(m.git.rows[i])
 }
 
 // gitOpenDiff shows the file's diff in a read-only tab.
@@ -294,9 +309,9 @@ func (m *Model) gitOpenDiff(r gitRow) {
 	var text string
 	var err error
 	if r.fs.Untracked() {
-		text = git.DiffUntracked(m.gitSnap.Top, r.fs.Path)
+		text = git.DiffUntracked(m.git.snap.Top, r.fs.Path)
 	} else {
-		text, err = git.Diff(m.gitSnap.Top, r.fs.Path, r.staged)
+		text, err = git.Diff(m.git.snap.Top, r.fs.Path, r.staged)
 	}
 	if err != nil {
 		m.lastMsg = err.Error()
@@ -339,7 +354,7 @@ func (m *Model) openVirtualSyn(title, text string, syn editor.Syntax) {
 }
 
 func (m *Model) gitHasStaged() bool {
-	for _, f := range m.gitSnap.Files {
+	for _, f := range m.git.snap.Files {
 		if f.Staged() {
 			return true
 		}
@@ -360,7 +375,7 @@ func (m *Model) gitCommitPrompt() {
 		if strings.TrimSpace(msg) == "" {
 			return
 		}
-		out, err := git.Commit(m.gitSnap.Top, msg)
+		out, err := git.Commit(m.git.snap.Top, msg)
 		if err != nil {
 			m.lastMsg = err.Error()
 		} else {
@@ -376,7 +391,7 @@ func (m *Model) gitUndoCommitPrompt() {
 	if !m.gitRepo() {
 		return
 	}
-	head, err := git.HeadSummary(m.gitSnap.Top)
+	head, err := git.HeadSummary(m.git.snap.Top)
 	if err != nil {
 		m.lastMsg = "nothing to undo — no commits yet"
 		return
@@ -385,7 +400,7 @@ func (m *Model) gitUndoCommitPrompt() {
 		if !strings.EqualFold(text, "y") {
 			return
 		}
-		if err := git.UndoCommit(m.gitSnap.Top); err != nil {
+		if err := git.UndoCommit(m.git.snap.Top); err != nil {
 			m.lastMsg = err.Error()
 		} else {
 			m.lastMsg = "commit undone — changes are staged"
@@ -403,7 +418,7 @@ func (m *Model) gitBranchPrompt() {
 		if name == "" {
 			return
 		}
-		if err := git.CreateBranch(m.gitSnap.Top, name); err != nil {
+		if err := git.CreateBranch(m.git.snap.Top, name); err != nil {
 			m.lastMsg = err.Error()
 		} else {
 			m.lastMsg = "on new branch " + name
@@ -417,7 +432,7 @@ func (m Model) openBranchPicker() Model {
 	if !m.gitRepo() {
 		return m
 	}
-	branches, err := git.Branches(m.gitSnap.Top)
+	branches, err := git.Branches(m.git.snap.Top)
 	if err != nil {
 		m.lastMsg = err.Error()
 		return m
@@ -431,7 +446,7 @@ func (m Model) openBranchPicker() Model {
 	items := make([]overlay.Item, len(branches))
 	for i, b := range branches {
 		detail := ""
-		if b == m.gitSnap.Branch {
+		if b == m.git.snap.Branch {
 			detail = "current"
 		}
 		items[i] = overlay.Item{Label: b, Detail: detail}
@@ -447,7 +462,7 @@ func (m Model) openHistoryPicker() Model {
 	if !m.gitRepo() {
 		return m
 	}
-	commits, err := git.Log(m.gitSnap.Top, 200)
+	commits, err := git.Log(m.git.snap.Top, 200)
 	if err != nil {
 		m.lastMsg = err.Error()
 		return m
@@ -479,7 +494,7 @@ func (m *Model) gitOpenGraph() {
 	if !m.gitRepo() {
 		return
 	}
-	text, err := git.LogGraph(m.gitSnap.Top, 500)
+	text, err := git.LogGraph(m.git.snap.Top, 500)
 	if err != nil {
 		m.lastMsg = err.Error()
 		return
@@ -502,7 +517,7 @@ func (m *Model) gitOpenCommitAtCursor(d *doc) {
 	if sha == "" {
 		return
 	}
-	text, err := git.ShowCommit(m.gitSnap.Top, sha)
+	text, err := git.ShowCommit(m.git.snap.Top, sha)
 	if err != nil {
 		m.lastMsg = err.Error()
 		return
@@ -521,12 +536,12 @@ func (m *Model) gitOp(op string) tea.Cmd {
 	if !m.gitRepo() {
 		return nil
 	}
-	if m.gitBusy != "" {
-		m.lastMsg = "git " + m.gitBusy + " already in progress"
+	if m.git.busy != "" {
+		m.lastMsg = "git " + m.git.busy + " already in progress"
 		return nil
 	}
-	m.gitBusy = op
-	top := m.gitSnap.Top
+	m.git.busy = op
+	top := m.git.snap.Top
 	return func() tea.Msg {
 		var out string
 		var err error
@@ -543,7 +558,7 @@ func (m *Model) gitOp(op string) tea.Cmd {
 }
 
 func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
-	m.gitBusy = ""
+	m.git.busy = ""
 	if msg.err != nil {
 		m.lastMsg = msg.err.Error()
 	} else {
@@ -556,11 +571,11 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 		case strings.Contains(low, "up to date") || strings.Contains(low, "up-to-date"):
 			m.lastMsg = "already up to date"
 		case strings.Contains(low, "set up to track"):
-			m.lastMsg = "published branch " + m.gitSnap.Branch + " to origin"
+			m.lastMsg = "published branch " + m.git.snap.Branch + " to origin"
 		case msg.op == "push":
-			m.lastMsg = "pushed " + m.gitSnap.Branch
+			m.lastMsg = "pushed " + m.git.snap.Branch
 		default:
-			m.lastMsg = "pulled " + m.gitSnap.Branch
+			m.lastMsg = "pulled " + m.git.snap.Branch
 		}
 	}
 	m.refreshGit()
@@ -576,9 +591,9 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 // nil baseline (untracked file, no repo, virtual tab) = no signs.
 func (m *Model) loadGitHead(d *doc) {
 	d.head = nil
-	if m.gitSnap.Top != "" && !d.virtual {
-		if rel := gitRelPath(m.gitSnap.Top, d.path); !strings.HasPrefix(rel, "..") {
-			if b, err := git.Show(m.gitSnap.Top, rel); err == nil {
+	if m.git.snap.Top != "" && !d.virtual {
+		if rel := gitRelPath(m.git.snap.Top, d.path); !strings.HasPrefix(rel, "..") {
+			if b, err := git.Show(m.git.snap.Top, rel); err == nil {
 				d.head = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 			}
 		}
@@ -608,12 +623,12 @@ type blameMsg struct {
 // per Update, so tab switches and toggles need no extra plumbing.
 func (m *Model) blameCmdIfNeeded() tea.Cmd {
 	d := m.doc()
-	if !m.blameOn || d == nil || d.virtual || d.blame != nil || d.blameBusy ||
-		m.gitSnap.Top == "" || d.head == nil {
+	if !m.git.blameOn || d == nil || d.virtual || d.blame != nil || d.blameBusy ||
+		m.git.snap.Top == "" || d.head == nil {
 		return nil
 	}
 	d.blameBusy = true
-	top, path := m.gitSnap.Top, gitRelPath(m.gitSnap.Top, d.path)
+	top, path := m.git.snap.Top, gitRelPath(m.git.snap.Top, d.path)
 	return func() tea.Msg {
 		lines, err := git.Blame(top, path)
 		if err != nil {
@@ -631,7 +646,7 @@ func (m Model) handleBlame(msg blameMsg) (Model, tea.Cmd) {
 
 // blameSeg is the current line's annotation: "author, age · summary".
 func (m Model) blameSeg(d *doc) string {
-	if !m.blameOn || d == nil || d.blame == nil || len(d.blame) == 0 {
+	if !m.git.blameOn || d == nil || d.blame == nil || len(d.blame) == 0 {
 		return ""
 	}
 	line, _ := d.ed.Cursor()
@@ -708,42 +723,42 @@ func gitLetter(r gitRow) (string, lipgloss.Style) {
 func (m Model) gitPanelView() string {
 	w := m.side.Width
 	var sb strings.Builder
-	head := " Git: " + m.gitSnap.Branch
-	if m.gitSnap.Branch == "" {
+	head := " Git: " + m.git.snap.Branch
+	if m.git.snap.Branch == "" {
 		head = " Git"
 	}
-	sb.WriteString(gitHeadStyle.Render(gitPad(head, w)))
+	sb.WriteString(gitHeadStyle.Render(sidebar.Pad(head, w)))
 	h := m.gitHeight()
-	for i := m.gitTop; i < m.gitTop+h; i++ {
+	for i := m.git.top; i < m.git.top+h; i++ {
 		sb.WriteByte('\n')
-		if i >= len(m.gitRows) {
+		if i >= len(m.git.rows) {
 			if i == 0 {
 				msg := " no changes"
-				if m.gitErr != "" {
-					msg = " " + m.gitErr
+				if m.git.err != "" {
+					msg = " " + m.git.err
 				}
-				sb.WriteString(gitPad(msg, w))
+				sb.WriteString(sidebar.Pad(msg, w))
 			} else {
 				sb.WriteString(strings.Repeat(" ", max(0, w)))
 			}
 			continue
 		}
-		r := m.gitRows[i]
+		r := m.git.rows[i]
 		if r.header != "" {
-			sb.WriteString(gitSectionStyle.Render(gitPad(" "+r.header, w)))
+			sb.WriteString(gitSectionStyle.Render(sidebar.Pad(" "+r.header, w)))
 			continue
 		}
 		letter, st := gitLetter(r)
-		plain := gitPad(" "+letter+" "+r.fs.Path, w)
+		plain := sidebar.Pad(" "+letter+" "+r.fs.Path, w)
 		switch {
-		case i == m.gitSel && m.focus == paneGit:
+		case i == m.git.sel && m.focus == paneGit:
 			sb.WriteString(gitSelStyle.Render(plain))
-		case i == m.gitSel:
+		case i == m.git.sel:
 			sb.WriteString(gitSelStyle.Faint(true).Render(plain))
 		default:
 			sb.WriteString(" ")
 			sb.WriteString(st.Render(letter))
-			sb.WriteString(gitPad(" "+r.fs.Path, w-2))
+			sb.WriteString(sidebar.Pad(" "+r.fs.Path, w-2))
 		}
 	}
 	return sb.String()
@@ -751,36 +766,39 @@ func (m Model) gitPanelView() string {
 
 // gitSeg is the status-bar segment: branch, ahead/behind, change count.
 func (m Model) gitSeg() string {
-	if m.gitSnap.Branch == "" {
+	if m.git.snap.Branch == "" {
 		return ""
 	}
-	s := "⎇ " + m.gitSnap.Branch
-	if m.gitSnap.Ahead > 0 {
-		s += fmt.Sprintf(" ↑%d", m.gitSnap.Ahead)
+	s := "⎇ " + m.git.snap.Branch
+	if m.git.snap.Ahead > 0 {
+		s += fmt.Sprintf(" ↑%d", m.git.snap.Ahead)
 	}
-	if m.gitSnap.Behind > 0 {
-		s += fmt.Sprintf(" ↓%d", m.gitSnap.Behind)
+	if m.git.snap.Behind > 0 {
+		s += fmt.Sprintf(" ↓%d", m.git.snap.Behind)
 	}
-	if n := len(m.gitSnap.Files); n > 0 {
+	if n := len(m.git.snap.Files); n > 0 {
 		s += fmt.Sprintf(" ±%d", n)
 	}
-	if m.gitBusy != "" {
-		s = m.gitBusy + "… " + s
+	if m.git.busy != "" {
+		s = m.git.busy + "… " + s
 	}
 	return s + "  "
 }
 
-// gitPad clips or pads to exactly w cells. ponytail: rune==cell assumption,
-// same as the sidebar.
-func gitPad(s string, w int) string {
-	if w <= 0 {
-		return ""
+// forEachLine walks the lines of src intersecting [startOff, endOff) — the
+// shared scaffold of the static highlighters below.
+func forEachLine(src []byte, startOff, endOff int, f func(lo, hi int, line []byte)) {
+	lo := bytes.LastIndexByte(src[:min(startOff, len(src))], '\n') + 1
+	for lo < endOff && lo < len(src) {
+		hi := bytes.IndexByte(src[lo:], '\n')
+		if hi < 0 {
+			hi = len(src)
+		} else {
+			hi += lo + 1
+		}
+		f(lo, hi, src[lo:hi])
+		lo = hi
 	}
-	r := []rune(s)
-	if len(r) >= w {
-		return string(r[:w])
-	}
-	return s + strings.Repeat(" ", w-len(r))
 }
 
 // ---- log-graph highlighting: sha and (refs) per line ----
@@ -794,23 +812,14 @@ var logDecoRe = regexp.MustCompile(`\([^)]*\)`)
 
 func (logSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 	var spans []editor.HLSpan
-	lo := bytes.LastIndexByte(src[:min(startOff, len(src))], '\n') + 1
-	for lo < endOff && lo < len(src) {
-		hi := bytes.IndexByte(src[lo:], '\n')
-		if hi < 0 {
-			hi = len(src)
-		} else {
-			hi += lo + 1
-		}
-		line := src[lo:hi]
+	forEachLine(src, startOff, endOff, func(lo, hi int, line []byte) {
 		if m := shaRe.FindIndex(line); m != nil {
 			spans = append(spans, editor.HLSpan{Start: lo + m[0], End: lo + m[1], Class: editor.ClassFunction})
 		}
 		if m := logDecoRe.FindIndex(line); m != nil {
 			spans = append(spans, editor.HLSpan{Start: lo + m[0], End: lo + m[1], Class: editor.ClassKeyword})
 		}
-		lo = hi
-	}
+	})
 	return spans
 }
 
@@ -823,15 +832,7 @@ func (diffSyntax) Expand([]byte, int, int) (lo, hi int, ok bool) { return 0, 0, 
 
 func (diffSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 	var spans []editor.HLSpan
-	lo := bytes.LastIndexByte(src[:min(startOff, len(src))], '\n') + 1
-	for lo < endOff && lo < len(src) {
-		hi := bytes.IndexByte(src[lo:], '\n')
-		if hi < 0 {
-			hi = len(src)
-		} else {
-			hi += lo + 1
-		}
-		line := src[lo:hi]
+	forEachLine(src, startOff, endOff, func(lo, hi int, line []byte) {
 		class := editor.ClassNone
 		switch {
 		case bytes.HasPrefix(line, []byte("+++")), bytes.HasPrefix(line, []byte("---")),
@@ -848,7 +849,6 @@ func (diffSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 		if class != editor.ClassNone {
 			spans = append(spans, editor.HLSpan{Start: lo, End: hi, Class: class})
 		}
-		lo = hi
-	}
+	})
 	return spans
 }

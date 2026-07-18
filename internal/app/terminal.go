@@ -71,11 +71,13 @@ func (m *Model) toggleTerm() tea.Cmd {
 		}
 		return nil
 	}
-	m.termOpen = true
-	m.focus = paneTerminal
 	if len(m.terms) == 0 {
+		// newTerm sets termOpen/focus only on success — a failed PTY spawn
+		// must not leave an open-but-empty panel swallowing keystrokes.
 		return m.newTerm()
 	}
+	m.termOpen = true
+	m.focus = paneTerminal
 	return nil
 }
 

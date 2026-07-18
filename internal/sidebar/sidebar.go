@@ -42,15 +42,15 @@ type node struct {
 }
 
 type Model struct {
-	Root   string
-	Width  int
-	Height int
-	root   *node
-	rows   []*node // flattened visible nodes
-	depths []int
-	sel    int
-	top    int
-	err    string
+	Root     string
+	Width    int
+	Height   int
+	root     *node
+	rows     []*node // flattened visible nodes
+	depths   []int
+	sel      int
+	top      int
+	err      string
 	gitFiles map[string]byte // abs path -> 'A' new, 'M' modified, '!' conflict
 	gitDirs  map[string]bool // dirs containing a changed file
 }
@@ -261,7 +261,7 @@ func (m Model) View(focused bool) string {
 	if m.err != "" {
 		head = " " + m.err
 	}
-	sb.WriteString(headStyle.Render(pad(head, m.Width)))
+	sb.WriteString(headStyle.Render(Pad(head, m.Width)))
 	h := m.treeHeight()
 	for i := m.top; i < m.top+h; i++ {
 		sb.WriteByte('\n')
@@ -282,7 +282,7 @@ func (m Model) View(focused bool) string {
 		if n.isDir && m.gitDirs[n.path] {
 			row += " •"
 		}
-		row = pad(" "+row, m.Width)
+		row = Pad(" "+row, m.Width)
 		switch {
 		case i == m.sel && focused:
 			row = selStyle.Render(row)
@@ -302,9 +302,13 @@ func (m Model) View(focused bool) string {
 	return sb.String()
 }
 
-// pad clips or pads s to exactly w cells so rows never bleed into the
-// editor pane. ponytail: rune==cell assumption, same as the renderer.
-func pad(s string, w int) string {
+// Pad clips or pads s to exactly w cells so rows never bleed into the
+// editor pane. Exported: the app's git panel shares it. ponytail: rune==cell
+// assumption, same as the renderer.
+func Pad(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
 	r := []rune(s)
 	if len(r) >= w {
 		return string(r[:w])

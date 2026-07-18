@@ -79,7 +79,9 @@ func Top(dir string) (string, error) { return run(dir, "rev-parse", "--show-topl
 func Status(top string) (Snapshot, error) {
 	snap := Snapshot{Top: top}
 	// -uall: list files inside untracked directories, not a collapsed "dir/"
-	out, err := run(top, "status", "--porcelain=v2", "--branch", "--untracked-files=all")
+	// quotePath=false: non-ASCII filenames arrive as bytes, not "\303\251"
+	// octal soup that would break every later pathspec built from them.
+	out, err := run(top, "-c", "core.quotePath=false", "status", "--porcelain=v2", "--branch", "--untracked-files=all")
 	if err != nil {
 		return snap, err
 	}
@@ -96,23 +98,34 @@ func Status(top string) (Snapshot, error) {
 			fmt.Sscanf(ln, "# branch.ab +%d -%d", &snap.Ahead, &snap.Behind)
 		case strings.HasPrefix(ln, "1 "):
 			if f := strings.SplitN(ln, " ", 9); len(f) == 9 {
-				snap.Files = append(snap.Files, FileStatus{Path: f[8], Index: f[1][0], Work: f[1][1]})
+				snap.Files = append(snap.Files, FileStatus{Path: unquotePath(f[8]), Index: f[1][0], Work: f[1][1]})
 			}
 		case strings.HasPrefix(ln, "2 "): // rename: path field is "new\told"
 			if f := strings.SplitN(ln, " ", 10); len(f) == 10 {
 				path, _, _ := strings.Cut(f[9], "\t")
-				snap.Files = append(snap.Files, FileStatus{Path: path, Index: f[1][0], Work: f[1][1]})
+				snap.Files = append(snap.Files, FileStatus{Path: unquotePath(path), Index: f[1][0], Work: f[1][1]})
 			}
 		case strings.HasPrefix(ln, "? "):
-			snap.Files = append(snap.Files, FileStatus{Path: ln[2:], Index: '?', Work: '?'})
+			snap.Files = append(snap.Files, FileStatus{Path: unquotePath(ln[2:]), Index: '?', Work: '?'})
 		case strings.HasPrefix(ln, "u "):
 			if f := strings.SplitN(ln, " ", 11); len(f) == 11 {
-				snap.Files = append(snap.Files, FileStatus{Path: f[10], Index: '!', Work: '!'})
+				snap.Files = append(snap.Files, FileStatus{Path: unquotePath(f[10]), Index: '!', Work: '!'})
 			}
 		}
 	}
 	sort.Slice(snap.Files, func(i, j int) bool { return snap.Files[i].Path < snap.Files[j].Path })
 	return snap, nil
+}
+
+// unquotePath undoes git's C-style quoting (paths with quotes, backslashes,
+// or control bytes still arrive as `"a\"b.go"` even with quotePath=false).
+func unquotePath(p string) string {
+	if len(p) >= 2 && p[0] == '"' && p[len(p)-1] == '"' {
+		if u, err := strconv.Unquote(p); err == nil {
+			return u
+		}
+	}
+	return p
 }
 
 func Stage(top, path string) error { _, err := run(top, "add", "--", path); return err }

@@ -56,6 +56,17 @@ func (c *Client) start() {
 		c.die()
 		return
 	}
+	// Reap the process on any exit path — without this every dead server
+	// stays a zombie until Cove itself exits. Readers just see EOF.
+	go cmd.Wait()
+	c.mu.Lock()
+	if c.state == "dead" { // Kill() arrived before we even started
+		c.mu.Unlock()
+		cmd.Process.Kill()
+		return
+	}
+	c.cmd = cmd // set before initialize so Kill() can reach the process
+	c.mu.Unlock()
 	conn := newConn(stdin, stdout, c.onNotify, func(error) { c.die() })
 
 	initParams := map[string]any{
@@ -86,8 +97,12 @@ func (c *Client) start() {
 	conn.Notify("initialized", struct{}{})
 
 	c.mu.Lock()
+	if c.state == "dead" { // Kill() landed mid-initialize: stay dead
+		c.mu.Unlock()
+		cmd.Process.Kill()
+		return
+	}
 	c.conn = conn
-	c.cmd = cmd
 	c.state = "ready"
 	queued := c.queued
 	c.queued = nil
