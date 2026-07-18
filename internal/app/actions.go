@@ -164,12 +164,6 @@ func newRegistry() *action.Registry {
 		}
 		return nil
 	})
-	reg("sidebar.focus", "Sidebar: Focus File Tree", "", action.Global, func(m *Model) tea.Cmd {
-		m.sidebarOpen = true
-		m.gitView = false
-		m.focus = paneSidebar
-		return nil
-	})
 	reg("term.toggle", "Terminal: Toggle", "ctrl+j", action.Global, func(m *Model) tea.Cmd { return m.toggleTerm() })
 	reg("term.new", "Terminal: New Instance", "", action.Global, func(m *Model) tea.Cmd { return m.newTerm() })
 
@@ -183,28 +177,29 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 
-	// ---- git (palette entries are Global; single-letter keys only bind
-	// inside the panel via the Git context) ----
+	// ---- git (registered in the Git context so the palette shows the
+	// panel's single-letter keys, which only fire with the panel focused;
+	// the palette itself runs Do directly, so they stay runnable anywhere) ----
 	reg("git.toggle", "Git: Toggle Panel", "ctrl+g", action.Global, func(m *Model) tea.Cmd { m.toggleGit(); return nil })
 	// Refresh reads local status immediately, then fetches in the background
 	// so the ±ahead/behind counts track the actual remote, not the last pull.
-	reg("git.refresh", "Git: Refresh Status", "", action.Global, func(m *Model) tea.Cmd {
+	reg("git.refresh", "Git: Refresh Status", "r", action.Git, func(m *Model) tea.Cmd {
 		m.refreshGit()
 		if m.gitSnap.Upstream == "" {
 			return nil // nothing to fetch from (no remote / unpublished branch)
 		}
 		return m.gitOp("fetch")
 	})
-	reg("git.commit", "Git: Commit Staged…", "", action.Global, func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
-	reg("git.undoCommit", "Git: Undo Last Commit (Keep Changes Staged)", "", action.Global, func(m *Model) tea.Cmd { m.gitUndoCommitPrompt(); return nil })
+	reg("git.commit", "Git: Commit Staged…", "c", action.Git, func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
+	reg("git.undoCommit", "Git: Undo Last Commit (Keep Changes Staged)", "z", action.Git, func(m *Model) tea.Cmd { m.gitUndoCommitPrompt(); return nil })
 	reg("git.push", "Git: Push", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("push") })
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
-	reg("git.fetch", "Git: Fetch", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("fetch") })
-	reg("git.log", "Git: History…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openHistoryPicker(); return nil })
-	reg("git.graph", "Git: Commit Graph", "", action.Global, func(m *Model) tea.Cmd { m.gitOpenGraph(); return nil })
-	reg("git.branch", "Git: Switch Branch…", "", action.Global, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
+	reg("git.fetch", "Git: Fetch", "f", action.Git, func(m *Model) tea.Cmd { return m.gitOp("fetch") })
+	reg("git.log", "Git: History…", "l", action.Git, func(m *Model) tea.Cmd { *m = m.openHistoryPicker(); return nil })
+	reg("git.graph", "Git: Commit Graph", "g", action.Git, func(m *Model) tea.Cmd { m.gitOpenGraph(); return nil })
+	reg("git.branch", "Git: Switch Branch…", "b", action.Git, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
-	reg("git.restore", "Git: Discard File Changes (Restore)", "", action.Global, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
+	reg("git.restore", "Git: Discard File Changes (Restore)", "x", action.Git, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
 		m.blameOn = !m.blameOn
 		// No "blame on" message: lastMsg and the blame annotation share the
@@ -214,7 +209,7 @@ func newRegistry() *action.Registry {
 		}
 		return nil // the fetch is scheduled by the Update choke point
 	})
-	reg("git.stageAll", "Git: Stage All", "", action.Global, func(m *Model) tea.Cmd {
+	reg("git.stageAll", "Git: Stage All", "a", action.Git, func(m *Model) tea.Cmd {
 		if m.gitRepo() {
 			if err := git.StageAll(m.gitSnap.Top); err != nil {
 				m.lastMsg = err.Error()
@@ -223,7 +218,7 @@ func newRegistry() *action.Registry {
 		}
 		return nil
 	})
-	reg("git.unstageAll", "Git: Unstage All", "", action.Global, func(m *Model) tea.Cmd {
+	reg("git.unstageAll", "Git: Unstage All", "u", action.Git, func(m *Model) tea.Cmd {
 		if m.gitRepo() {
 			if err := git.UnstageAll(m.gitSnap.Top); err != nil {
 				m.lastMsg = err.Error()
@@ -245,31 +240,6 @@ func newRegistry() *action.Registry {
 	ghid("git.focusEditor", "esc", func(m *Model) tea.Cmd {
 		if len(m.docs) > 0 {
 			m.focus = paneEditor
-		}
-		return nil
-	})
-	ghid("git.restore.x", "x", func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
-	ghid("git.commit.c", "c", func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
-	ghid("git.undoCommit.z", "z", func(m *Model) tea.Cmd { m.gitUndoCommitPrompt(); return nil })
-	ghid("git.refresh.r", "r", func(m *Model) tea.Cmd {
-		if a := r.ByID("git.refresh"); a != nil {
-			return a.Do(m)
-		}
-		return nil
-	})
-	ghid("git.branch.b", "b", func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
-	ghid("git.log.l", "l", func(m *Model) tea.Cmd { *m = m.openHistoryPicker(); return nil })
-	ghid("git.graph.g", "g", func(m *Model) tea.Cmd { m.gitOpenGraph(); return nil })
-	ghid("git.fetch.f", "f", func(m *Model) tea.Cmd { return m.gitOp("fetch") })
-	ghid("git.stageAll.a", "a", func(m *Model) tea.Cmd {
-		if a := r.ByID("git.stageAll"); a != nil {
-			return a.Do(m)
-		}
-		return nil
-	})
-	ghid("git.unstageAll.u", "u", func(m *Model) tea.Cmd {
-		if a := r.ByID("git.unstageAll"); a != nil {
-			return a.Do(m)
 		}
 		return nil
 	})
