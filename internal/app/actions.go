@@ -280,12 +280,14 @@ func newRegistry() *action.Registry {
 		if sel := d.ed.Selection(); len(sel) > 0 && !bytes.Contains(sel, []byte("\n")) {
 			m.query = string(sel)
 		}
+		m.miniCur = len([]rune(m.query))
 		d.ed.SetSearch(m.query, m.useRegex)
 		return nil
 	})
 	reg("find.replace", "Find and Replace", "ctrl+r", action.Editor, func(m *Model) tea.Cmd {
 		if m.doc() != nil {
 			m.mode = modeReplace
+			m.miniCur = len([]rune(m.repl))
 		}
 		return nil
 	})
