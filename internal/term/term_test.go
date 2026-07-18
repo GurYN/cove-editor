@@ -108,10 +108,10 @@ func TestScrollback(t *testing.T) {
 // arrow keys (alternate scroll), plain shells scroll the local view.
 func TestWheelSeq(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		mouse, sgr, alt  bool
-		up               bool
-		want             string
+		name            string
+		mouse, sgr, alt bool
+		up              bool
+		want            string
 	}{
 		{"plain shell -> local scroll", false, false, false, true, ""},
 		{"alt screen up -> arrows", false, false, true, true, "\x1b[A\x1b[A\x1b[A"},

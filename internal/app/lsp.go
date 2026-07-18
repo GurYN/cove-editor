@@ -30,10 +30,14 @@ type complMsg struct {
 	rev   int // editor revision at request time
 }
 type symsMsg struct{ syms []lsp.DocumentSymbol }
-type wsEditMsg struct{ edit *lsp.WorkspaceEdit }
+type wsEditMsg struct {
+	edit *lsp.WorkspaceEdit
+	revs map[string]int // open-doc revisions at request time
+}
 type fmtMsg struct {
 	path  string
 	edits []lsp.TextEdit
+	rev   int // editor revision at request time
 }
 type lspErrMsg struct{ err error }
 
@@ -191,6 +195,12 @@ func cmdSymbols(m *Model) tea.Cmd {
 }
 
 func cmdRename(m *Model, newName string) tea.Cmd {
+	// Snapshot open-doc revisions: edits computed now must not land on
+	// buffers the user has since typed in (stale offsets corrupt text).
+	revs := make(map[string]int, len(m.docs))
+	for _, d := range m.docs {
+		revs[d.path] = d.ed.Rev
+	}
 	return m.lspCmd(func(c *lsp.Client, uri string, pos lsp.Position) tea.Msg {
 		ctx, cancel := lsp.Ctx()
 		defer cancel()
@@ -198,7 +208,7 @@ func cmdRename(m *Model, newName string) tea.Cmd {
 		if err != nil {
 			return lspErrMsg{err}
 		}
-		return wsEditMsg{we}
+		return wsEditMsg{edit: we, revs: revs}
 	})
 }
 
@@ -207,7 +217,7 @@ func cmdFormat(m *Model) tea.Cmd {
 	if d == nil {
 		return nil
 	}
-	path := d.path
+	path, rev := d.path, d.ed.Rev
 	return m.lspCmd(func(c *lsp.Client, uri string, pos lsp.Position) tea.Msg {
 		ctx, cancel := lsp.Ctx()
 		defer cancel()
@@ -215,7 +225,7 @@ func cmdFormat(m *Model) tea.Cmd {
 		if err != nil {
 			return lspErrMsg{err}
 		}
-		return fmtMsg{path: path, edits: edits}
+		return fmtMsg{path: path, edits: edits, rev: rev}
 	})
 }
 
@@ -252,23 +262,29 @@ func toEditorEdits(buf *buffer.Buffer, edits []lsp.TextEdit) []editor.Edit {
 }
 
 // applyWorkspaceEdit applies a rename result: open docs get an undoable
-// transaction; closed files are edited on disk.
-func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit) {
+// transaction; closed files are edited on disk. Docs edited since the
+// request (rev mismatch) are skipped — the offsets no longer fit.
+func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit, revs map[string]int) {
 	if we == nil {
 		return
 	}
-	files := 0
+	files, stale := 0, 0
 	for uri, edits := range we.Changes {
 		if len(edits) == 0 {
 			continue
 		}
-		files++
 		path := lsp.URIToPath(uri)
 		if d := m.docByPath(path); d != nil {
+			if rev, ok := revs[d.path]; !ok || rev != d.ed.Rev {
+				stale++
+				continue
+			}
+			files++
 			d.ed.ApplyEdits(toEditorEdits(d.ed.Buf, edits))
 			m.lastMsg = d.save()
 			continue
 		}
+		files++
 		data, err := os.ReadFile(path)
 		if err != nil {
 			m.lastMsg = err.Error()
@@ -285,6 +301,9 @@ func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit) {
 		}
 	}
 	m.lastMsg = fmt.Sprintf("renamed in %d file(s)", files)
+	if stale > 0 {
+		m.lastMsg += fmt.Sprintf(", %d skipped (buffer changed — rename again)", stale)
+	}
 }
 
 func (m *Model) docByPath(path string) *doc {

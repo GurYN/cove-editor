@@ -247,6 +247,31 @@ func New(path string, src []byte) *Highlighter {
 	return h
 }
 
+// Close frees the tree-sitter C objects — go-tree-sitter has no finalizers,
+// so an unclosed Highlighter leaks native memory on every tab close.
+func (h *Highlighter) Close() {
+	for _, ch := range h.children {
+		if ch.tree != nil {
+			ch.tree.Close()
+		}
+		ch.query.Close()
+		ch.parser.Close()
+	}
+	h.children = nil
+	if h.tree != nil {
+		h.tree.Close()
+		h.tree = nil
+	}
+	if h.query != nil {
+		h.query.Close()
+		h.query = nil
+	}
+	if h.parser != nil {
+		h.parser.Close()
+		h.parser = nil
+	}
+}
+
 // parseChildren walks the parent tree for injection sites intersecting the
 // viewport [lo, hi) and reparses each injected language over those ranges
 // only — full-file child coverage costs seconds on a 40k-line markdown file.

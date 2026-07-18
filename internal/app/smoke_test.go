@@ -70,6 +70,33 @@ func TestPasteChunkWithCR(t *testing.T) {
 	}
 }
 
+// Alt+Shift+Up/Down arrives as one atomic KeyShiftUp/Down chord with Alt set
+// (a real move-line keypress, not an Esc fusion) — the unfuse must let it
+// through to edit.moveLineUp/Down instead of splitting it into Esc+shift+up.
+func TestMoveLineChordSurvivesUnfuse(t *testing.T) {
+	m := setup(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftDown, Alt: true})
+	mm := m.(Model)
+	d := (&mm).doc()
+	if got := string(d.ed.Buf.Line(0)); got != "" {
+		t.Fatalf("line 0 = %q, want empty (line moved down)", got)
+	}
+	if got := string(d.ed.Buf.Line(1)); got != "package sample" {
+		t.Fatalf("line 1 = %q, want \"package sample\"", got)
+	}
+}
+
+// Shrinking the terminal to almost nothing with the sidebar open must render,
+// not panic on a negative-width switcher button.
+func TestTinyWindowNoPanic(t *testing.T) {
+	m := setup(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB}) // reopen sidebar
+	for _, w := range []int{5, 3, 2, 1} {
+		m, _ = m.Update(tea.WindowSizeMsg{Width: w, Height: 2})
+		_ = m.View()
+	}
+}
+
 // Esc never arrives alone from the terminal; it fuses with the next key
 // into an alt-chord. The app must unfuse: Esc semantics, then the bare key.
 func TestEscUnfuse(t *testing.T) {
@@ -436,21 +463,21 @@ func TestSidebarSwitcherClick(t *testing.T) {
 	m := setup(t)
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB}) // reopen sidebar
 	app := m.(Model)
-	if !app.sidebarOpen || app.gitView {
+	if !app.sidebarOpen || app.git.view {
 		t.Fatal("expected open sidebar showing the file tree")
 	}
 	y := app.height - 3 // switcher row
 	gitX := app.sideSwitcherRanges()[1].start
 	m, _ = m.Update(tea.MouseMsg{X: gitX, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	app = m.(Model)
-	if !app.gitView || app.focus != paneGit {
-		t.Fatalf("git button: gitView=%v focus=%v, want git panel focused", app.gitView, app.focus)
+	if !app.git.view || app.focus != paneGit {
+		t.Fatalf("git button: gitView=%v focus=%v, want git panel focused", app.git.view, app.focus)
 	}
 	filesX := app.sideSwitcherRanges()[0].start
 	m, _ = m.Update(tea.MouseMsg{X: filesX, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	app = m.(Model)
-	if app.gitView || app.focus != paneSidebar {
-		t.Fatalf("files button: gitView=%v focus=%v, want file tree focused", app.gitView, app.focus)
+	if app.git.view || app.focus != paneSidebar {
+		t.Fatalf("files button: gitView=%v focus=%v, want file tree focused", app.git.view, app.focus)
 	}
 }
 

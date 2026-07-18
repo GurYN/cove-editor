@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -80,7 +81,7 @@ func TestEditAndScroll(t *testing.T) {
 	m := New(buffer.New([]byte("alpha\nbeta\ngamma\n")))
 	m.Width, m.Height = 40, 2
 
-	m = key(m, tea.KeyEnd)
+	m.LineEdge(+1, false)
 	m = typeRunes(m, "!")
 	if got := string(m.Buf.Line(0)); got != "alpha!" {
 		t.Fatalf("line 0 = %q", got)
@@ -89,7 +90,7 @@ func TestEditAndScroll(t *testing.T) {
 		t.Fatal("edit did not set Dirty")
 	}
 	for range 3 {
-		m = key(m, tea.KeyDown)
+		m.MoveV(+1, false)
 	}
 	if m.top == 0 {
 		t.Fatal("viewport did not scroll to follow cursor")
@@ -102,22 +103,22 @@ func TestEditAndScroll(t *testing.T) {
 func TestUndoRedo(t *testing.T) {
 	m := New(buffer.New([]byte("hello world\n")))
 	m.Width, m.Height = 80, 10
-	m = key(m, tea.KeyCtrlEnd)
+	m.Go(m.Buf.LineCount()-1, 0)
 	m = typeRunes(m, "bye")
 	if got := string(m.Buf.Line(1)); got != "bye" {
 		t.Fatalf("after typing: %q", got)
 	}
 	// Coalesced burst: one undo removes all three runes.
-	m = key(m, tea.KeyCtrlZ)
+	m.UndoStep()
 	if got := string(m.Buf.Bytes()); got != "hello world\n" {
 		t.Fatalf("after undo: %q", got)
 	}
-	m = key(m, tea.KeyCtrlY)
+	m.RedoStep()
 	if got := string(m.Buf.Line(1)); got != "bye" {
 		t.Fatalf("after redo: %q", got)
 	}
 	// Undo restores cursor position.
-	m = key(m, tea.KeyCtrlZ)
+	m.UndoStep()
 	if line, col := m.Cursor(); line != 1 || col != 0 {
 		t.Fatalf("cursor after undo = %d:%d, want 1:0", line, col)
 	}
@@ -127,8 +128,8 @@ func TestMultiCursorTyping(t *testing.T) {
 	m := New(buffer.New([]byte("aaa\nbbb\nccc\n")))
 	m.Width, m.Height = 80, 10
 	// Cursor on line 0, add cursors below on lines 1 and 2.
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	m.AddCursor(+1)
+	m.AddCursor(+1)
 	if m.CursorCount() != 3 {
 		t.Fatalf("cursors = %d, want 3", m.CursorCount())
 	}
@@ -137,7 +138,7 @@ func TestMultiCursorTyping(t *testing.T) {
 		t.Fatalf("multi-insert: %q", got)
 	}
 	// One undo reverts all three inserts.
-	m = key(m, tea.KeyCtrlZ)
+	m.UndoStep()
 	if got := string(m.Buf.Bytes()); got != "aaa\nbbb\nccc\n" {
 		t.Fatalf("multi-undo: %q", got)
 	}
@@ -146,12 +147,12 @@ func TestMultiCursorTyping(t *testing.T) {
 func TestSelectNextOccurrence(t *testing.T) {
 	m := New(buffer.New([]byte("foo bar\nfoo baz\nfoo qux\n")))
 	m.Width, m.Height = 80, 10
-	m = key(m, tea.KeyCtrlD) // select word "foo"
+	m.SelectNext() // select word "foo"
 	if got := string(m.Selection()); got != "foo" {
 		t.Fatalf("selection = %q", got)
 	}
-	m = key(m, tea.KeyCtrlD)
-	m = key(m, tea.KeyCtrlD)
+	m.SelectNext()
+	m.SelectNext()
 	if m.CursorCount() != 3 {
 		t.Fatalf("cursors = %d, want 3", m.CursorCount())
 	}
@@ -174,6 +175,16 @@ func TestSearchAndReplaceAll(t *testing.T) {
 	if got := string(m.Selection()); got != "cat" {
 		t.Fatalf("selected %q", got)
 	}
+	if cur, _ := m.SearchInfo(); cur != 1 {
+		t.Fatalf("cur = %d on first match, want 1", cur)
+	}
+	m.NextMatch(+1)
+	m.NextMatch(+1) // last match: counter must say 3/3, not wrap to 1
+	if cur, _ := m.SearchInfo(); cur != 3 {
+		t.Fatalf("cur = %d on last match, want 3", cur)
+	}
+	m.NextMatch(-1)
+	m.NextMatch(-1) // back to the first match
 	if n := m.ReplaceAll("bird"); n != 3 {
 		t.Fatalf("replaced %d, want 3", n)
 	}
@@ -199,8 +210,8 @@ func TestRegexSearch(t *testing.T) {
 func TestRuneAwareMovement(t *testing.T) {
 	m := New(buffer.New([]byte("héllo\n")))
 	m.Width, m.Height = 80, 10
-	m = key(m, tea.KeyRight)
-	m = key(m, tea.KeyRight) // over é (2 bytes)
+	m.MoveH(+1, false)
+	m.MoveH(+1, false) // over é (2 bytes)
 	_, col := m.Cursor()
 	if col != 3 {
 		t.Fatalf("col = %d, want 3 (after 2-byte rune)", col)
@@ -211,11 +222,27 @@ func TestRuneAwareMovement(t *testing.T) {
 	}
 }
 
+// Vertical movement carries a byte wantCol onto other lines; it must snap to
+// a rune boundary or a following delete splits a UTF-8 character.
+func TestVerticalMoveSnapsRuneBoundary(t *testing.T) {
+	m := New(buffer.New([]byte("x\néy\n")))
+	m.Width, m.Height = 80, 10
+	m.MoveH(+1, false) // after "x": wantCol = 1, which is mid-é on line 1
+	m.MoveV(+1, false)
+	if line, col := m.Cursor(); line != 1 || col != 0 {
+		t.Fatalf("cursor = %d:%d, want 1:0 (snapped off the é's middle)", line, col)
+	}
+	m = key(m, tea.KeyBackspace) // join lines — must not split the é
+	if got := m.Buf.Bytes(); !utf8.Valid(got) || string(got) != "xéy\n" {
+		t.Fatalf("after down+backspace: %q (mid-rune cursor split the é)", got)
+	}
+}
+
 func TestSelectionRender(t *testing.T) {
 	m := New(buffer.New([]byte("abc\n")))
 	m.Width, m.Height = 10, 1
-	m = key(m, tea.KeyShiftRight)
-	m = key(m, tea.KeyShiftRight)
+	m.MoveH(+1, true)
+	m.MoveH(+1, true)
 	frame := m.View()
 	if !strings.Contains(frame, "ab") {
 		t.Fatalf("frame missing text: %q", frame)

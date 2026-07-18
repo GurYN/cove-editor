@@ -106,7 +106,7 @@ func newRegistry() *action.Registry {
 		if d := m.doc(); d != nil {
 			m.lastMsg = d.save()
 			m.lspm.Save(d.path)
-			if m.gitSnap.Top != "" {
+			if m.git.snap.Top != "" {
 				m.refreshGit() // keep the panel/branch segment honest
 			}
 		}
@@ -129,7 +129,7 @@ func newRegistry() *action.Registry {
 		if fail != "" {
 			m.lastMsg = fail
 		}
-		if n > 0 && m.gitSnap.Top != "" {
+		if n > 0 && m.git.snap.Top != "" {
 			m.refreshGit()
 		}
 		return nil
@@ -151,8 +151,8 @@ func newRegistry() *action.Registry {
 		// Same tri-state as git.toggle: closed (or showing git) → show tree
 		// and focus it; open but unfocused → focus; focused → close.
 		switch {
-		case m.gitView: // ctrl+b always means the file tree
-			m.gitView = false
+		case m.git.view: // ctrl+b always means the file tree
+			m.git.view = false
 			m.sidebarOpen = true
 			m.focus = paneSidebar
 		case m.sidebarOpen && m.focus == paneSidebar:
@@ -185,7 +185,7 @@ func newRegistry() *action.Registry {
 	// so the ±ahead/behind counts track the actual remote, not the last pull.
 	reg("git.refresh", "Git: Refresh Status", "r", action.Git, func(m *Model) tea.Cmd {
 		m.refreshGit()
-		if m.gitSnap.Upstream == "" {
+		if m.git.snap.Upstream == "" {
 			return nil // nothing to fetch from (no remote / unpublished branch)
 		}
 		return m.gitOp("fetch")
@@ -201,17 +201,17 @@ func newRegistry() *action.Registry {
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
 	reg("git.restore", "Git: Discard File Changes (Restore)", "x", action.Git, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
-		m.blameOn = !m.blameOn
+		m.git.blameOn = !m.git.blameOn
 		// No "blame on" message: lastMsg and the blame annotation share the
 		// status-bar slot, so it would mask the annotation it announces.
-		if !m.blameOn {
+		if !m.git.blameOn {
 			m.lastMsg = "blame off"
 		}
 		return nil // the fetch is scheduled by the Update choke point
 	})
 	reg("git.stageAll", "Git: Stage All", "a", action.Git, func(m *Model) tea.Cmd {
 		if m.gitRepo() {
-			if err := git.StageAll(m.gitSnap.Top); err != nil {
+			if err := git.StageAll(m.git.snap.Top); err != nil {
 				m.lastMsg = err.Error()
 			}
 			m.refreshGit()
@@ -220,7 +220,7 @@ func newRegistry() *action.Registry {
 	})
 	reg("git.unstageAll", "Git: Unstage All", "u", action.Git, func(m *Model) tea.Cmd {
 		if m.gitRepo() {
-			if err := git.UnstageAll(m.gitSnap.Top); err != nil {
+			if err := git.UnstageAll(m.git.snap.Top); err != nil {
 				m.lastMsg = err.Error()
 			}
 			m.refreshGit()
@@ -228,11 +228,11 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 	ghid := func(id, key string, do func(*Model) tea.Cmd) { hid(id, key, action.Git, do) }
-	ghid("git.up", "up", func(m *Model) tea.Cmd { m.gitMove(-1); return nil })
-	ghid("git.down", "down", func(m *Model) tea.Cmd { m.gitMove(+1); return nil })
+	ghid("git.up", "up", func(m *Model) tea.Cmd { m.git.move(-1, m.gitHeight()); return nil })
+	ghid("git.down", "down", func(m *Model) tea.Cmd { m.git.move(+1, m.gitHeight()); return nil })
 	ghid("git.stage", " ", func(m *Model) tea.Cmd { m.gitStageToggle(); return nil })
 	ghid("git.open", "enter", func(m *Model) tea.Cmd {
-		if r, ok := m.gitSelected(); ok {
+		if r, ok := m.git.selected(); ok {
 			m.gitOpenDiff(r)
 		}
 		return nil

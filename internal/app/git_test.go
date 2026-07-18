@@ -96,11 +96,11 @@ func TestGitToggleRefocusesBeforeClosing(t *testing.T) {
 		t.Fatalf("focus = %v, want editor", m.focus)
 	}
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyCtrlG}) // reclaim, not close
-	if m.focus != paneGit || !m.gitView {
-		t.Fatalf("focus = %v gitView = %v, want git focus with panel open", m.focus, m.gitView)
+	if m.focus != paneGit || !m.git.view {
+		t.Fatalf("focus = %v gitView = %v, want git focus with panel open", m.focus, m.git.view)
 	}
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyCtrlG}) // focused: now it closes
-	if m.gitView || m.sidebarOpen {
+	if m.git.view || m.sidebarOpen {
 		t.Fatal("second toggle should close the panel")
 	}
 }
@@ -108,8 +108,8 @@ func TestGitToggleRefocusesBeforeClosing(t *testing.T) {
 func TestSidebarToggleTriState(t *testing.T) {
 	m, _ := gitSetup(t)                             // git panel open + focused
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyCtrlB}) // git view → file tree, focused
-	if m.gitView || !m.sidebarOpen || m.focus != paneSidebar {
-		t.Fatalf("want focused tree, got gitView=%v open=%v focus=%v", m.gitView, m.sidebarOpen, m.focus)
+	if m.git.view || !m.sidebarOpen || m.focus != paneSidebar {
+		t.Fatalf("want focused tree, got gitView=%v open=%v focus=%v", m.git.view, m.sidebarOpen, m.focus)
 	}
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyCtrlB}) // focused: closes
 	if m.sidebarOpen {
@@ -259,8 +259,8 @@ func TestBranchPickerCreatesMissingBranch(t *testing.T) {
 	for _, k := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune{'y'}}, {Type: tea.KeyEnter}} {
 		m, _ = m.update(k)
 	}
-	if m.gitSnap.Branch != "feature/x" {
-		t.Fatalf("on branch %q, want feature/x", m.gitSnap.Branch)
+	if m.git.snap.Branch != "feature/x" {
+		t.Fatalf("on branch %q, want feature/x", m.git.snap.Branch)
 	}
 	_ = top
 
@@ -305,10 +305,10 @@ func TestGitRestoreFile(t *testing.T) {
 	m.openFile(filepath.Join(top, "a.txt"))
 	m.focus = paneGit
 	for range 5 { // land on the file row (rows include section headers)
-		if _, ok := m.gitSelected(); ok {
+		if _, ok := m.git.selected(); ok {
 			break
 		}
-		m.gitMove(+1)
+		m.git.move(+1, m.gitHeight())
 	}
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if m.mode != modePrompt || !strings.Contains(m.promptLabel, "Discard changes to a.txt") {
@@ -335,11 +335,11 @@ func TestGitRestoreFile(t *testing.T) {
 	os.WriteFile(filepath.Join(top, "new.txt"), []byte("x\n"), 0o644)
 	m.refreshGit()
 	for range 9 {
-		r, ok := m.gitSelected()
+		r, ok := m.git.selected()
 		if ok && r.fs.Untracked() {
 			break
 		}
-		m.gitMove(+1)
+		m.git.move(+1, m.gitHeight())
 	}
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if !strings.Contains(m.promptLabel, "Delete untracked") {
@@ -384,19 +384,19 @@ func TestRefreshFetchesRemote(t *testing.T) {
 	g(w2, "push", "-q")
 
 	m.refreshGit()
-	if m.gitSnap.Behind != 0 {
-		t.Fatalf("stale tracking ref should still say behind=0, got %d", m.gitSnap.Behind)
+	if m.git.snap.Behind != 0 {
+		t.Fatalf("stale tracking ref should still say behind=0, got %d", m.git.snap.Behind)
 	}
 	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	if cmd == nil {
 		t.Fatal("refresh returned no fetch cmd")
 	}
 	m2, _ = m2.update(cmd()) // run the fetch, deliver its gitOpMsg
-	if m2.gitSnap.Behind != 1 {
-		t.Fatalf("behind=%d after fetch, want 1", m2.gitSnap.Behind)
+	if m2.git.snap.Behind != 1 {
+		t.Fatalf("behind=%d after fetch, want 1", m2.git.snap.Behind)
 	}
-	if m2.gitBusy != "" {
-		t.Fatalf("gitBusy stuck at %q", m2.gitBusy)
+	if m2.git.busy != "" {
+		t.Fatalf("gitBusy stuck at %q", m2.git.busy)
 	}
 }
 
