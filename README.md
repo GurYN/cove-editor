@@ -145,6 +145,9 @@ keymap = "default"    # or "vim" (opt-in)
 [editor]
 confirm_quit = true   # false: Ctrl+Q quits without asking
 
+[files]
+hidden = [".DS_Store", "*.pyc"]   # hide from the file tree (git panel still shows them)
+
 [keys]
 "file.save" = "ctrl+shift+s"   # rebind any action by its ID
 

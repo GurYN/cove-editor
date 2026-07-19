@@ -54,3 +54,25 @@ func TestRefreshKeepsDeepExpansion(t *testing.T) {
 		t.Fatalf("Refresh missed the new file:\n%s", v)
 	}
 }
+
+// [files] hidden globs drop matching names (files and dirs) from the tree.
+func TestHiddenPatterns(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []string{".DS_Store", "a.pyc", "keep.go"} {
+		os.WriteFile(filepath.Join(root, f), []byte("x"), 0o644)
+	}
+	os.MkdirAll(filepath.Join(root, "node_modules"), 0o755)
+	SetHidden([]string{".DS_Store", "*.pyc", "node_modules"})
+	defer SetHidden(nil)
+	m := New(root)
+	m.Width, m.Height = 30, 20
+	tree := m.View(false)
+	for _, gone := range []string{".DS_Store", "a.pyc", "node_modules"} {
+		if strings.Contains(tree, gone) {
+			t.Errorf("%s visible despite hidden pattern:\n%s", gone, tree)
+		}
+	}
+	if !strings.Contains(tree, "keep.go") {
+		t.Fatalf("keep.go missing:\n%s", tree)
+	}
+}

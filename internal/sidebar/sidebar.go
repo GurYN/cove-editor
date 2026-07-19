@@ -33,6 +33,22 @@ func ApplyTheme(colors map[string]string) {
 	set(&conStyle, "git.conflict")
 }
 
+// hiddenPatterns are filepath.Match globs (against the base name) excluded
+// from the tree. Config-set once at startup, like the theme.
+var hiddenPatterns []string
+
+// SetHidden installs the tree's hidden-file globs (e.g. ".DS_Store", "*.pyc").
+func SetHidden(patterns []string) { hiddenPatterns = patterns }
+
+func hidden(name string) bool {
+	for _, p := range hiddenPatterns {
+		if ok, _ := filepath.Match(p, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
 type node struct {
 	name     string
 	path     string
@@ -87,7 +103,7 @@ func (n *node) load() {
 	}
 	n.children = make([]*node, 0, len(entries))
 	for _, e := range entries {
-		if e.Name() == ".git" {
+		if e.Name() == ".git" || hidden(e.Name()) {
 			continue
 		}
 		n.children = append(n.children, &node{

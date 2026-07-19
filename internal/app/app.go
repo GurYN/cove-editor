@@ -174,6 +174,7 @@ func New(path string, data []byte) Model {
 	applyChrome(cfg.ThemeColors())
 	editor.SetTabStop(cfg.Editor.TabSize)
 	editor.SetLineNumbers(cfg.Editor.LineNumbers)
+	sidebar.SetHidden(cfg.Files.Hidden)
 	for lang, s := range cfg.LSP {
 		lsp.Configure(lang, s.Command, s.Extensions, s.LangID)
 	}

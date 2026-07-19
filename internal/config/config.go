@@ -19,6 +19,13 @@ type Config struct {
 		ConfirmQuit bool `toml:"confirm_quit"`
 	} `toml:"editor"`
 
+	// Files tunes the file tree: [files] hidden = [".DS_Store", "*.pyc"].
+	// Patterns are filepath.Match globs against the base name; hidden files
+	// stay visible in the git panel so they can't sneak into a commit unseen.
+	Files struct {
+		Hidden []string `toml:"hidden"`
+	} `toml:"files"`
+
 	// Keys maps action IDs to key overrides: "file.save" = "ctrl+s".
 	// An empty string unbinds (palette-only).
 	Keys map[string]string `toml:"keys"`

@@ -28,11 +28,17 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # line_numbers = true
 # confirm_quit = true        # false: ctrl+q quits without asking
 
-# Rebind any action by its ID. Open the command palette (ctrl+p) and
-# highlight an action: its ID appears in the footer.
+# Hide files from the file tree (globs on the base name). Hidden files stay
+# visible in the git panel so they can't sneak into a commit unseen.
+# [files]
+# hidden = [".DS_Store", "*.pyc", "node_modules"]
+
+# Rebind any action by its ID — the value is the NEW key, replacing the
+# default. Open the command palette (ctrl+p) and highlight an action: its
+# ID appears in the footer.
 # [keys]
 # "file.save" = "ctrl+s"
-# "lsp.rename" = "f6"
+# "lsp.rename" = "f4"   # moves rename off its default f2
 
 # Override theme colors (hex or ANSI-256).
 # [colors]
