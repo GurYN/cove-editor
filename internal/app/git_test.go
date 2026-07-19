@@ -259,8 +259,8 @@ func TestBranchPickerCreatesMissingBranch(t *testing.T) {
 	for _, k := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune{'y'}}, {Type: tea.KeyEnter}} {
 		m, _ = m.update(k)
 	}
-	if m.git.snap.Branch != "feature/x" {
-		t.Fatalf("on branch %q, want feature/x", m.git.snap.Branch)
+	if m.git.repos[0].snap.Branch != "feature/x" {
+		t.Fatalf("on branch %q, want feature/x", m.git.repos[0].snap.Branch)
 	}
 	_ = top
 
@@ -286,12 +286,12 @@ func TestGitOpStatusMessages(t *testing.T) {
 		{"pull", "Already up to date.", "already up to date"},
 		{"fetch", "From /tmp/bare\n   abc..def  main -> origin/main", "fetched"},
 	} {
-		mm, _ := m.handleGitOp(gitOpMsg{op: tc.op, out: tc.out})
+		mm, _ := m.handleGitOp(gitOpMsg{repo: m.git.repos[0], op: tc.op, out: tc.out})
 		if mm.lastMsg != tc.want {
 			t.Fatalf("%s %q: got %q, want %q", tc.op, tc.out, mm.lastMsg, tc.want)
 		}
 	}
-	mm, _ := m.handleGitOp(gitOpMsg{op: "push", err: fmt.Errorf("git: boom")})
+	mm, _ := m.handleGitOp(gitOpMsg{repo: m.git.repos[0], op: "push", err: fmt.Errorf("git: boom")})
 	if mm.lastMsg != "git: boom" {
 		t.Fatalf("error message lost: %q", mm.lastMsg)
 	}
@@ -384,16 +384,16 @@ func TestRefreshFetchesRemote(t *testing.T) {
 	g(w2, "push", "-q")
 
 	m.refreshGit()
-	if m.git.snap.Behind != 0 {
-		t.Fatalf("stale tracking ref should still say behind=0, got %d", m.git.snap.Behind)
+	if m.git.repos[0].snap.Behind != 0 {
+		t.Fatalf("stale tracking ref should still say behind=0, got %d", m.git.repos[0].snap.Behind)
 	}
 	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	if cmd == nil {
 		t.Fatal("refresh returned no fetch cmd")
 	}
 	m2, _ = m2.update(cmd()) // run the fetch, deliver its gitOpMsg
-	if m2.git.snap.Behind != 1 {
-		t.Fatalf("behind=%d after fetch, want 1", m2.git.snap.Behind)
+	if m2.git.repos[0].snap.Behind != 1 {
+		t.Fatalf("behind=%d after fetch, want 1", m2.git.repos[0].snap.Behind)
 	}
 	if m2.git.busy != "" {
 		t.Fatalf("gitBusy stuck at %q", m2.git.busy)
@@ -419,5 +419,101 @@ func TestGitGraphTabAndDrillIn(t *testing.T) {
 	v = frame(m)
 	if !strings.Contains(v, "init") || !strings.Contains(v, "+one") {
 		t.Fatalf("commit tab wrong:\n%s", v)
+	}
+}
+
+// multiSetup builds a non-repo root holding two child repos (alpha, beta),
+// each with a committed-then-modified file, and opens the git panel.
+func multiSetup(t *testing.T) (Model, string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Setenv("COVE_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	root := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		dir := filepath.Join(root, name)
+		os.MkdirAll(dir, 0o755)
+		g := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+		g("init", "-q", "-b", "main")
+		g("config", "user.email", "t@t.t")
+		g("config", "user.name", "t")
+		os.WriteFile(filepath.Join(dir, name+".txt"), []byte("one\n"), 0o644)
+		g("add", "-A")
+		g("commit", "-q", "-m", "init")
+		os.WriteFile(filepath.Join(dir, name+".txt"), []byte("one\ntwo\n"), 0o644)
+	}
+	os.WriteFile(filepath.Join(root, "README.md"), []byte("root file\n"), 0o644)
+
+	m := New(root, nil)
+	m, _ = m.update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	return m, root
+}
+
+// A folder holding several checkouts renders one section group per repo,
+// and panel actions target the repo under the cursor — never its neighbor.
+func TestGitMultiRepoPanel(t *testing.T) {
+	m, root := multiSetup(t)
+	if len(m.git.repos) != 2 {
+		t.Fatalf("discovered %d repos, want 2", len(m.git.repos))
+	}
+	v := frame(m)
+	if !strings.Contains(v, "alpha · main") || !strings.Contains(v, "beta · main") {
+		t.Fatalf("missing repo headers:\n%s", v)
+	}
+
+	// Cursor starts on alpha's file: stage-all must touch only alpha.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if m.lastMsg != "alpha: staged all changes" {
+		t.Fatalf("toast = %q", m.lastMsg)
+	}
+	alpha, beta := m.git.repos[0], m.git.repos[1]
+	if !gitHasStaged(alpha) || gitHasStaged(beta) {
+		t.Fatalf("stage-all leaked across repos: alpha=%v beta=%v",
+			gitHasStaged(alpha), gitHasStaged(beta))
+	}
+
+	// Move to beta's row: the commit prompt must name its target.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyDown})
+	if r := m.curRepo(); r != beta {
+		t.Fatalf("cursor repo = %+v, want beta", r)
+	}
+	if !strings.Contains(m.gitSeg(), "beta:main") {
+		t.Fatalf("status segment = %q, want beta:main", m.gitSeg())
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if m.lastMsg != "beta: nothing staged — stage files first (space in the git panel)" {
+		t.Fatalf("commit targeted wrong repo: %q", m.lastMsg)
+	}
+
+	// Editor focus + a file from alpha: global actions follow the file.
+	m.openFile(filepath.Join(root, "alpha", "alpha.txt"))
+	if r := m.curRepo(); r != alpha {
+		t.Fatalf("active-file repo = %+v, want alpha", r)
+	}
+	if d := m.doc(); d == nil || len(d.ed.Signs) < 2 {
+		t.Fatal("gutter signs not computed for a child-repo file")
+	}
+
+	// A root file belongs to no repo: an ambiguous action pops the picker.
+	m.openFile(filepath.Join(root, "README.md"))
+	if r := m.curRepo(); r != nil {
+		t.Fatalf("root file resolved to %v, want no repo", r.name)
+	}
+	if cmd := m.gitOp("push"); cmd != nil || m.ovKind != overlayRepos {
+		t.Fatalf("ambiguous push should open the repo picker, got kind=%v", m.ovKind)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEscape}) // dismiss
+	if m.ovRepoDo != nil {
+		t.Fatal("escape left a pending repo action")
 	}
 }

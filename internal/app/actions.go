@@ -28,11 +28,17 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # line_numbers = true
 # confirm_quit = true        # false: ctrl+q quits without asking
 
-# Rebind any action by its ID. Open the command palette (ctrl+p) and
-# highlight an action: its ID appears in the footer.
+# Hide files from the file tree (globs on the base name). Hidden files stay
+# visible in the git panel so they can't sneak into a commit unseen.
+# [files]
+# hidden = [".DS_Store", "*.pyc", "node_modules"]
+
+# Rebind any action by its ID — the value is the NEW key, replacing the
+# default. Open the command palette (ctrl+p) and highlight an action: its
+# ID appears in the footer.
 # [keys]
 # "file.save" = "ctrl+s"
-# "lsp.rename" = "f6"
+# "lsp.rename" = "f4"   # moves rename off its default f2
 
 # Override theme colors (hex or ANSI-256).
 # [colors]
@@ -106,7 +112,7 @@ func newRegistry() *action.Registry {
 		if d := m.doc(); d != nil {
 			m.lastMsg = d.save()
 			m.lspm.Save(d.path)
-			if m.git.snap.Top != "" {
+			if len(m.git.repos) > 0 {
 				m.refreshGit() // keep the panel/branch segment honest
 			}
 		}
@@ -129,7 +135,7 @@ func newRegistry() *action.Registry {
 		if fail != "" {
 			m.lastMsg = fail
 		}
-		if n > 0 && m.git.snap.Top != "" {
+		if n > 0 && len(m.git.repos) > 0 {
 			m.refreshGit()
 		}
 		return nil
@@ -170,12 +176,17 @@ func newRegistry() *action.Registry {
 	// ---- split panes ----
 	reg("pane.split", "Pane: Split Right", "ctrl+\\", action.Global, func(m *Model) tea.Cmd { m.splitOpen(); return nil })
 	reg("pane.close", "Pane: Close Split", "", action.Global, func(m *Model) tea.Cmd { m.split = false; return nil })
-	reg("pane.other", "Pane: Focus Other", "f6", action.Global, func(m *Model) tea.Cmd {
+	reg("pane.other", "Pane: Focus Other", "", action.Global, func(m *Model) tea.Cmd {
 		if m.split {
 			m.focusPane(!m.splitRight)
 		}
 		return nil
 	})
+	// Ctrl+Tab is eaten by terminal emulators (their own tab switching), so
+	// F6/Shift+F6 like VSCode's Focus Next/Previous Part. bubbletea v1 decodes
+	// xterm's Shift+F6 (CSI 17;2~) as f18.
+	reg("focus.next", "Focus: Next Panel", "f6", action.Global, func(m *Model) tea.Cmd { return m.cycleFocus(+1) })
+	reg("focus.prev", "Focus: Previous Panel", "f18", action.Global, func(m *Model) tea.Cmd { return m.cycleFocus(-1) })
 
 	// ---- git (registered in the Git context so the palette shows the
 	// panel's single-letter keys, which only fire with the panel focused;
@@ -185,20 +196,25 @@ func newRegistry() *action.Registry {
 	// so the ±ahead/behind counts track the actual remote, not the last pull.
 	reg("git.refresh", "Git: Refresh Status", "r", action.Git, func(m *Model) tea.Cmd {
 		m.refreshGit()
-		if m.git.snap.Upstream == "" {
+		r := m.curRepo()
+		if r == nil || r.snap.Upstream == "" {
 			return nil // nothing to fetch from (no remote / unpublished branch)
 		}
-		return m.gitOp("fetch")
+		return m.gitOpRepo(r, "fetch")
 	})
-	reg("git.commit", "Git: Commit Staged…", "c", action.Git, func(m *Model) tea.Cmd { m.gitCommitPrompt(); return nil })
-	reg("git.undoCommit", "Git: Undo Last Commit (Keep Changes Staged)", "z", action.Git, func(m *Model) tea.Cmd { m.gitUndoCommitPrompt(); return nil })
+	reg("git.commit", "Git: Commit Staged…", "c", action.Git, func(m *Model) tea.Cmd { return m.gitCommitPrompt() })
+	reg("git.undoCommit", "Git: Undo Last Commit (Keep Changes Staged)", "z", action.Git, func(m *Model) tea.Cmd { return m.gitUndoCommitPrompt() })
 	reg("git.push", "Git: Push", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("push") })
 	reg("git.pull", "Git: Pull", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("pull") })
 	reg("git.fetch", "Git: Fetch", "f", action.Git, func(m *Model) tea.Cmd { return m.gitOp("fetch") })
-	reg("git.log", "Git: History…", "l", action.Git, func(m *Model) tea.Cmd { *m = m.openHistoryPicker(); return nil })
-	reg("git.graph", "Git: Commit Graph", "g", action.Git, func(m *Model) tea.Cmd { m.gitOpenGraph(); return nil })
-	reg("git.branch", "Git: Switch Branch…", "b", action.Git, func(m *Model) tea.Cmd { *m = m.openBranchPicker(); return nil })
-	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { m.gitBranchPrompt(); return nil })
+	reg("git.log", "Git: History…", "l", action.Git, func(m *Model) tea.Cmd {
+		return m.withRepo(func(m *Model, r *repoState) tea.Cmd { m.openHistoryPicker(r); return nil })
+	})
+	reg("git.graph", "Git: Commit Graph", "g", action.Git, func(m *Model) tea.Cmd { return m.gitOpenGraph() })
+	reg("git.branch", "Git: Switch Branch…", "b", action.Git, func(m *Model) tea.Cmd {
+		return m.withRepo(func(m *Model, r *repoState) tea.Cmd { m.openBranchPicker(r); return nil })
+	})
+	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { return m.gitBranchPrompt() })
 	reg("git.restore", "Git: Discard File Changes (Restore)", "x", action.Git, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
 		m.git.blameOn = !m.git.blameOn
@@ -209,23 +225,29 @@ func newRegistry() *action.Registry {
 		}
 		return nil // the fetch is scheduled by the Update choke point
 	})
+	// "All" is per repo, never across repos: the target is the section under
+	// the panel cursor (or the active file's repo), and the toast names it.
 	reg("git.stageAll", "Git: Stage All", "a", action.Git, func(m *Model) tea.Cmd {
-		if m.gitRepo() {
-			if err := git.StageAll(m.git.snap.Top); err != nil {
+		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+			if err := git.StageAll(r.top); err != nil {
 				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, "staged all changes")
 			}
 			m.refreshGit()
-		}
-		return nil
+			return nil
+		})
 	})
 	reg("git.unstageAll", "Git: Unstage All", "u", action.Git, func(m *Model) tea.Cmd {
-		if m.gitRepo() {
-			if err := git.UnstageAll(m.git.snap.Top); err != nil {
+		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+			if err := git.UnstageAll(r.top); err != nil {
 				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, "unstaged all")
 			}
 			m.refreshGit()
-		}
-		return nil
+			return nil
+		})
 	})
 	ghid := func(id, key string, do func(*Model) tea.Cmd) { hid(id, key, action.Git, do) }
 	ghid("git.up", "up", func(m *Model) tea.Cmd { m.git.move(-1, m.gitHeight()); return nil })

@@ -42,45 +42,241 @@ func applyGitChrome(colors map[string]string) {
 	set(&gitConflictStyle, "git.conflict")
 }
 
-// gitRow is one line of the panel: a section header or a file.
+// repoState is one discovered repository: identity plus its latest status
+// snapshot. Pointers are stable across refreshes — rows, virtual docs and
+// pickers hold them.
+type repoState struct {
+	top  string // absolute repo top-level dir
+	name string // display name: base(top)
+	snap git.Snapshot
+	err  string
+}
+
+// gitRow is one line of the panel: a repo header, a section header, or a file.
 type gitRow struct {
-	header string // section title with count; "" = file row
-	fs     git.FileStatus
-	staged bool // row lives in the Staged section
+	repo     *repoState
+	header   string // header text; "" = file row
+	repoHead bool   // header is a repo title (multi-repo panel only)
+	fs       git.FileStatus
+	staged   bool // row lives in the Staged section
 }
 
 // gitPanel is the git panel's state — the sidebar-slot component showing
 // staged/changed files, plus the blame toggle it shares a subsystem with.
+// Several repos happen when the opened folder holds multiple checkouts
+// (root docs + per-project repos): each renders as its own section group.
 type gitPanel struct {
 	view    bool // left pane shows the git panel instead of the file tree
-	snap    git.Snapshot
+	repos   []*repoState
+	dirTop  map[string]string // file-dir → repo top cache ("" = not in a repo)
 	rows    []gitRow
 	sel     int
 	top     int
-	err     string
+	err     string // "not a git repository" when nothing was found
 	busy    string // "push"/"pull" while one is in flight
 	blameOn bool   // inline blame for the cursor line (git.blame toggle)
 }
 
-// refreshGit re-reads repo status synchronously. ponytail: one exec per
-// refresh (~10ms); a background watcher if it ever shows up in lastCost.
-func (m *Model) refreshGit() {
-	m.git.err = ""
-	if m.git.snap.Top == "" {
-		top, err := git.Top(m.side.Root)
-		if err != nil {
-			m.git.rows = nil
-			m.git.err = "not a git repository"
+func (p *gitPanel) multi() bool { return len(p.repos) > 1 }
+
+func (p *gitPanel) byTop(top string) *repoState {
+	if top == "" {
+		return nil
+	}
+	for _, r := range p.repos {
+		if r.top == top {
+			return r
+		}
+	}
+	return nil
+}
+
+// walkTop finds the repo top containing dir by statting .git upward — no
+// exec, cheap enough for a render-path cache miss. "" = not in a repo.
+// Symlinks are resolved so the result compares equal to git's own
+// --show-toplevel (macOS: /var/… vs /private/var/…).
+func walkTop(dir string) string {
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = r
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// discoverRepos finds the repos the panel manages: the opened folder's own
+// (or enclosing) repo plus depth-1 children that are repo tops. Existing
+// repoState pointers are reused so held references stay valid.
+// ponytail: depth-1 scan; deeper repos join lazily when a file of theirs opens.
+func (m *Model) discoverRepos() {
+	prev := m.git.repos
+	var repos []*repoState
+	seen := map[string]bool{}
+	add := func(top string) {
+		if r, err := filepath.EvalSymlinks(top); err == nil {
+			top = r // match git.Top's physical paths (macOS symlinked /tmp)
+		}
+		if top == "" || seen[top] {
 			return
 		}
-		m.git.snap.Top = top
+		seen[top] = true
+		r := m.git.byTop(top)
+		if r == nil {
+			r = &repoState{top: top, name: filepath.Base(top)}
+		}
+		repos = append(repos, r)
 	}
-	snap, err := git.Status(m.git.snap.Top)
+	root, _ := filepath.Abs(m.side.Root)
+	if top, err := git.Top(root); err == nil {
+		add(top)
+	}
+	ents, _ := os.ReadDir(root)
+	for _, e := range ents {
+		if e.IsDir() && e.Name() != ".git" {
+			child := filepath.Join(root, e.Name())
+			if _, err := os.Stat(filepath.Join(child, ".git")); err == nil {
+				add(child)
+			}
+		}
+	}
+	for _, r := range prev { // lazily-joined repos outside the scan survive
+		add(r.top)
+	}
+	m.git.repos = repos
+}
+
+// repoOf resolves which known repo contains path. Read-only (View-safe):
+// unknown repos are not joined — see repoForDoc.
+func (m Model) repoOf(path string) *repoState {
+	if path == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		m.git.err = err.Error()
+		return nil
 	}
-	headMoved := snap.Oid != m.git.snap.Oid
-	m.git.snap = snap
+	dir := filepath.Dir(abs)
+	top, ok := m.git.dirTop[dir]
+	if !ok {
+		top = walkTop(dir)
+		if m.git.dirTop != nil {
+			m.git.dirTop[dir] = top
+		}
+	}
+	return m.git.byTop(top)
+}
+
+// repoForDoc is repoOf plus lazy join: a file opened from a repo the depth-1
+// scan didn't see adds that repo to the panel.
+func (m *Model) repoForDoc(path string) *repoState {
+	if r := m.repoOf(path); r != nil {
+		return r
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil
+	}
+	top := walkTop(filepath.Dir(abs))
+	if top == "" {
+		return nil
+	}
+	snap, err := git.Status(top)
+	if err != nil {
+		return nil // stray .git that isn't a working repo
+	}
+	r := &repoState{top: top, name: filepath.Base(top), snap: snap}
+	m.git.repos = append(m.git.repos, r)
+	m.git.err = ""
+	m.git.build(m.gitHeight())
+	m.syncTreeGit()
+	return r
+}
+
+// curRepo is the one target-resolution rule: panel focused → repo of the row
+// under the cursor; else the active tab's repo (virtual git tabs remember
+// theirs); else the only repo. Nil = ambiguous — withRepo asks via a picker.
+func (m Model) curRepo() *repoState {
+	if m.focus == paneGit && m.git.sel < len(m.git.rows) {
+		if r := m.git.rows[m.git.sel].repo; r != nil {
+			return r
+		}
+	}
+	if d := m.doc(); d != nil {
+		if d.repo != nil {
+			return d.repo
+		}
+		if !d.virtual {
+			if r := m.repoOf(d.path); r != nil {
+				return r
+			}
+		}
+	}
+	if len(m.git.repos) == 1 {
+		return m.git.repos[0]
+	}
+	return nil
+}
+
+// withRepo runs do against the resolved target repo, or pops a one-shot
+// repo picker (same overlay as the branch picker) when the target is
+// genuinely ambiguous: several repos and no cursor/file anchor.
+func (m *Model) withRepo(do func(*Model, *repoState) tea.Cmd) tea.Cmd {
+	if !m.gitRepo() {
+		return nil
+	}
+	if r := m.curRepo(); r != nil {
+		return do(m, r)
+	}
+	m.ovKind = overlayRepos
+	m.ovRepoDo = do
+	items := make([]overlay.Item, len(m.git.repos))
+	for i, r := range m.git.repos {
+		items[i] = overlay.Item{Label: r.name, Detail: r.snap.Branch}
+	}
+	m.ov = overlay.New("Repository:", items, m.width)
+	return nil
+}
+
+// repoMsg prefixes a status message with the repo name when several repos
+// are in play, so every toast names its target.
+func (m *Model) repoMsg(r *repoState, s string) string {
+	if m.git.multi() && r != nil {
+		return r.name + ": " + s
+	}
+	return s
+}
+
+// refreshGit re-discovers repos and re-reads their status synchronously.
+// ponytail: one status exec per repo per refresh (~10ms each); a background
+// watcher if it ever shows up in lastCost.
+func (m *Model) refreshGit() {
+	m.git.err = ""
+	m.git.dirTop = map[string]string{} // re-resolve: a fresh `git init` must be seen
+	m.discoverRepos()
+	if len(m.git.repos) == 0 {
+		m.git.rows = nil
+		m.git.err = "not a git repository"
+		return
+	}
+	headMoved := false
+	for _, r := range m.git.repos {
+		snap, err := git.Status(r.top)
+		r.err = ""
+		if err != nil {
+			r.err = err.Error()
+		}
+		if snap.Oid != r.snap.Oid {
+			headMoved = true
+		}
+		r.snap = snap
+	}
 	m.git.build(m.gitHeight())
 	m.syncTreeGit()
 	if headMoved { // commit/checkout/pull: gutter baselines are stale
@@ -90,56 +286,75 @@ func (m *Model) refreshGit() {
 	}
 }
 
-// syncTreeGit mirrors the snapshot's change markers into the file tree.
+// syncTreeGit mirrors every repo's change markers into the file tree.
 func (m *Model) syncTreeGit() {
-	st := make(map[string]byte, len(m.git.snap.Files))
-	for _, f := range m.git.snap.Files {
-		abs := filepath.Join(m.git.snap.Top, filepath.FromSlash(f.Path))
-		switch {
-		case f.Conflict():
-			st[abs] = '!'
-		case f.Untracked():
-			st[abs] = 'A'
-		default:
-			st[abs] = 'M'
+	st := map[string]byte{}
+	for _, r := range m.git.repos {
+		for _, f := range r.snap.Files {
+			abs := filepath.Join(r.top, filepath.FromSlash(f.Path))
+			switch {
+			case f.Conflict():
+				st[abs] = '!'
+			case f.Untracked():
+				st[abs] = 'A'
+			default:
+				st[abs] = 'M'
+			}
 		}
 	}
 	m.side.SetGitStatus(st)
 }
 
 func (m *Model) gitRepo() bool {
-	if m.git.snap.Top == "" {
+	if len(m.git.repos) == 0 {
 		m.refreshGit()
 	}
-	if m.git.snap.Top == "" {
+	if len(m.git.repos) == 0 {
 		m.lastMsg = "not a git repository"
 		return false
 	}
 	return true
 }
 
-// build regenerates the row list from the snapshot; h is the visible height.
+// build regenerates the row list from the repo snapshots; h is the visible
+// height. Single repo renders exactly like the classic panel; several repos
+// get a bold name·branch header above each one's sections.
 func (p *gitPanel) build(h int) {
 	p.rows = p.rows[:0]
-	var staged, changed []git.FileStatus
-	for _, f := range p.snap.Files {
-		if f.Staged() {
-			staged = append(staged, f)
+	for _, r := range p.repos {
+		var staged, changed []git.FileStatus
+		for _, f := range r.snap.Files {
+			if f.Staged() {
+				staged = append(staged, f)
+			}
+			if f.Unstaged() || f.Conflict() {
+				changed = append(changed, f)
+			}
 		}
-		if f.Unstaged() || f.Conflict() {
-			changed = append(changed, f)
+		if p.multi() {
+			head := r.name
+			if r.snap.Branch != "" {
+				head += " · " + r.snap.Branch
+			}
+			if n := len(r.snap.Files); n > 0 {
+				head += fmt.Sprintf(" ±%d", n)
+			}
+			p.rows = append(p.rows, gitRow{repo: r, header: head, repoHead: true})
+			if r.err != "" {
+				p.rows = append(p.rows, gitRow{repo: r, header: "  " + r.err})
+			}
 		}
-	}
-	if len(staged) > 0 {
-		p.rows = append(p.rows, gitRow{header: fmt.Sprintf("Staged (%d)", len(staged))})
-		for _, f := range staged {
-			p.rows = append(p.rows, gitRow{fs: f, staged: true})
+		if len(staged) > 0 {
+			p.rows = append(p.rows, gitRow{repo: r, header: fmt.Sprintf("Staged (%d)", len(staged))})
+			for _, f := range staged {
+				p.rows = append(p.rows, gitRow{repo: r, fs: f, staged: true})
+			}
 		}
-	}
-	if len(changed) > 0 {
-		p.rows = append(p.rows, gitRow{header: fmt.Sprintf("Changes (%d)", len(changed))})
-		for _, f := range changed {
-			p.rows = append(p.rows, gitRow{fs: f})
+		if len(changed) > 0 {
+			p.rows = append(p.rows, gitRow{repo: r, header: fmt.Sprintf("Changes (%d)", len(changed))})
+			for _, f := range changed {
+				p.rows = append(p.rows, gitRow{repo: r, fs: f})
+			}
 		}
 	}
 	// keep the selection on a file row
@@ -221,7 +436,7 @@ func (m *Model) gitRestorePrompt() {
 		if !strings.EqualFold(text, "y") {
 			return
 		}
-		abs := filepath.Join(m.git.snap.Top, filepath.FromSlash(r.fs.Path))
+		abs := filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path))
 		if r.fs.Untracked() {
 			if err := os.Remove(abs); err != nil {
 				m.lastMsg = err.Error()
@@ -235,7 +450,7 @@ func (m *Model) gitRestorePrompt() {
 					}
 				}
 			}
-		} else if err := git.Restore(m.git.snap.Top, r.fs.Path); err != nil {
+		} else if err := git.Restore(r.repo.top, r.fs.Path); err != nil {
 			m.lastMsg = err.Error()
 		} else {
 			m.lastMsg = "restored " + r.fs.Path
@@ -279,9 +494,9 @@ func (m *Model) gitStageToggle() {
 	}
 	var err error
 	if r.staged {
-		err = git.Unstage(m.git.snap.Top, r.fs.Path)
+		err = git.Unstage(r.repo.top, r.fs.Path)
 	} else {
-		err = git.Stage(m.git.snap.Top, r.fs.Path)
+		err = git.Stage(r.repo.top, r.fs.Path)
 	}
 	if err != nil {
 		m.lastMsg = err.Error()
@@ -309,9 +524,9 @@ func (m *Model) gitOpenDiff(r gitRow) {
 	var text string
 	var err error
 	if r.fs.Untracked() {
-		text = git.DiffUntracked(m.git.snap.Top, r.fs.Path)
+		text = git.DiffUntracked(r.repo.top, r.fs.Path)
 	} else {
-		text, err = git.Diff(m.git.snap.Top, r.fs.Path, r.staged)
+		text, err = git.Diff(r.repo.top, r.fs.Path, r.staged)
 	}
 	if err != nil {
 		m.lastMsg = err.Error()
@@ -353,8 +568,8 @@ func (m *Model) openVirtualSyn(title, text string, syn editor.Syntax) {
 	m.layout()
 }
 
-func (m *Model) gitHasStaged() bool {
-	for _, f := range m.git.snap.Files {
+func gitHasStaged(r *repoState) bool {
+	for _, f := range r.snap.Files {
 		if f.Staged() {
 			return true
 		}
@@ -362,117 +577,123 @@ func (m *Model) gitHasStaged() bool {
 	return false
 }
 
-// gitCommitPrompt asks for a message and commits the staged files.
-func (m *Model) gitCommitPrompt() {
-	if !m.gitRepo() {
-		return
-	}
-	if !m.gitHasStaged() {
-		m.lastMsg = "nothing staged — stage files first (space in the git panel)"
-		return
-	}
-	*m = m.prompt("Commit message:", "", func(m *Model, msg string) {
-		if strings.TrimSpace(msg) == "" {
-			return
+// gitCommitPrompt asks for a message and commits the target repo's staged
+// files. With several repos the prompt names its target — a wrong-repo
+// commit should be visibly wrong before the message is typed.
+func (m *Model) gitCommitPrompt() tea.Cmd {
+	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		if !gitHasStaged(r) {
+			m.lastMsg = m.repoMsg(r, "nothing staged — stage files first (space in the git panel)")
+			return nil
 		}
-		out, err := git.Commit(m.git.snap.Top, msg)
-		if err != nil {
-			m.lastMsg = err.Error()
-		} else {
-			m.lastMsg = firstLine(out)
+		label := "Commit message:"
+		if m.git.multi() {
+			label = fmt.Sprintf("Commit to %s (%s):", r.name, r.snap.Branch)
 		}
-		m.refreshGit()
+		*m = m.prompt(label, "", func(m *Model, msg string) {
+			if strings.TrimSpace(msg) == "" {
+				return
+			}
+			out, err := git.Commit(r.top, msg)
+			if err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, firstLine(out))
+			}
+			m.refreshGit()
+		})
+		return nil
 	})
 }
 
 // gitUndoCommitPrompt un-commits HEAD (soft reset) after a y/n confirm —
 // the "committed on the wrong branch" escape hatch: undo, switch, recommit.
-func (m *Model) gitUndoCommitPrompt() {
-	if !m.gitRepo() {
-		return
-	}
-	head, err := git.HeadSummary(m.git.snap.Top)
-	if err != nil {
-		m.lastMsg = "nothing to undo — no commits yet"
-		return
-	}
-	*m = m.prompt(fmt.Sprintf("Undo commit %q? Changes stay staged — y/n:", head), "", func(m *Model, text string) {
-		if !strings.EqualFold(text, "y") {
-			return
+func (m *Model) gitUndoCommitPrompt() tea.Cmd {
+	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		head, err := git.HeadSummary(r.top)
+		if err != nil {
+			m.lastMsg = m.repoMsg(r, "nothing to undo — no commits yet")
+			return nil
 		}
-		if err := git.UndoCommit(m.git.snap.Top); err != nil {
-			m.lastMsg = err.Error()
-		} else {
-			m.lastMsg = "commit undone — changes are staged"
-		}
-		m.refreshGit()
+		*m = m.prompt(fmt.Sprintf("Undo commit %q? Changes stay staged — y/n:", head), "", func(m *Model, text string) {
+			if !strings.EqualFold(text, "y") {
+				return
+			}
+			if err := git.UndoCommit(r.top); err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, "commit undone — changes are staged")
+			}
+			m.refreshGit()
+		})
+		return nil
 	})
 }
 
-func (m *Model) gitBranchPrompt() {
-	if !m.gitRepo() {
-		return
-	}
-	*m = m.prompt("New branch name:", "", func(m *Model, name string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return
-		}
-		if err := git.CreateBranch(m.git.snap.Top, name); err != nil {
-			m.lastMsg = err.Error()
-		} else {
-			m.lastMsg = "on new branch " + name
-		}
-		m.refreshGit()
+func (m *Model) gitBranchPrompt() tea.Cmd {
+	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		*m = m.prompt("New branch name:", "", func(m *Model, name string) {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return
+			}
+			if err := git.CreateBranch(r.top, name); err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, "on new branch "+name)
+			}
+			m.refreshGit()
+		})
+		return nil
 	})
 }
 
-// openBranchPicker lists local branches in the fuzzy overlay.
-func (m Model) openBranchPicker() Model {
-	if !m.gitRepo() {
-		return m
-	}
-	branches, err := git.Branches(m.git.snap.Top)
+// openBranchPicker lists the target repo's local branches in the fuzzy
+// overlay; ovRepo remembers which repo the checkout applies to.
+func (m *Model) openBranchPicker(r *repoState) {
+	branches, err := git.Branches(r.top)
 	if err != nil {
 		m.lastMsg = err.Error()
-		return m
+		return
 	}
 	if len(branches) == 0 {
-		m.lastMsg = "no branches yet — commit first"
-		return m
+		m.lastMsg = m.repoMsg(r, "no branches yet — commit first")
+		return
 	}
 	m.ovKind = overlayBranches
 	m.ovBranches = branches
+	m.ovRepo = r
 	items := make([]overlay.Item, len(branches))
 	for i, b := range branches {
 		detail := ""
-		if b == m.git.snap.Branch {
+		if b == r.snap.Branch {
 			detail = "current"
 		}
 		items[i] = overlay.Item{Label: b, Detail: detail}
 	}
-	m.ov = overlay.New("Branch:", items, m.width)
-	return m
+	title := "Branch:"
+	if m.git.multi() {
+		title = "Branch (" + r.name + "):"
+	}
+	m.ov = overlay.New(title, items, m.width)
 }
 
-// openHistoryPicker lists recent commits in the fuzzy overlay; Enter opens
-// the commit's full diff in a read-only tab.
+// openHistoryPicker lists the target repo's recent commits; Enter opens the
+// commit's full diff in a read-only tab.
 // ponytail: last 200 commits, one sync exec (~10ms); paging if anyone asks.
-func (m Model) openHistoryPicker() Model {
-	if !m.gitRepo() {
-		return m
-	}
-	commits, err := git.Log(m.git.snap.Top, 200)
+func (m *Model) openHistoryPicker(r *repoState) {
+	commits, err := git.Log(r.top, 200)
 	if err != nil {
 		m.lastMsg = err.Error()
-		return m
+		return
 	}
 	if len(commits) == 0 {
-		m.lastMsg = "no commits yet"
-		return m
+		m.lastMsg = m.repoMsg(r, "no commits yet")
+		return
 	}
 	m.ovKind = overlayHistory
 	m.ovCommits = commits
+	m.ovRepo = r
 	items := make([]overlay.Item, len(commits))
 	for i, c := range commits {
 		items[i] = overlay.Item{
@@ -480,8 +701,11 @@ func (m Model) openHistoryPicker() Model {
 			Detail: c.Author + ", " + age(c.Time),
 		}
 	}
-	m.ov = overlay.New("Commit:", items, m.width)
-	return m
+	title := "Commit:"
+	if m.git.multi() {
+		title = "Commit (" + r.name + "):"
+	}
+	m.ov = overlay.New(title, items, m.width)
 }
 
 // ---- commit graph (git draws it; we just show the text) ----
@@ -489,22 +713,30 @@ func (m Model) openHistoryPicker() Model {
 const gitGraphTitle = "Git Graph"
 
 // gitOpenGraph shows `git log --graph --all` in a read-only tab. Enter on a
-// line opens that commit's diff (see the dispatchKey hook).
-func (m *Model) gitOpenGraph() {
-	if !m.gitRepo() {
-		return
-	}
-	text, err := git.LogGraph(m.git.snap.Top, 500)
-	if err != nil {
-		m.lastMsg = err.Error()
-		return
-	}
-	if strings.TrimSpace(text) == "" {
-		m.lastMsg = "no commits yet"
-		return
-	}
-	m.openVirtualSyn(gitGraphTitle, text, logSyntax{})
-	m.lastMsg = "enter: open commit"
+// line opens that commit's diff (see the dispatchKey hook). The tab
+// remembers its repo so that Enter targets the right one.
+func (m *Model) gitOpenGraph() tea.Cmd {
+	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		text, err := git.LogGraph(r.top, 500)
+		if err != nil {
+			m.lastMsg = err.Error()
+			return nil
+		}
+		if strings.TrimSpace(text) == "" {
+			m.lastMsg = m.repoMsg(r, "no commits yet")
+			return nil
+		}
+		title := gitGraphTitle
+		if m.git.multi() {
+			title += " · " + r.name
+		}
+		m.openVirtualSyn(title, text, logSyntax{})
+		if d := m.doc(); d != nil {
+			d.repo = r
+		}
+		m.lastMsg = "enter: open commit"
+		return nil
+	})
 }
 
 var shaRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
@@ -514,34 +746,40 @@ var shaRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 func (m *Model) gitOpenCommitAtCursor(d *doc) {
 	line, _ := d.ed.Cursor()
 	sha := shaRe.FindString(string(d.ed.Buf.Line(line)))
-	if sha == "" {
+	r := d.repo
+	if sha == "" || r == nil {
 		return
 	}
-	text, err := git.ShowCommit(m.git.snap.Top, sha)
+	text, err := git.ShowCommit(r.top, sha)
 	if err != nil {
 		m.lastMsg = err.Error()
 		return
 	}
 	m.openVirtual(sha+" (commit)", text)
+	if cd := m.doc(); cd != nil {
+		cd.repo = r
+	}
 }
 
 // ---- push / pull (async: exec runs in the tea.Cmd goroutine) ----
 
 type gitOpMsg struct {
+	repo    *repoState
 	op, out string
 	err     error
 }
 
 func (m *Model) gitOp(op string) tea.Cmd {
-	if !m.gitRepo() {
-		return nil
-	}
+	return m.withRepo(func(m *Model, r *repoState) tea.Cmd { return m.gitOpRepo(r, op) })
+}
+
+func (m *Model) gitOpRepo(r *repoState, op string) tea.Cmd {
 	if m.git.busy != "" {
 		m.lastMsg = "git " + m.git.busy + " already in progress"
 		return nil
 	}
 	m.git.busy = op
-	top := m.git.snap.Top
+	top := r.top
 	return func() tea.Msg {
 		var out string
 		var err error
@@ -553,7 +791,7 @@ func (m *Model) gitOp(op string) tea.Cmd {
 		default:
 			out, err = git.Pull(top)
 		}
-		return gitOpMsg{op: op, out: out, err: err}
+		return gitOpMsg{repo: r, op: op, out: out, err: err}
 	}
 }
 
@@ -563,20 +801,23 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 		m.lastMsg = msg.err.Error()
 	} else {
 		// git's raw chatter ("remote:", progress lines) makes a poor status
-		// message — say what happened instead.
+		// message — say what happened, and to which repo, instead.
 		low := strings.ToLower(msg.out)
+		branch := msg.repo.snap.Branch
+		var s string
 		switch {
 		case msg.op == "fetch":
-			m.lastMsg = "fetched"
+			s = "fetched"
 		case strings.Contains(low, "up to date") || strings.Contains(low, "up-to-date"):
-			m.lastMsg = "already up to date"
+			s = "already up to date"
 		case strings.Contains(low, "set up to track"):
-			m.lastMsg = "published branch " + m.git.snap.Branch + " to origin"
+			s = "published branch " + branch + " to origin"
 		case msg.op == "push":
-			m.lastMsg = "pushed " + m.git.snap.Branch
+			s = "pushed " + branch
 		default:
-			m.lastMsg = "pulled " + m.git.snap.Branch
+			s = "pulled " + branch
 		}
+		m.lastMsg = m.repoMsg(msg.repo, s)
 	}
 	m.refreshGit()
 	if msg.op == "pull" {
@@ -588,13 +829,16 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 // ---- gutter signs ----
 
 // loadGitHead fetches the doc's HEAD baseline and recomputes its signs.
-// nil baseline (untracked file, no repo, virtual tab) = no signs.
+// nil baseline (untracked file, no repo, virtual tab) = no signs. The repo
+// is resolved per file — each doc diffs against its own repo's HEAD.
 func (m *Model) loadGitHead(d *doc) {
 	d.head = nil
-	if m.git.snap.Top != "" && !d.virtual {
-		if rel := gitRelPath(m.git.snap.Top, d.path); !strings.HasPrefix(rel, "..") {
-			if b, err := git.Show(m.git.snap.Top, rel); err == nil {
-				d.head = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+	if !d.virtual {
+		if r := m.repoForDoc(d.path); r != nil {
+			if rel := gitRelPath(r.top, d.path); !strings.HasPrefix(rel, "..") {
+				if b, err := git.Show(r.top, rel); err == nil {
+					d.head = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+				}
 			}
 		}
 	}
@@ -623,12 +867,15 @@ type blameMsg struct {
 // per Update, so tab switches and toggles need no extra plumbing.
 func (m *Model) blameCmdIfNeeded() tea.Cmd {
 	d := m.doc()
-	if !m.git.blameOn || d == nil || d.virtual || d.blame != nil || d.blameBusy ||
-		m.git.snap.Top == "" || d.head == nil {
+	if !m.git.blameOn || d == nil || d.virtual || d.blame != nil || d.blameBusy || d.head == nil {
+		return nil
+	}
+	r := m.repoOf(d.path)
+	if r == nil {
 		return nil
 	}
 	d.blameBusy = true
-	top, path := m.git.snap.Top, gitRelPath(m.git.snap.Top, d.path)
+	top, path := r.top, gitRelPath(r.top, d.path)
 	return func() tea.Msg {
 		lines, err := git.Blame(top, path)
 		if err != nil {
@@ -723,9 +970,9 @@ func gitLetter(r gitRow) (string, lipgloss.Style) {
 func (m Model) gitPanelView() string {
 	w := m.side.Width
 	var sb strings.Builder
-	head := " Git: " + m.git.snap.Branch
-	if m.git.snap.Branch == "" {
-		head = " Git"
+	head := " Git"
+	if len(m.git.repos) == 1 && m.git.repos[0].snap.Branch != "" {
+		head = " Git: " + m.git.repos[0].snap.Branch
 	}
 	sb.WriteString(gitHeadStyle.Render(sidebar.Pad(head, w)))
 	h := m.gitHeight()
@@ -744,6 +991,10 @@ func (m Model) gitPanelView() string {
 			continue
 		}
 		r := m.git.rows[i]
+		if r.repoHead {
+			sb.WriteString(gitHeadStyle.Render(sidebar.Pad(" "+r.header, w)))
+			continue
+		}
 		if r.header != "" {
 			sb.WriteString(gitSectionStyle.Render(sidebar.Pad(" "+r.header, w)))
 			continue
@@ -764,19 +1015,25 @@ func (m Model) gitPanelView() string {
 	return sb.String()
 }
 
-// gitSeg is the status-bar segment: branch, ahead/behind, change count.
+// gitSeg is the status-bar segment: branch, ahead/behind, change count —
+// for the current target repo (active file's repo; panel cursor's when the
+// panel is focused). With several repos the name disambiguates the branch.
 func (m Model) gitSeg() string {
-	if m.git.snap.Branch == "" {
+	r := m.curRepo()
+	if r == nil || r.snap.Branch == "" {
 		return ""
 	}
-	s := "⎇ " + m.git.snap.Branch
-	if m.git.snap.Ahead > 0 {
-		s += fmt.Sprintf(" ↑%d", m.git.snap.Ahead)
+	s := "⎇ " + r.snap.Branch
+	if m.git.multi() {
+		s = "⎇ " + r.name + ":" + r.snap.Branch
 	}
-	if m.git.snap.Behind > 0 {
-		s += fmt.Sprintf(" ↓%d", m.git.snap.Behind)
+	if r.snap.Ahead > 0 {
+		s += fmt.Sprintf(" ↑%d", r.snap.Ahead)
 	}
-	if n := len(m.git.snap.Files); n > 0 {
+	if r.snap.Behind > 0 {
+		s += fmt.Sprintf(" ↓%d", r.snap.Behind)
+	}
+	if n := len(r.snap.Files); n > 0 {
 		s += fmt.Sprintf(" ±%d", n)
 	}
 	if m.git.busy != "" {

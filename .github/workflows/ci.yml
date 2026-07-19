@@ -9,6 +9,10 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go install golang.org/x/tools/gopls@latest # LSP integration tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm i -g typescript # TS7 native LSP (tsc --lsp) integration test
       - run: go vet ./...
       # Perf gates need a quiet machine: measured serially, before the
       # parallel sweep. Budget stays 16ms p99 — never skipped or loosened.
