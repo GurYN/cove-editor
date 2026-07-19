@@ -170,12 +170,17 @@ func newRegistry() *action.Registry {
 	// ---- split panes ----
 	reg("pane.split", "Pane: Split Right", "ctrl+\\", action.Global, func(m *Model) tea.Cmd { m.splitOpen(); return nil })
 	reg("pane.close", "Pane: Close Split", "", action.Global, func(m *Model) tea.Cmd { m.split = false; return nil })
-	reg("pane.other", "Pane: Focus Other", "f6", action.Global, func(m *Model) tea.Cmd {
+	reg("pane.other", "Pane: Focus Other", "", action.Global, func(m *Model) tea.Cmd {
 		if m.split {
 			m.focusPane(!m.splitRight)
 		}
 		return nil
 	})
+	// Ctrl+Tab is eaten by terminal emulators (their own tab switching), so
+	// F6/Shift+F6 like VSCode's Focus Next/Previous Part. bubbletea v1 decodes
+	// xterm's Shift+F6 (CSI 17;2~) as f18.
+	reg("focus.next", "Focus: Next Panel", "f6", action.Global, func(m *Model) tea.Cmd { return m.cycleFocus(+1) })
+	reg("focus.prev", "Focus: Previous Panel", "f18", action.Global, func(m *Model) tea.Cmd { return m.cycleFocus(-1) })
 
 	// ---- git (registered in the Git context so the palette shows the
 	// panel's single-letter keys, which only fire with the panel focused;

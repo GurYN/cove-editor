@@ -32,6 +32,7 @@ func TestSplitPane(t *testing.T) {
 
 	// F6 focuses the right pane; opening a file lands there, left keeps sample.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF6})
+	m, _ = m.Update(flashMsg(m.(Model).flashGen)) // dismiss the focus flash
 	appm = m.(Model)
 	if !appm.splitRight {
 		t.Fatal("f6 did not focus the right pane")
@@ -80,5 +81,48 @@ func TestSplitDividerDrag(t *testing.T) {
 	mm = m.(Model)
 	if lw := mm.splitLW(); lw != 10 {
 		t.Fatalf("min clamp failed: %d", lw)
+	}
+}
+
+// F6 / Shift+F6 (f18) cycle focus through visible panels in visual order:
+// sidebar, left pane, right pane — wrapping both ways.
+func TestFocusCycle(t *testing.T) {
+	m := setup(t) // sidebar closed
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlBackslash})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB}) // open + focus sidebar
+	step := func(k tea.KeyMsg, wantFocus pane, wantRight bool, at string) {
+		t.Helper()
+		m, _ = m.Update(k)
+		mm := m.(Model)
+		if mm.focus != wantFocus || (wantFocus == paneEditor && mm.splitRight != wantRight) {
+			t.Fatalf("%s: focus=%v right=%v, want %v/%v", at, mm.focus, mm.splitRight, wantFocus, wantRight)
+		}
+	}
+	f6 := tea.KeyMsg{Type: tea.KeyF6}
+	sf6 := tea.KeyMsg{Type: tea.KeyF18} // xterm Shift+F6
+	step(f6, paneEditor, false, "sidebar→left")
+	step(f6, paneEditor, true, "left→right")
+	step(f6, paneSidebar, false, "right→wrap to sidebar")
+	step(sf6, paneEditor, true, "sidebar→wrap back to right")
+	step(sf6, paneEditor, false, "right→left")
+}
+
+// Cycling flashes an accent frame around the newly focused panel, cleared
+// by the tick; a stale tick from an older flash must not clear a fresh one.
+func TestFocusFlash(t *testing.T) {
+	m := setup(t)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlBackslash})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF6})
+	if frame := ansi.Strip(m.View()); !strings.Contains(frame, "┌") || !strings.Contains(frame, "┘") {
+		t.Fatalf("no flash frame after F6:\n%.600s", frame)
+	}
+	gen := m.(Model).flashGen
+	m, _ = m.Update(flashMsg(gen - 1)) // stale tick: ignored
+	if !m.(Model).flashOn {
+		t.Fatal("stale flashMsg cleared a fresh flash")
+	}
+	m, _ = m.Update(flashMsg(gen))
+	if frame := ansi.Strip(m.View()); strings.Contains(frame, "┌") {
+		t.Fatalf("flash frame survived its clear tick:\n%.600s", frame)
 	}
 }

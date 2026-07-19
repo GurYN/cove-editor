@@ -2,7 +2,9 @@ package app
 
 import (
 	"strings"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -42,6 +44,88 @@ func (m *Model) paneXAbs() int {
 		return m.splitX() + 1
 	}
 	return m.editorX()
+}
+
+// flashMsg clears the focus flash; the int is the generation that set it.
+type flashMsg int
+
+// cycleFocus moves focus to the next (+1) or previous (-1) visible panel,
+// in visual order: sidebar slot, left editor, right editor, terminal. The
+// returned cmd clears the accent frame flashed around the new panel.
+func (m *Model) cycleFocus(dir int) tea.Cmd {
+	type stop struct {
+		p     pane
+		right bool
+	}
+	var stops []stop
+	if m.sidebarOpen {
+		if m.git.view {
+			stops = append(stops, stop{p: paneGit})
+		} else {
+			stops = append(stops, stop{p: paneSidebar})
+		}
+	}
+	stops = append(stops, stop{p: paneEditor})
+	if m.split {
+		stops = append(stops, stop{p: paneEditor, right: true})
+	}
+	if m.termOpen && m.activeTerm() != nil {
+		stops = append(stops, stop{p: paneTerminal})
+	}
+	cur := 0
+	for i, s := range stops {
+		if s.p == m.focus && (s.p != paneEditor || s.right == m.splitRight) {
+			cur = i
+		}
+	}
+	next := stops[(cur+len(stops)+dir)%len(stops)]
+	if next.p == paneEditor {
+		m.focusPane(next.right)
+	} else {
+		m.focus = next.p
+	}
+	m.flashOn = true
+	m.flashGen++
+	gen := m.flashGen
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return flashMsg(gen) })
+}
+
+// flashRect is the focused panel's rectangle in middle-block coordinates
+// (row 0 = first row under the tab bar).
+func (m Model) flashRect() (x, y, w, h int) {
+	switch m.focus {
+	case paneSidebar, paneGit:
+		return 0, 0, m.side.Width, m.height - 2
+	case paneTerminal:
+		return m.editorX(), m.contentRows(), m.width - m.editorX(), m.panelRows()
+	}
+	x, w = m.editorX(), m.width-m.editorX()
+	if m.split {
+		if m.splitRight {
+			x, w = m.splitX()+1, m.splitAvail()-m.splitLW()-1
+		} else {
+			w = m.splitLW()
+		}
+	}
+	return x, 0, w, m.contentRows()
+}
+
+// flashFrame overlays an accent frame on the focused panel's outer ring —
+// four composite splices: top edge, bottom edge, left and right columns.
+func (m Model) flashFrame(middle string) string {
+	x, y, w, h := m.flashRect()
+	if w < 2 || h < 2 {
+		return middle
+	}
+	hor := func(l, r string) string { return flashStyle.Render(l + strings.Repeat("─", w-2) + r) }
+	side := strings.TrimSuffix(strings.Repeat(flashStyle.Render("│")+"\n", h-2), "\n")
+	middle = m.composite(middle, hor("┌", "┐"), y, x)
+	middle = m.composite(middle, hor("└", "┘"), y+h-1, x)
+	if h > 2 {
+		middle = m.composite(middle, side, y+1, x)
+		middle = m.composite(middle, side, y+1, x+w-1)
+	}
+	return middle
 }
 
 // focusPane focuses the left or right pane, swapping active/other so the

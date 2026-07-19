@@ -33,6 +33,7 @@ var (
 	tabStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(lipgloss.Color("236"))
 	tabBarStyle    = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 	borderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	flashStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	welcomeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
@@ -49,6 +50,9 @@ func applyChrome(colors map[string]string) {
 	}
 	if border != "" {
 		borderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(border))
+	}
+	if accent := colors["function"]; accent != "" {
+		flashStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(accent))
 	}
 	applyGitChrome(colors)
 	sidebar.ApplyTheme(colors)
@@ -110,6 +114,8 @@ type Model struct {
 	sidebarOpen bool
 	sidebarW    int  // user-set width; divider drag adjusts it
 	focus       pane // paneEditor or paneSidebar
+	flashOn     bool // accent frame around the focused panel (focus.next/prev)
+	flashGen    int  // tick generation, so a stale clear can't kill a fresh flash
 
 	ovKind     overlayKind
 	ov         overlay.Model
@@ -254,6 +260,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, listenLSP(m.lspm)
 	case changeTickMsg:
 		return m, m.flushChange()
+	case flashMsg:
+		if int(msg) == m.flashGen {
+			m.flashOn = false
+		}
+		return m, nil
 	case watchTickMsg:
 		m.checkDiskChanges()
 		return m, tea.Batch(watchTick(), m.syncLSP())
@@ -415,8 +426,8 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.updatePrompt(msg)
 	}
 	if t := m.activeTerm(); m.focus == paneTerminal && t != nil {
-		// Only scrollback, the panel toggle, and quit stay with Cove
-		// (respecting rebinds); every other key goes to the shell.
+		// Only scrollback, the panel toggle, focus cycling, and quit stay with
+		// Cove (respecting rebinds); every other key goes to the shell.
 		switch msg.String() {
 		case "shift+pgup":
 			t.Scroll(+m.termRows())
@@ -426,7 +437,8 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		if act := m.reg.Lookup(action.Global, msg.String()); act != nil &&
-			(act.ID == "term.toggle" || act.ID == "app.quit") {
+			(act.ID == "term.toggle" || act.ID == "app.quit" ||
+				act.ID == "focus.next" || act.ID == "focus.prev") {
 			cmd := act.Do(&m)
 			m.layout()
 			return m, cmd
@@ -1185,6 +1197,9 @@ func (m Model) View() string {
 		// switcher plus a spacer row so the buttons don't sit on the bottom bar
 		side += "\n" + m.sideSwitcher() + "\n" + strings.Repeat(" ", m.side.Width)
 		middle = lipgloss.JoinHorizontal(lipgloss.Top, side, border, middle)
+	}
+	if m.flashOn {
+		middle = m.flashFrame(middle)
 	}
 	if m.aboutOpen {
 		box := m.aboutView()

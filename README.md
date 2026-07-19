@@ -13,7 +13,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, and CSS work out of the box.
 - **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
-- **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6` jumps between them.
+- **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
 - **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Commit history opens in a fuzzy picker, and a commit-graph view renders `git log --graph` in a tab — press Enter on any line of either to open that commit's full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
@@ -86,7 +86,7 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Ctrl+W`        | Close tab                     |
 | `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next tab |
 | `Ctrl+\`        | Split pane                    |
-| `F6`            | Focus other pane              |
+| `F6` / `Shift+F6` | Next / previous panel       |
 | `Ctrl+E`        | Expand selection to syntax node |
 | `Ctrl+D`        | Add next occurrence to selection |
 | `Alt+Up` / `Alt+Down` | Add cursor above / below |
