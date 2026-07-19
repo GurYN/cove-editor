@@ -24,8 +24,9 @@ type doc struct {
 	mtime   time.Time
 	confirm bool   // next save overwrites an externally-modified file
 	sentRev int    // last editor revision synced to the language server
-	virtual bool   // read-only in-memory view (git diff); never saved
-	head    []byte // file content at git HEAD (LF-normalized); nil = no baseline
+	virtual bool       // read-only in-memory view (git diff); never saved
+	repo    *repoState // repo a virtual git tab (graph/commit) belongs to
+	head    []byte     // file content at git HEAD (LF-normalized); nil = no baseline
 	lineMap []int  // buffer line → HEAD line (-1 added/modified); from updateSigns
 
 	blame     []git.BlameLine // per-HEAD-line; nil = not fetched, empty = unavailable

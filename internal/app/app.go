@@ -90,6 +90,7 @@ const (
 	overlayDiags
 	overlayBranches
 	overlayHistory
+	overlayRepos // one-shot repo picker for ambiguous multi-repo git actions
 )
 
 // problemRef is one row of the Problems list: where Enter should land.
@@ -125,6 +126,8 @@ type Model struct {
 	ovDiags    []problemRef    // problems payload
 	ovBranches []string        // branch picker payload
 	ovCommits  []git.LogEntry  // history picker payload
+	ovRepo     *repoState      // repo the branch/history picker acts on
+	ovRepoDo   func(*Model, *repoState) tea.Cmd // pending action behind the repo picker
 	aboutOpen  bool            // about box: any key or click closes
 
 	lspm          *lsp.Manager
@@ -488,7 +491,7 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.focus == paneEditor {
 		if d := m.doc(); d != nil {
 			// Enter on a Git Graph line drills into that commit's diff.
-			if msg.Type == tea.KeyEnter && d.virtual && d.path == gitGraphTitle {
+			if msg.Type == tea.KeyEnter && d.virtual && strings.HasPrefix(d.path, gitGraphTitle) {
 				m.gitOpenCommitAtCursor(d)
 				m.layout()
 				return m, nil
@@ -540,19 +543,21 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 	m.ovKind = overlayNone
 	m.focus = paneEditor
 	if chosen < 0 {
+		m.ovRepoDo = nil // Escape on the repo picker drops the pending action
 		// Enter on a branch name that matched nothing: offer to create it
 		// off the current branch (Escape still just closes).
-		if kind == overlayBranches && k.Type == tea.KeyEnter {
+		if kind == overlayBranches && k.Type == tea.KeyEnter && m.ovRepo != nil {
 			if name := strings.TrimSpace(m.ov.Query()); name != "" {
-				return m.prompt(fmt.Sprintf("No branch %q — create from %s? y/n:", name, m.git.snap.Branch), "",
+				r := m.ovRepo
+				return m.prompt(fmt.Sprintf("No branch %q — create from %s? y/n:", name, r.snap.Branch), "",
 					func(m *Model, text string) {
 						if !strings.EqualFold(text, "y") {
 							return
 						}
-						if err := git.CreateBranch(m.git.snap.Top, name); err != nil {
+						if err := git.CreateBranch(r.top, name); err != nil {
 							m.lastMsg = err.Error()
 						} else {
-							m.lastMsg = "on new branch " + name
+							m.lastMsg = m.repoMsg(r, "on new branch "+name)
 						}
 						m.refreshGit()
 					}), nil
@@ -573,21 +578,32 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		m.layout()
 	case overlayBranches:
 		name := m.ovBranches[chosen]
-		if err := git.Checkout(m.git.snap.Top, name); err != nil {
+		if err := git.Checkout(m.ovRepo.top, name); err != nil {
 			m.lastMsg = err.Error()
 		} else {
-			m.lastMsg = "switched to " + name
+			m.lastMsg = m.repoMsg(m.ovRepo, "switched to "+name)
 		}
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files
 	case overlayHistory:
 		c := m.ovCommits[chosen]
-		text, err := git.ShowCommit(m.git.snap.Top, c.SHA)
+		text, err := git.ShowCommit(m.ovRepo.top, c.SHA)
 		if err != nil {
 			m.lastMsg = err.Error()
 			return m, nil
 		}
 		m.openVirtual(c.SHA+" (commit)", text)
+		if d := m.doc(); d != nil {
+			d.repo = m.ovRepo
+		}
+	case overlayRepos:
+		do := m.ovRepoDo
+		m.ovRepoDo = nil
+		if do != nil {
+			cmd := do(&m, m.git.repos[chosen])
+			m.layout()
+			return m, cmd
+		}
 	case overlayDiags:
 		ref := m.ovDiags[chosen]
 		m.openFile(ref.path)
