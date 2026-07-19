@@ -32,7 +32,10 @@ type request struct {
 }
 
 type response struct {
-	ID     *int64          `json:"id"`
+	// Raw: the spec allows string ids and servers use them (TS7's native
+	// LSP tags its own requests "ts1", "ts2", …). Parsed leniently, echoed
+	// verbatim when replying.
+	ID     json.RawMessage `json:"id"`
 	Result json.RawMessage `json:"result"`
 	Error  *respError      `json:"error"`
 	Method string          `json:"method"` // set on server->client notifications
@@ -127,16 +130,24 @@ func (c *conn) readLoop(r io.Reader) {
 		if json.Unmarshal(msg, &resp) != nil {
 			continue
 		}
+		hasID := len(resp.ID) > 0 && string(resp.ID) != "null"
 		switch {
-		case resp.Method != "" && resp.ID == nil: // notification
+		case resp.Method != "" && !hasID: // notification
 			if c.notify != nil {
 				c.notify(resp.Method, resp.Params)
 			}
-		case resp.Method != "": // server->client request: reply with null
-			c.write(map[string]any{"jsonrpc": "2.0", "id": *resp.ID, "result": nil})
-		case resp.ID != nil:
+		case resp.Method != "": // server->client request: surface, reply null
+			if c.notify != nil {
+				c.notify(resp.Method, resp.Params)
+			}
+			c.write(map[string]any{"jsonrpc": "2.0", "id": resp.ID, "result": nil})
+		case hasID: // response to one of our calls (ids are always numeric)
+			var id int64
+			if json.Unmarshal(resp.ID, &id) != nil {
+				continue
+			}
 			c.pmu.Lock()
-			ch := c.pending[*resp.ID]
+			ch := c.pending[id]
 			c.pmu.Unlock()
 			if ch != nil {
 				ch <- resp

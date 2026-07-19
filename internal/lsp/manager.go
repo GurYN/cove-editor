@@ -4,26 +4,69 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// ServerDef declares how to launch a language server.
+// ServerDef declares how to launch a language server. Resolve, when set,
+// picks the argv at first use (and nil means "no usable server").
 // ponytail: hardcoded defaults; TOML registration lands in Phase 4.
 type ServerDef struct {
-	Argv   []string
-	LangID string
+	Argv    []string
+	Resolve func() []string
+	LangID  string
 }
 
 var defaultServers = map[string]ServerDef{
-	"go":         {Argv: []string{"gopls"}, LangID: "go"},
-	"python":     {Argv: []string{"pyright-langserver", "--stdio"}, LangID: "python"},
-	"typescript": {Argv: []string{"typescript-language-server", "--stdio"}, LangID: "typescript"},
+	"go":     {Argv: []string{"gopls"}, LangID: "go"},
+	"python": {Argv: []string{"pyright-langserver", "--stdio"}, LangID: "python"},
+	// TypeScript 7+ (the native compiler) serves LSP itself (pull-diagnostics
+	// model); TS5 setups fall back to typescript-language-server. A
+	// config.toml [lsp.typescript] override replaces the probe entirely.
+	"typescript": {Resolve: resolveTypescript, LangID: "typescript"},
 	"rust":       {Argv: []string{"rust-analyzer"}, LangID: "rust"},
 	// html + css ship together in `npm i -g vscode-langservers-extracted`.
 	"html": {Argv: []string{"vscode-html-language-server", "--stdio"}, LangID: "html"},
 	"css":  {Argv: []string{"vscode-css-language-server", "--stdio"}, LangID: "css"},
+}
+
+// resolveTypescript probes once, on the first ts/js file open: tsc 7+ →
+// its native `tsc --lsp`; otherwise typescript-language-server (the TS5
+// wrapper). The ~150ms `tsc --version` exec runs only when tsc is present.
+var (
+	tsOnce sync.Once
+	tsArgv []string
+)
+
+func resolveTypescript() []string {
+	tsOnce.Do(func() {
+		if _, err := exec.LookPath("tsc"); err == nil {
+			if out, err := exec.Command("tsc", "--version").Output(); err == nil && tsMajor(string(out)) >= 7 {
+				tsArgv = []string{"tsc", "--lsp", "--stdio"}
+				return
+			}
+		}
+		if _, err := exec.LookPath("typescript-language-server"); err == nil {
+			tsArgv = []string{"typescript-language-server", "--stdio"}
+		}
+	})
+	return tsArgv
+}
+
+// tsMajor parses `tsc --version` output ("Version 7.0.2") into 7; 0 = unknown.
+func tsMajor(out string) int {
+	v, ok := strings.CutPrefix(strings.TrimSpace(out), "Version ")
+	if !ok {
+		return 0
+	}
+	major, _, _ := strings.Cut(v, ".")
+	n, err := strconv.Atoi(major)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 var extLang = map[string]string{
@@ -102,10 +145,17 @@ func (m *Manager) clientFor(path string) *Client {
 		m.restarts[lang]++
 	}
 	def := defaultServers[lang]
-	if _, err := exec.LookPath(def.Argv[0]); err != nil {
+	argv := def.Argv
+	if def.Resolve != nil {
+		argv = def.Resolve()
+	}
+	if len(argv) == 0 {
 		return nil
 	}
-	c := newClient(lang, def.Argv, m.root, m.events)
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return nil
+	}
+	c := newClient(lang, argv, m.root, m.events)
 	m.clients[lang] = c
 	return c
 }

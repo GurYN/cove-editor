@@ -10,13 +10,13 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 
 - **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
 - **Tree-sitter syntax highlighting** for twelve languages, with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
-- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, and CSS work out of the box.
+- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, and CSS work out of the box — including TypeScript 7's native language server (both the push and pull diagnostics models are supported).
 - **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
-- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Commit history opens in a fuzzy picker, and a commit-graph view renders `git log --graph` in a tab — press Enter on any line of either to open that commit's full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
+- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Multi-repo folders just work: open a directory containing several checkouts and the panel shows one section per repo, with every action targeting the repo under the cursor (or the active file's). Commit history opens in a fuzzy picker, and a commit-graph view renders `git log --graph` in a tab — press Enter on any line of either to open that commit's full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **Multi-cursor editing, find & replace, undo/redo** — plus the line-editing staples: toggle comment (`Ctrl+_`), move line up/down (`Alt+Shift+Up`/`Down`), duplicate/delete line, indent/outdent, select all occurrences, and go to line (`Ctrl+L`).
 - **Plays nice with the outside world**: files edited outside Cove reload in place (undoable); a buffer with unsaved changes warns instead. The file tree and git status re-sync whenever the terminal regains focus, so changes from another shell or editor show up on their own.
 - **No terminal traps**: `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
@@ -62,9 +62,11 @@ Language intelligence needs the language's server on your `PATH`:
 | ---------- | ---------------------------- | ---------------------------------------------------- |
 | Go         | `gopls`                      | `go install golang.org/x/tools/gopls@latest`          |
 | Python     | `pyright-langserver`         | `npm i -g pyright`                                    |
-| TypeScript / JavaScript | `typescript-language-server` | `npm i -g typescript-language-server typescript` |
+| TypeScript / JavaScript | `tsc --lsp` (TypeScript 7+) | `npm i -g typescript`                       |
 | Rust       | `rust-analyzer`              | `rustup component add rust-analyzer`                  |
 | HTML / CSS | `vscode-html-language-server` / `vscode-css-language-server` | `npm i -g vscode-langservers-extracted` |
+
+Still on TypeScript 5? Nothing to configure: Cove probes your `tsc` version once and falls back to `typescript-language-server` (`npm i -g typescript-language-server typescript@5`) when tsc predates the native server. A `[lsp.typescript]` entry in the config file overrides the probe entirely.
 
 No server installed? Cove still works as a fast editor with syntax highlighting.
 
@@ -132,6 +134,8 @@ Inside the panel (all of this is also in the palette):
 
 Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, fetch, and *New Branch…* are in the palette.
 
+With several repos in the opened folder, each renders as its own bold `name · branch` section and every panel action applies to the section under the cursor — the commit prompt names its target (*Commit to sources (main):*), and toasts are prefixed with the repo name. Actions run from the palette follow the active file's repo; for a file outside every repo, a one-shot picker asks. The status bar shows the current repo as `⎇ name:branch`.
+
 Outside the panel, gutter signs next to the line numbers mark added, modified, and deleted lines as you type. *Git: Toggle Inline Blame* (palette) shows the last commit for the cursor line in the status bar: author, age, and summary; lines you have edited show *uncommitted changes*.
 
 ## Configuration
@@ -160,7 +164,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & graph, push/pull, branches, restore, gutter signs, inline blame, file-tree markers), and split panes — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & graph, push/pull, branches, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), and split panes — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
 
 ## Contributing
 

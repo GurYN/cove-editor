@@ -25,15 +25,19 @@ type Client struct {
 	root   string
 	events chan<- Event
 
-	mu     sync.Mutex
-	conn   *conn
-	cmd    *exec.Cmd
-	state  string   // starting | ready | dead
-	queued []func() // notifications deferred until ready
+	mu      sync.Mutex
+	conn    *conn
+	cmd     *exec.Cmd
+	state   string   // starting | ready | dead
+	queued  []func() // notifications deferred until ready
+	pull    bool     // server uses pull diagnostics (textDocument/diagnostic)
+	pulling map[string]bool // uri → pull request in flight
+	repull  map[string]bool // uri → doc changed mid-pull, go again
 }
 
 func newClient(lang string, argv []string, root string, events chan<- Event) *Client {
-	c := &Client{lang: lang, argv: argv, root: root, events: events, state: "starting"}
+	c := &Client{lang: lang, argv: argv, root: root, events: events, state: "starting",
+		pulling: map[string]bool{}, repull: map[string]bool{}}
 	go c.start()
 	return c
 }
@@ -75,6 +79,7 @@ func (c *Client) start() {
 		"capabilities": map[string]any{
 			"textDocument": map[string]any{
 				"publishDiagnostics": map[string]any{},
+				"diagnostic":         map[string]any{}, // pull model (TS7 native, future servers)
 				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
 				"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
 				"completion": map[string]any{
@@ -89,7 +94,14 @@ func (c *Client) start() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := conn.Call(ctx, "initialize", initParams, nil); err != nil {
+	var initRes struct {
+		Capabilities struct {
+			// Present (object or bool) when the server wants the client to
+			// pull diagnostics instead of waiting for pushes.
+			DiagnosticProvider json.RawMessage `json:"diagnosticProvider"`
+		} `json:"capabilities"`
+	}
+	if err := conn.Call(ctx, "initialize", initParams, &initRes); err != nil {
 		cmd.Process.Kill()
 		c.die()
 		return
@@ -101,6 +113,9 @@ func (c *Client) start() {
 		c.mu.Unlock()
 		cmd.Process.Kill()
 		return
+	}
+	if dp := string(initRes.Capabilities.DiagnosticProvider); dp != "" && dp != "null" && dp != "false" {
+		c.pull = true
 	}
 	c.conn = conn
 	c.state = "ready"
@@ -131,18 +146,94 @@ func (c *Client) emit(status string) {
 }
 
 func (c *Client) onNotify(method string, params json.RawMessage) {
-	if method != "textDocument/publishDiagnostics" {
+	switch method {
+	case "textDocument/publishDiagnostics":
+		var p struct {
+			URI         string       `json:"uri"`
+			Diagnostics []Diagnostic `json:"diagnostics"`
+		}
+		if json.Unmarshal(params, &p) != nil {
+			return
+		}
+		// Diagnostics block until the UI drains them — they must not be lost.
+		c.events <- Event{Kind: "diagnostics", URI: p.URI, Diagnostics: p.Diagnostics, Lang: c.lang}
+	case "client/registerCapability":
+		// Dynamic route to the same pull flag the initialize result sets.
+		var p struct {
+			Registrations []struct {
+				Method string `json:"method"`
+			} `json:"registrations"`
+		}
+		if json.Unmarshal(params, &p) != nil {
+			return
+		}
+		for _, r := range p.Registrations {
+			if r.Method == "textDocument/diagnostic" {
+				c.mu.Lock()
+				c.pull = true
+				c.mu.Unlock()
+			}
+		}
+	}
+}
+
+// ---- pull diagnostics (LSP 3.17 textDocument/diagnostic) ----
+// Push servers (gopls, pyright) volunteer diagnostics; pull servers (TS7's
+// native `tsc --lsp`) wait to be asked. maybePull asks after every open/
+// change/save and funnels the answer into the same diagnostics Event, so
+// the UI never knows which model the server uses.
+
+// maybePull starts one pull per uri; a change landing mid-pull queues
+// exactly one re-pull so the newest state always wins.
+func (c *Client) maybePull(uri string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.pull || c.state != "ready" {
 		return
 	}
-	var p struct {
-		URI         string       `json:"uri"`
-		Diagnostics []Diagnostic `json:"diagnostics"`
-	}
-	if json.Unmarshal(params, &p) != nil {
+	if c.pulling[uri] {
+		c.repull[uri] = true
 		return
 	}
-	// Diagnostics block until the UI drains them — they must not be lost.
-	c.events <- Event{Kind: "diagnostics", URI: p.URI, Diagnostics: p.Diagnostics, Lang: c.lang}
+	c.pulling[uri] = true
+	go c.pullDiags(uri)
+}
+
+func (c *Client) pullDiags(uri string) {
+	for {
+		conn, err := c.readyConn()
+		if err != nil {
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		var res struct {
+			Kind  string       `json:"kind"`
+			Items []Diagnostic `json:"items"`
+		}
+		err = conn.Call(ctx, "textDocument/diagnostic",
+			map[string]any{"textDocument": map[string]any{"uri": uri}}, &res)
+		cancel()
+		if err != nil {
+			break
+		}
+		if res.Kind != "unchanged" { // we send no previousResultId, so always full
+			c.events <- Event{Kind: "diagnostics", URI: uri, Diagnostics: res.Items, Lang: c.lang}
+		}
+		c.mu.Lock()
+		if c.repull[uri] {
+			delete(c.repull, uri)
+			c.mu.Unlock()
+			continue
+		}
+		delete(c.pulling, uri)
+		c.mu.Unlock()
+		return
+	}
+	// Errored out: clear the flags so the next change starts a fresh pull.
+	c.mu.Lock()
+	delete(c.pulling, uri)
+	delete(c.repull, uri)
+	c.mu.Unlock()
 }
 
 // ready returns the live conn or an error while starting/dead.
@@ -181,6 +272,7 @@ func (c *Client) DidOpen(uri, langID, text string, version int) {
 					"uri": uri, "languageId": langID, "version": version, "text": text,
 				},
 			})
+			c.maybePull(uri)
 		}
 	})
 }
@@ -192,6 +284,7 @@ func (c *Client) DidChange(uri string, version int, fullText string) {
 				"textDocument":   map[string]any{"uri": uri, "version": version},
 				"contentChanges": []map[string]any{{"text": fullText}}, // full sync
 			})
+			c.maybePull(uri)
 		}
 	})
 }
@@ -201,6 +294,7 @@ func (c *Client) DidSave(uri string) {
 		conn.Notify("textDocument/didSave", map[string]any{
 			"textDocument": map[string]any{"uri": uri},
 		})
+		c.maybePull(uri)
 	}
 }
 
