@@ -3,8 +3,13 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -61,13 +66,52 @@ func isBinary(data []byte) bool {
 	return bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0
 }
 
+// isAsset reports whether path is a known image/PDF type — always shown as
+// a metadata preview, even when small enough to pass the NUL sniff.
+func isAsset(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".pdf":
+		return true
+	}
+	return false
+}
+
+// assetDoc builds a read-only metadata preview tab for a file the editor
+// can't display (images, PDFs, other binaries).
+// ponytail: metadata only — inline rendering needs per-terminal graphics
+// protocols (Kitty/Sixel) and fights the cell-grid renderer.
+func assetDoc(path string, data []byte) *doc {
+	desc := "binary file"
+	if cfg, kind, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		desc = fmt.Sprintf("%s image, %d×%d px", strings.ToUpper(kind), cfg.Width, cfg.Height)
+	} else if bytes.HasPrefix(data, []byte("%PDF-")) && len(data) >= 8 {
+		desc = "PDF document, version " + string(data[5:8])
+	}
+	text := fmt.Sprintf("%s\n\n%s\n%s\n\npreview only — content not rendered\n",
+		filepath.Base(path), desc, humanSize(len(data)))
+	ed := editor.New(buffer.New([]byte(text)))
+	ed.ReadOnly = true
+	return &doc{path: path, virtual: true, ed: ed}
+}
+
+func humanSize(n int) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
 func loadDoc(path string) (*doc, error) {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	if isBinary(data) {
-		return nil, fmt.Errorf("%s is a binary file", filepath.Base(path))
+	// len check keeps brand-new (not-yet-on-disk) files editable.
+	if len(data) > 0 && (isAsset(path) || isBinary(data)) {
+		return assetDoc(path, data), nil
 	}
 	return newDoc(path, data), nil
 }

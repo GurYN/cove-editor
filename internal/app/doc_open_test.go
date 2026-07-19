@@ -1,6 +1,9 @@
 package app
 
 import (
+	"bytes"
+	"image"
+	imgpng "image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,27 +13,45 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Binary files (NUL in the head) must not open as editor tabs — neither via
-// the finder/tree path (loadDoc) nor as the startup argument.
-func TestBinaryFilesRefused(t *testing.T) {
+// Binary files and image/PDF assets open as read-only metadata previews —
+// never as editable buffers — via both loadDoc and the startup argument.
+func TestBinaryAndAssetPreview(t *testing.T) {
 	t.Setenv("COVE_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
 	bin := filepath.Join(t.TempDir(), "blob.zip")
 	os.WriteFile(bin, []byte("PK\x03\x04\x00\x00junk"), 0o644)
 
-	if _, err := loadDoc(bin); err == nil || !strings.Contains(err.Error(), "binary") {
-		t.Fatalf("loadDoc accepted a binary: %v", err)
+	d, err := loadDoc(bin)
+	if err != nil || !d.virtual || !d.ed.ReadOnly {
+		t.Fatalf("binary not a read-only preview: err=%v virtual=%v", err, d != nil && d.virtual)
+	}
+	if got := string(d.ed.Buf.Bytes()); !strings.Contains(got, "binary file") {
+		t.Fatalf("preview text: %q", got)
 	}
 
+	// 1×1 PNG: preview must decode and show dimensions, no NUL soup.
+	png := filepath.Join(t.TempDir(), "dot.png")
+	var img bytes.Buffer
+	imgpng.Encode(&img, image.NewRGBA(image.Rect(0, 0, 1, 1)))
+	os.WriteFile(png, img.Bytes(), 0o644)
+	d, err = loadDoc(png)
+	if err != nil || !d.virtual {
+		t.Fatalf("png not a preview: %v", err)
+	}
+	if got := string(d.ed.Buf.Bytes()); !strings.Contains(got, "PNG image, 1×1 px") {
+		t.Fatalf("png preview text: %q", got)
+	}
+
+	// Startup argument: opens the preview tab instead of refusing.
 	data, _ := os.ReadFile(bin)
 	m := New(bin, data)
-	if len(m.docs) != 0 || !strings.Contains(m.lastMsg, "binary") {
-		t.Fatalf("startup opened a binary: %d docs, msg %q", len(m.docs), m.lastMsg)
+	if len(m.docs) != 1 || !m.docs[0].virtual {
+		t.Fatalf("startup: %d docs", len(m.docs))
 	}
 
-	// UTF-8 text stays openable.
+	// UTF-8 text stays openable and editable.
 	txt := filepath.Join(t.TempDir(), "ok.go")
 	os.WriteFile(txt, []byte("package ok // héllo\n"), 0o644)
-	if _, err := loadDoc(txt); err != nil {
+	if d, err := loadDoc(txt); err != nil || d.virtual {
 		t.Fatalf("text file refused: %v", err)
 	}
 }

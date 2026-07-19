@@ -194,9 +194,9 @@ func New(path string, data []byte) Model {
 	if path != "" {
 		if fi, err := os.Stat(path); err == nil && fi.IsDir() {
 			root = path
-		} else if isBinary(data) {
+		} else if len(data) > 0 && (isAsset(path) || isBinary(data)) {
 			root = filepath.Dir(path)
-			m.lastMsg = filepath.Base(path) + " is a binary file"
+			m.docs = append(m.docs, assetDoc(path, data))
 		} else {
 			root = filepath.Dir(path)
 			m.docs = append(m.docs, newDoc(path, data))
@@ -816,8 +816,10 @@ func (m *Model) openFile(path string) {
 		m.lastMsg = d.warn
 	}
 	m.layout()
-	m.lspm.Open(path, d.ed.Buf.Bytes(), d.ed.Rev)
-	m.loadGitHead(d)
+	if !d.virtual { // asset previews: no LSP, no git baseline
+		m.lspm.Open(path, d.ed.Buf.Bytes(), d.ed.Rev)
+		m.loadGitHead(d)
+	}
 }
 
 // closeActive closes the active tab, prompting when dirty.
