@@ -21,23 +21,24 @@ func TestRenderGraph(t *testing.T) {
 	out := renderGraph(cs)
 	lines := strings.Split(out, "\n")
 
-	// header: "main" vertical in lane 0 (4 rows), blank row, 5 commit rows.
-	if len(lines) != 10 {
+	// Header: pre-seeded lanes — "main" (lane 0) and "feature" (lane 1) —
+	// vertical and bottom-aligned over 7 rows, blank row, 5 commit rows.
+	if len(lines) != 13 {
 		t.Fatalf("lines = %d\n%s", len(lines), out)
 	}
-	if lines[0] != "m" || lines[3] != "n" || lines[4] != "" {
+	if lines[0] != "  f" || lines[3] != "m t" || lines[6] != "n e" || lines[7] != "" {
 		t.Fatalf("header:\n%s", out)
 	}
 	want := []string{
-		"●  aaaa333 (HEAD -> main) top · t, 1h ago",
-		"●─╮  aaaa222 merge · t, 2h ago",
+		"● │  aaaa333 (HEAD -> main) top · t, 1h ago",
+		"●─┤  aaaa222 merge · t, 2h ago",
 		"│ ●  ffff111 (feature) feat · t, 3h ago",
 		"● │  aaaa111 mid · t, 4h ago",
 		"●─╯  aaaa000 root · t, 5h ago",
 	}
 	for i, w := range want {
-		if lines[5+i] != w {
-			t.Fatalf("row %d = %q, want %q", i, lines[5+i], w)
+		if lines[8+i] != w {
+			t.Fatalf("row %d = %q, want %q", i, lines[8+i], w)
 		}
 	}
 }
