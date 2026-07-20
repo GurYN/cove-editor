@@ -174,6 +174,118 @@ func TestBranches(t *testing.T) {
 	}
 }
 
+func TestRemoteBranches(t *testing.T) {
+	origin := initRepo(t)
+	run(origin, "branch", "feature") // remote-only branch
+	top := t.TempDir()
+	if _, err := run(top, "clone", "-q", "--branch", "main", origin, "."); err != nil {
+		t.Fatal(err)
+	}
+	top, _ = run(top, "rev-parse", "--show-toplevel")
+
+	bs, err := Branches(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remote *Branch
+	for i, b := range bs {
+		if b.Name == "main" && b.Remote {
+			t.Fatal("main has a local counterpart; origin/main must be hidden")
+		}
+		if b.Name == "origin/feature" {
+			remote = &bs[i]
+		}
+	}
+	if remote == nil || !remote.Remote {
+		t.Fatalf("origin/feature missing from %+v", bs)
+	}
+	local, err := CheckoutRemote(top, "origin/feature")
+	if err != nil || local != "feature" {
+		t.Fatalf("CheckoutRemote = %q, %v", local, err)
+	}
+	snap, _ := Status(top)
+	if snap.Branch != "feature" || snap.Upstream != "origin/feature" {
+		t.Fatalf("branch=%q upstream=%q", snap.Branch, snap.Upstream)
+	}
+}
+
+// The user-facing flow: remote and local both commit to the same line, then
+// pull. git ≥2.27 with no pull.rebase config refuses to reconcile at all
+// (no conflict state, just a hint) — Pull must fall back to merging.
+func TestPullDivergentConflicts(t *testing.T) {
+	origin := initRepo(t)
+	top := t.TempDir()
+	if _, err := run(top, "clone", "-q", origin, "."); err != nil {
+		t.Fatal(err)
+	}
+	top, _ = run(top, "rev-parse", "--show-toplevel")
+	run(top, "config", "user.email", "t@t.t")
+	run(top, "config", "user.name", "t")
+
+	os.WriteFile(filepath.Join(origin, "a.txt"), []byte("remote\n"), 0o644)
+	run(origin, "commit", "-q", "-am", "remote change")
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("local\n"), 0o644)
+	run(top, "commit", "-q", "-am", "local change")
+
+	if _, err := Pull(top); err == nil {
+		t.Fatal("expected pull to fail with a merge conflict")
+	}
+	snap, _ := Status(top)
+	if len(snap.Files) != 1 || !snap.Files[0].Conflict() {
+		t.Fatalf("no conflict state after divergent pull: %+v", snap.Files)
+	}
+	data, _ := os.ReadFile(filepath.Join(top, "a.txt"))
+	if !strings.Contains(string(data), "<<<<<<<") {
+		t.Fatalf("no conflict markers: %q", data)
+	}
+
+	// Resolve to ours: the working tree then equals HEAD, zero changed files —
+	// but the merge still needs a commit, and the UI needs to know that.
+	if err := ResolveOurs(top, "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = Status(top)
+	if !snap.Merging {
+		t.Fatal("merge in progress not detected")
+	}
+	if MergeMsg(top) == "" {
+		t.Fatal("no prepared merge message")
+	}
+	if _, err := Commit(top, "merge remote"); err != nil {
+		t.Fatalf("concluding commit refused: %v", err)
+	}
+	snap, _ = Status(top)
+	if snap.Merging {
+		t.Fatal("merge not concluded after commit")
+	}
+}
+
+func TestResolveConflict(t *testing.T) {
+	top := initRepo(t)
+	run(top, "checkout", "-q", "-b", "feature")
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("theirs\n"), 0o644)
+	run(top, "commit", "-q", "-am", "theirs")
+	run(top, "checkout", "-q", "main")
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("ours\n"), 0o644)
+	run(top, "commit", "-q", "-am", "ours")
+	runLoose(top, "merge", "feature") // conflicts by construction
+
+	snap, _ := Status(top)
+	if len(snap.Files) != 1 || !snap.Files[0].Conflict() {
+		t.Fatalf("files = %+v", snap.Files)
+	}
+	if err := ResolveTheirs(top, "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(top, "a.txt")); string(data) != "theirs\n" {
+		t.Fatalf("content = %q", data)
+	}
+	snap, _ = Status(top)
+	if len(snap.Files) != 1 || !snap.Files[0].Staged() || snap.Files[0].Conflict() {
+		t.Fatalf("after resolve: %+v", snap.Files)
+	}
+}
+
 func TestUnstageBeforeFirstCommit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -312,13 +424,23 @@ func TestLogAndShowCommit(t *testing.T) {
 	}
 }
 
-func TestLogGraph(t *testing.T) {
+func TestGraphLog(t *testing.T) {
 	top := initRepo(t)
-	out, err := LogGraph(top, 100)
-	if err != nil {
-		t.Fatal(err)
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("two\n"), 0o644)
+	run(top, "commit", "-q", "-am", "second")
+
+	cs, err := GraphLog(top, 100)
+	if err != nil || len(cs) != 2 {
+		t.Fatalf("commits = %+v, %v", cs, err)
 	}
-	if !strings.HasPrefix(out, "* ") || !strings.Contains(out, "init") {
-		t.Fatalf("graph = %q", out)
+	c := cs[0]
+	if c.Subject != "second" || len(c.Parents) != 1 || c.Parents[0] != cs[1].Hash {
+		t.Fatalf("head = %+v", c)
+	}
+	if !strings.Contains(c.Refs, "main") || c.Author != "t" || c.Age == "" {
+		t.Fatalf("head = %+v", c)
+	}
+	if len(cs[1].Parents) != 0 {
+		t.Fatalf("root has parents: %+v", cs[1])
 	}
 }

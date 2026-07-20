@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -222,15 +223,12 @@ func TestGitBranchPicker(t *testing.T) {
 	for _, r := range "feature" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !strings.Contains(frame(m), "Git: feature") {
-		t.Fatalf("branch create failed:\n%s", frame(m))
-	}
+	// Create and switch fetch first (async) — pump the cmd loop through it.
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = pump(t, m2, cmd, func(m Model) bool { return strings.Contains(frame(m), "Git: feature") }, 5*time.Second).(Model)
 	// Switch back through the picker overlay.
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-	if m.ovKind != overlayBranches {
-		t.Fatal("picker did not open")
-	}
+	m2, cmd = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m = pump(t, m2, cmd, func(m Model) bool { return m.ovKind == overlayBranches }, 5*time.Second).(Model)
 	for _, r := range "main" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -244,10 +242,8 @@ func TestGitBranchPicker(t *testing.T) {
 // current branch; "y" runs checkout -b.
 func TestBranchPickerCreatesMissingBranch(t *testing.T) {
 	m, top := gitSetup(t)
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}) // panel: open branch picker
-	if m.ovKind != overlayBranches {
-		t.Fatal("branch picker did not open")
-	}
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}) // panel: open branch picker (fetch first)
+	m = pump(t, m2, cmd, func(m Model) bool { return m.ovKind == overlayBranches }, 5*time.Second).(Model)
 	for _, r := range "feature/x" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -256,16 +252,16 @@ func TestBranchPickerCreatesMissingBranch(t *testing.T) {
 		!strings.Contains(m.promptLabel, "main") {
 		t.Fatalf("no create prompt (mode=%v label=%q)", m.mode, m.promptLabel)
 	}
-	for _, k := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune{'y'}}, {Type: tea.KeyEnter}} {
-		m, _ = m.update(k)
-	}
-	if m.git.repos[0].snap.Branch != "feature/x" {
-		t.Fatalf("on branch %q, want feature/x", m.git.repos[0].snap.Branch)
-	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m2, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = pump(t, m2, cmd, func(m Model) bool { return m.git.repos[0].snap.Branch == "feature/x" }, 5*time.Second).(Model)
 	_ = top
 
-	// Escape (or answering n) must not create anything.
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	// Escape (or answering n) must not create anything. (Closing the overlay
+	// moved focus to the editor — refocus the panel as a user would.)
+	m.focus = paneGit
+	m2, cmd = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	m = pump(t, m2, cmd, func(m Model) bool { return m.ovKind == overlayBranches }, 5*time.Second).(Model)
 	for _, r := range "nope" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -407,7 +403,7 @@ func TestGitGraphTabAndDrillIn(t *testing.T) {
 		t.Fatalf("expected graph tab, got %+v", m.docs)
 	}
 	v := frame(m)
-	if !strings.Contains(v, "* ") || !strings.Contains(v, "init") {
+	if !strings.Contains(v, "●") || !strings.Contains(v, "init") {
 		t.Fatalf("graph tab missing content:\n%s", v)
 	}
 

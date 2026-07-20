@@ -3,8 +3,13 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -22,12 +27,12 @@ type doc struct {
 	ed      editor.Model
 	crlf    bool
 	mtime   time.Time
-	confirm bool   // next save overwrites an externally-modified file
-	sentRev int    // last editor revision synced to the language server
+	confirm bool       // next save overwrites an externally-modified file
+	sentRev int        // last editor revision synced to the language server
 	virtual bool       // read-only in-memory view (git diff); never saved
 	repo    *repoState // repo a virtual git tab (graph/commit) belongs to
 	head    []byte     // file content at git HEAD (LF-normalized); nil = no baseline
-	lineMap []int  // buffer line → HEAD line (-1 added/modified); from updateSigns
+	lineMap []int      // buffer line → HEAD line (-1 added/modified); from updateSigns
 
 	blame     []git.BlameLine // per-HEAD-line; nil = not fetched, empty = unavailable
 	blameBusy bool
@@ -48,9 +53,13 @@ func newDoc(path string, data []byte) *doc {
 		d.warn = filepath.Base(path) + ": not valid UTF-8 — display may be lossy"
 	}
 	d.ed = editor.New(buffer.New(data))
+	// conflictSyntax overlays merge-marker styling; a no-op without markers.
+	// The h != nil dance avoids boxing a typed nil into the interface.
+	var inner editor.Syntax
 	if h := syntax.New(path, data); h != nil {
-		d.ed.Syntax = h
+		inner = h
 	}
+	d.ed.Syntax = conflictSyntax{inner: inner}
 	return d
 }
 
@@ -61,13 +70,52 @@ func isBinary(data []byte) bool {
 	return bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0
 }
 
+// isAsset reports whether path is a known image/PDF type — always shown as
+// a metadata preview, even when small enough to pass the NUL sniff.
+func isAsset(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".pdf":
+		return true
+	}
+	return false
+}
+
+// assetDoc builds a read-only metadata preview tab for a file the editor
+// can't display (images, PDFs, other binaries).
+// ponytail: metadata only — inline rendering needs per-terminal graphics
+// protocols (Kitty/Sixel) and fights the cell-grid renderer.
+func assetDoc(path string, data []byte) *doc {
+	desc := "binary file"
+	if cfg, kind, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		desc = fmt.Sprintf("%s image, %d×%d px", strings.ToUpper(kind), cfg.Width, cfg.Height)
+	} else if bytes.HasPrefix(data, []byte("%PDF-")) && len(data) >= 8 {
+		desc = "PDF document, version " + string(data[5:8])
+	}
+	text := fmt.Sprintf("%s\n\n%s\n%s\n\npreview only — content not rendered\n",
+		filepath.Base(path), desc, humanSize(len(data)))
+	ed := editor.New(buffer.New([]byte(text)))
+	ed.ReadOnly = true
+	return &doc{path: path, virtual: true, ed: ed}
+}
+
+func humanSize(n int) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
 func loadDoc(path string) (*doc, error) {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	if isBinary(data) {
-		return nil, fmt.Errorf("%s is a binary file", filepath.Base(path))
+	// len check keeps brand-new (not-yet-on-disk) files editable.
+	if len(data) > 0 && (isAsset(path) || isBinary(data)) {
+		return assetDoc(path, data), nil
 	}
 	return newDoc(path, data), nil
 }

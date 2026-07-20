@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ type Snapshot struct {
 	Oid           string // HEAD commit; changes on commit/checkout/pull
 	Upstream      string
 	Ahead, Behind int
+	Merging       bool // MERGE_HEAD exists: a commit is needed to conclude
 	Files         []FileStatus
 }
 
@@ -64,11 +66,24 @@ func runLoose(dir string, args ...string) (string, error) {
 	s := strings.TrimSpace(string(out))
 	if err != nil {
 		if s != "" {
-			return "", fmt.Errorf("git: %s", firstLine(s))
+			return "", fmt.Errorf("git: %s", errLine(s))
 		}
 		return "", fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return s, nil
+}
+
+// errLine picks the informative line of git's failure chatter — the first
+// "error:"/"fatal:"/rejection line. Push failures start with "To <url>",
+// pull conflicts with "Auto-merging …"; the first line says nothing.
+func errLine(s string) string {
+	for ln := range strings.SplitSeq(s, "\n") {
+		l := strings.TrimSpace(ln)
+		if strings.HasPrefix(l, "error:") || strings.HasPrefix(l, "fatal:") || strings.Contains(l, "[rejected]") {
+			return l
+		}
+	}
+	return firstLine(s)
 }
 
 // Top resolves the repo's top-level directory; errors when dir is not
@@ -114,7 +129,28 @@ func Status(top string) (Snapshot, error) {
 		}
 	}
 	sort.Slice(snap.Files, func(i, j int) bool { return snap.Files[i].Path < snap.Files[j].Path })
+	// A fully-resolved merge can leave zero changed files (resolution == HEAD)
+	// yet still needs a commit — the UI must see the merge state, not infer it.
+	_, err = run(top, "rev-parse", "-q", "--verify", "MERGE_HEAD")
+	snap.Merging = err == nil
 	return snap, nil
+}
+
+// MergeMsg returns the first line of git's prepared merge message
+// (.git/MERGE_MSG), or "" — the commit prompt's prefill mid-merge.
+func MergeMsg(top string) string {
+	p, err := run(top, "rev-parse", "--git-path", "MERGE_MSG")
+	if err != nil {
+		return ""
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(top, p)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	return firstLine(string(data))
 }
 
 // unquotePath undoes git's C-style quoting (paths with quotes, backslashes,
@@ -278,10 +314,39 @@ func Log(top string, n int) ([]LogEntry, error) {
 	return cs, nil
 }
 
-// LogGraph returns git's own ASCII commit graph across all branches,
-// newest first, capped at n commits.
-func LogGraph(top string, n int) (string, error) {
-	return run(top, "log", "--graph", "--oneline", "--decorate", "--all", "-n", strconv.Itoa(n))
+// GraphCommit is one commit for the app's custom graph view, which does its
+// own lane layout (git's --graph output was the previous source; it spends
+// extra rows shuffling lanes, unreadable with several branches).
+type GraphCommit struct {
+	Hash, Short string
+	Parents     []string // full hashes
+	Refs        string   // %D decoration: "HEAD -> main, origin/main"; "" = none
+	Subject     string
+	Author      string
+	Age         string // %ar relative time
+}
+
+// GraphLog returns all-branch history, newest first, topo-ordered (children
+// always precede parents — the lane layout depends on it), capped at n.
+func GraphLog(top string, n int) ([]GraphCommit, error) {
+	out, err := run(top, "log", "--all", "--topo-order", "-n", strconv.Itoa(n),
+		"--format=%H%x1f%P%x1f%h%x1f%D%x1f%s%x1f%an%x1f%ar")
+	if err != nil {
+		return nil, err
+	}
+	var cs []GraphCommit
+	for ln := range strings.SplitSeq(out, "\n") {
+		f := strings.Split(ln, "\x1f")
+		if len(f) != 7 {
+			continue
+		}
+		c := GraphCommit{Hash: f[0], Short: f[2], Refs: f[3], Subject: f[4], Author: f[5], Age: f[6]}
+		if f[1] != "" {
+			c.Parents = strings.Fields(f[1])
+		}
+		cs = append(cs, c)
+	}
+	return cs, nil
 }
 
 // ShowCommit returns a commit's message, stat, and full diff (`git show`).
@@ -302,17 +367,55 @@ func Push(top string) (string, error) {
 	}
 	return runLoose(top, "push")
 }
-func Pull(top string) (string, error) { return runLoose(top, "pull") }
+
+// Pull merges by default: git ≥2.27 refuses to pull divergent branches
+// until a reconciliation strategy is configured, erroring with a hint
+// instead of merging — which also means no conflict state to resolve. A
+// user-configured pull.rebase / pull.ff is respected.
+func Pull(top string) (string, error) {
+	if _, err := run(top, "config", "pull.rebase"); err != nil {
+		if _, err := run(top, "config", "pull.ff"); err != nil {
+			return runLoose(top, "pull", "--no-rebase")
+		}
+	}
+	return runLoose(top, "pull")
+}
 
 // Fetch updates remote-tracking refs so ahead/behind counts are current.
 func Fetch(top string) (string, error) { return runLoose(top, "fetch") }
 
-func Branches(top string) ([]string, error) {
+// Branch is one pickable ref: a local branch, or a remote-tracking branch
+// ("origin/foo") with no local counterpart.
+type Branch struct {
+	Name   string
+	Remote bool
+}
+
+func Branches(top string) ([]Branch, error) {
 	out, err := run(top, "branch", "--format=%(refname:short)")
-	if err != nil || out == "" {
+	if err != nil {
 		return nil, err
 	}
-	return strings.Split(out, "\n"), nil
+	var bs []Branch
+	local := map[string]bool{}
+	for ln := range strings.SplitSeq(out, "\n") {
+		if ln != "" {
+			local[ln] = true
+			bs = append(bs, Branch{Name: ln})
+		}
+	}
+	// Remote-tracking branches without a local counterpart are offered too;
+	// picking one checks it out as a new local tracking branch.
+	if rout, err := run(top, "branch", "-r", "--format=%(refname:short)"); err == nil {
+		for ln := range strings.SplitSeq(rout, "\n") {
+			_, tail, ok := strings.Cut(ln, "/")
+			if !ok || tail == "HEAD" || local[tail] {
+				continue
+			}
+			bs = append(bs, Branch{Name: ln, Remote: true})
+		}
+	}
+	return bs, nil
 }
 
 func Checkout(top, name string) error {
@@ -320,9 +423,30 @@ func Checkout(top, name string) error {
 	return err
 }
 
+// CheckoutRemote creates a local branch tracking the remote ref and switches
+// to it (origin/foo → foo). Returns the local name.
+func CheckoutRemote(top, ref string) (string, error) {
+	_, local, _ := strings.Cut(ref, "/")
+	_, err := runLoose(top, "checkout", "-b", local, "--track", ref)
+	return local, err
+}
+
 func CreateBranch(top, name string) error {
 	_, err := runLoose(top, "checkout", "-b", name)
 	return err
+}
+
+// ResolveOurs / ResolveTheirs settle a conflicted path by taking one side
+// wholesale and staging the result. Hand-edited conflicts just get staged
+// (Stage marks a conflict resolved on its own).
+func ResolveOurs(top, path string) error   { return resolveSide(top, "--ours", path) }
+func ResolveTheirs(top, path string) error { return resolveSide(top, "--theirs", path) }
+
+func resolveSide(top, side, path string) error {
+	if _, err := run(top, "checkout", side, "--", path); err != nil {
+		return err
+	}
+	return Stage(top, path)
 }
 
 // Restore discards a tracked file's staged and unstaged changes, restoring

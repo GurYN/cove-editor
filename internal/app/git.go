@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -322,12 +323,16 @@ func (m *Model) gitRepo() bool {
 func (p *gitPanel) build(h int) {
 	p.rows = p.rows[:0]
 	for _, r := range p.repos {
-		var staged, changed []git.FileStatus
+		var conflicts, staged, changed []git.FileStatus
 		for _, f := range r.snap.Files {
+			if f.Conflict() { // own section — mid-merge these must not drown in Changes
+				conflicts = append(conflicts, f)
+				continue
+			}
 			if f.Staged() {
 				staged = append(staged, f)
 			}
-			if f.Unstaged() || f.Conflict() {
+			if f.Unstaged() {
 				changed = append(changed, f)
 			}
 		}
@@ -342,6 +347,18 @@ func (p *gitPanel) build(h int) {
 			p.rows = append(p.rows, gitRow{repo: r, header: head, repoHead: true})
 			if r.err != "" {
 				p.rows = append(p.rows, gitRow{repo: r, header: "  " + r.err})
+			}
+		}
+		if r.snap.Merging && len(conflicts) == 0 {
+			// All conflicts resolved (possibly to exactly HEAD, so no file
+			// rows either) — without this banner the panel reads "no changes"
+			// while pull/push stay blocked on the unconcluded merge.
+			p.rows = append(p.rows, gitRow{repo: r, header: "Merging — press c to commit & conclude"})
+		}
+		if len(conflicts) > 0 {
+			p.rows = append(p.rows, gitRow{repo: r, header: fmt.Sprintf("Conflicts (%d) — o: ours · t: theirs", len(conflicts))})
+			for _, f := range conflicts {
+				p.rows = append(p.rows, gitRow{repo: r, fs: f})
 			}
 		}
 		if len(staged) > 0 {
@@ -504,6 +521,30 @@ func (m *Model) gitStageToggle() {
 	m.refreshGit()
 }
 
+// gitResolveSide settles the selected conflicted file by taking one side
+// wholesale ("ours" = current branch, "theirs" = the merged branch), stages
+// it, and reloads any open tab. Hand-editing the markers then pressing
+// space (stage) is the other resolution path.
+// ponytail: file-level ours/theirs only; a 3-way hunk picker is v2.
+func (m *Model) gitResolveSide(theirs bool) {
+	r, ok := m.git.selected()
+	if !ok || !r.fs.Conflict() {
+		m.lastMsg = "select a conflicted file first"
+		return
+	}
+	side, do := "ours", git.ResolveOurs
+	if theirs {
+		side, do = "theirs", git.ResolveTheirs
+	}
+	if err := do(r.repo.top, r.fs.Path); err != nil {
+		m.lastMsg = err.Error()
+	} else {
+		m.lastMsg = m.repoMsg(r.repo, "kept "+side+": "+r.fs.Path)
+		m.reloadDoc(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
+	}
+	m.refreshGit()
+}
+
 // gitClick handles a left press at panel row y / column x (header already
 // subtracted): the letter cell toggles staging, the rest opens the diff.
 func (m *Model) gitClick(y, x int) {
@@ -521,6 +562,11 @@ func (m *Model) gitClick(y, x int) {
 
 // gitOpenDiff shows the file's diff in a read-only tab.
 func (m *Model) gitOpenDiff(r gitRow) {
+	if r.fs.Conflict() { // markers live in the working file: open it to resolve
+		m.openFile(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
+		m.mergeNext() // land on the first block; the hint names the accept commands
+		return
+	}
 	var text string
 	var err error
 	if r.fs.Untracked() {
@@ -582,15 +628,22 @@ func gitHasStaged(r *repoState) bool {
 // commit should be visibly wrong before the message is typed.
 func (m *Model) gitCommitPrompt() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
-		if !gitHasStaged(r) {
+		// Mid-merge, committing is allowed with nothing staged: a resolution
+		// identical to HEAD leaves no changes, yet the merge needs the commit.
+		if !gitHasStaged(r) && !r.snap.Merging {
 			m.lastMsg = m.repoMsg(r, "nothing staged — stage files first (space in the git panel)")
 			return nil
 		}
 		label := "Commit message:"
+		initial := ""
 		if m.git.multi() {
 			label = fmt.Sprintf("Commit to %s (%s):", r.name, r.snap.Branch)
 		}
-		*m = m.prompt(label, "", func(m *Model, msg string) {
+		if r.snap.Merging {
+			label = "Conclude merge — commit message:"
+			initial = git.MergeMsg(r.top)
+		}
+		*m = m.prompt(label, initial, func(m *Model, msg string) {
 			if strings.TrimSpace(msg) == "" {
 				return
 			}
@@ -630,22 +683,61 @@ func (m *Model) gitUndoCommitPrompt() tea.Cmd {
 	})
 }
 
+// gitFetchThen fetches in the background so remote-tracking refs are
+// current, then runs do on the UI thread — the branch picker and the
+// created-name-exists-on-remote check see the remote's real state, not the
+// last fetch's. A failed fetch (offline) still runs do: local knowledge
+// beats a dead picker. The busy flag doubles as the status-bar indicator.
+type gitFetchDoneMsg struct{ do func(*Model) }
+
+func (m *Model) gitFetchThen(r *repoState, do func(*Model)) tea.Cmd {
+	if m.git.busy != "" { // another op in flight: act on what we have
+		do(m)
+		return nil
+	}
+	m.git.busy = "fetch"
+	top := r.top
+	return func() tea.Msg {
+		git.Fetch(top)
+		return gitFetchDoneMsg{do: do}
+	}
+}
+
 func (m *Model) gitBranchPrompt() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
 		*m = m.prompt("New branch name:", "", func(m *Model, name string) {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				return
+			if name = strings.TrimSpace(name); name != "" {
+				m.deferred = m.gitFetchThen(r, func(m *Model) { m.gitCreateBranch(r, name) })
 			}
-			if err := git.CreateBranch(r.top, name); err != nil {
-				m.lastMsg = err.Error()
-			} else {
-				m.lastMsg = m.repoMsg(r, "on new branch "+name)
-			}
-			m.refreshGit()
 		})
 		return nil
 	})
+}
+
+// gitCreateBranch makes name the current branch. A same-named branch on a
+// remote is almost certainly the intent — check it out tracking the remote
+// instead of forking an unrelated branch off HEAD (which would collide on
+// the first push). Only remotes already fetched are visible here.
+func (m *Model) gitCreateBranch(r *repoState, name string) {
+	bs, _ := git.Branches(r.top)
+	for _, b := range bs {
+		if _, tail, _ := strings.Cut(b.Name, "/"); b.Remote && tail == name {
+			if local, err := git.CheckoutRemote(r.top, b.Name); err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, "branch existed on remote — switched to "+local+" (tracking "+b.Name+")")
+			}
+			m.refreshGit()
+			m.side.Refresh() // checkout swaps working-tree files
+			return
+		}
+	}
+	if err := git.CreateBranch(r.top, name); err != nil {
+		m.lastMsg = err.Error()
+	} else {
+		m.lastMsg = m.repoMsg(r, "on new branch "+name)
+	}
+	m.refreshGit()
 }
 
 // openBranchPicker lists the target repo's local branches in the fuzzy
@@ -666,10 +758,13 @@ func (m *Model) openBranchPicker(r *repoState) {
 	items := make([]overlay.Item, len(branches))
 	for i, b := range branches {
 		detail := ""
-		if b == r.snap.Branch {
+		switch {
+		case b.Remote:
+			detail = "remote"
+		case b.Name == r.snap.Branch:
 			detail = "current"
 		}
-		items[i] = overlay.Item{Label: b, Detail: detail}
+		items[i] = overlay.Item{Label: b.Name, Detail: detail}
 	}
 	title := "Branch:"
 	if m.git.multi() {
@@ -717,15 +812,16 @@ const gitGraphTitle = "Git Graph"
 // remembers its repo so that Enter targets the right one.
 func (m *Model) gitOpenGraph() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
-		text, err := git.LogGraph(r.top, 500)
+		cs, err := git.GraphLog(r.top, 500)
 		if err != nil {
 			m.lastMsg = err.Error()
 			return nil
 		}
-		if strings.TrimSpace(text) == "" {
+		if len(cs) == 0 {
 			m.lastMsg = m.repoMsg(r, "no commits yet")
 			return nil
 		}
+		text := renderGraph(cs)
 		title := gitGraphTitle
 		if m.git.multi() {
 			title += " · " + r.name
@@ -733,6 +829,12 @@ func (m *Model) gitOpenGraph() tea.Cmd {
 		m.openVirtualSyn(title, text, logSyntax{})
 		if d := m.doc(); d != nil {
 			d.repo = r
+			for i, ln := range strings.Split(text, "\n") { // land past the branch-name header
+				if shaRe.MatchString(ln) {
+					d.ed.Go(i, 0)
+					break
+				}
+			}
 		}
 		m.lastMsg = "enter: open commit"
 		return nil
@@ -798,7 +900,16 @@ func (m *Model) gitOpRepo(r *repoState, op string) tea.Cmd {
 func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 	m.git.busy = ""
 	if msg.err != nil {
-		m.lastMsg = msg.err.Error()
+		// Translate git's two everyday walls into the way out.
+		e := msg.err.Error()
+		switch {
+		case strings.Contains(e, "MERGE_HEAD exists"):
+			m.lastMsg = m.repoMsg(msg.repo, "merge in progress — commit (c in git panel) to conclude it")
+		case strings.Contains(e, "[rejected]") || strings.Contains(e, "non-fast-forward") || strings.Contains(e, "fetch first"):
+			m.lastMsg = m.repoMsg(msg.repo, "push rejected — remote has new commits: pull, resolve, then push")
+		default:
+			m.lastMsg = e
+		}
 	} else {
 		// git's raw chatter ("remote:", progress lines) makes a poor status
 		// message — say what happened, and to which repo, instead.
@@ -822,6 +933,22 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 	m.refreshGit()
 	if msg.op == "pull" {
 		m.side.Refresh() // pull may create/delete files
+		// A conflicted merge exits non-zero with unhelpful first-line chatter;
+		// the post-refresh status is the reliable signal. Point at the fix.
+		for _, r := range m.git.repos {
+			if r.top != msg.repo.top {
+				continue
+			}
+			n := 0
+			for _, f := range r.snap.Files {
+				if f.Conflict() {
+					n++
+				}
+			}
+			if n > 0 {
+				m.lastMsg = m.repoMsg(r, fmt.Sprintf("merge conflict in %d file(s) — o: keep ours, t: keep theirs, or edit + stage", n))
+			}
+		}
 	}
 	return m, nil
 }
@@ -1027,6 +1154,9 @@ func (m Model) gitSeg() string {
 	if m.git.multi() {
 		s = "⎇ " + r.name + ":" + r.snap.Branch
 	}
+	if r.snap.Merging {
+		s += " (merging)"
+	}
 	if r.snap.Ahead > 0 {
 		s += fmt.Sprintf(" ↑%d", r.snap.Ahead)
 	}
@@ -1066,15 +1196,38 @@ func (logSyntax) Edit(int, int, int, [2]int, [2]int, [2]int)    {}
 func (logSyntax) Expand([]byte, int, int) (lo, hi int, ok bool) { return 0, 0, false }
 
 var logDecoRe = regexp.MustCompile(`\([^)]*\)`)
+var logTailRe = regexp.MustCompile(` · [^·]*$`)
+
+// laneClasses colors the graph's lane characters by column so each branch
+// line keeps one color as it snakes down — the "which branch is this"
+// readability fix. Lanes are two columns wide ("| | *").
+var laneClasses = []int{
+	editor.ClassKeyword, editor.ClassString, editor.ClassNumber,
+	editor.ClassType, editor.ClassConstant, editor.ClassProperty,
+}
 
 func (logSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 	var spans []editor.HLSpan
 	forEachLine(src, startOff, endOff, func(lo, hi int, line []byte) {
+		graphEnd := len(line)
 		if m := shaRe.FindIndex(line); m != nil {
+			graphEnd = m[0]
 			spans = append(spans, editor.HLSpan{Start: lo + m[0], End: lo + m[1], Class: editor.ClassFunction})
+			rest := line[m[1]:]
+			if d := logDecoRe.FindIndex(rest); d != nil {
+				spans = append(spans, editor.HLSpan{Start: lo + m[1] + d[0], End: lo + m[1] + d[1], Class: editor.ClassKeyword})
+			}
+			if t := logTailRe.FindIndex(rest); t != nil {
+				spans = append(spans, editor.HLSpan{Start: lo + m[1] + t[0], End: lo + m[1] + t[1], Class: editor.ClassComment})
+			}
 		}
-		if m := logDecoRe.FindIndex(line); m != nil {
-			spans = append(spans, editor.HLSpan{Start: lo + m[0], End: lo + m[1], Class: editor.ClassKeyword})
+		// Box-drawing glyphs are multi-byte: color by visual column, not byte.
+		for j, col := 0, 0; j < graphEnd; col++ {
+			r, size := utf8.DecodeRune(line[j:])
+			if r != ' ' && r != '\n' {
+				spans = append(spans, editor.HLSpan{Start: lo + j, End: lo + j + size, Class: laneClasses[(col/2)%len(laneClasses)]})
+			}
+			j += size
 		}
 	})
 	return spans
