@@ -12,19 +12,25 @@ import (
 )
 
 // renderGraph lays commits (topo order, newest first) into lanes.
-// Each lane holds the hash it expects next; a commit lands in the leftmost
-// lane expecting it, extra expecting lanes close (╯), extra parents open or
-// join lanes (╮ / ┤). Lanes are two columns wide.
+// Every branch tip is pre-seeded with its own labeled lane, so each branch
+// owns a column with its name on top and a line running down to its tip —
+// even a branch whose tip is a deep ancestor (main/tst parked on the root
+// commit) stays visible. Each lane holds the hash it expects next; a commit
+// lands in the leftmost lane expecting it, extra expecting lanes close (╯),
+// extra parents open or join lanes (╮ / ┤). Lanes are two columns wide.
 func renderGraph(cs []git.GraphCommit) string {
 	var (
 		lanes []string // hash each lane expects next; "" = free
-		ever  []bool   // column ever occupied — header names only on fresh columns
 		names = map[int]string{}
 		out   []string
 	)
-	grow := func() int {
-		lanes, ever = append(lanes, ""), append(ever, false)
-		return len(lanes) - 1
+	grow := func() int { lanes = append(lanes, ""); return len(lanes) - 1 }
+
+	for _, c := range cs { // one labeled lane per branch-decorated commit
+		if lbl := branchLabel(c.Refs); lbl != "" {
+			names[grow()] = lbl
+			lanes[len(lanes)-1] = c.Hash
+		}
 	}
 
 	for _, c := range cs {
@@ -38,7 +44,7 @@ func renderGraph(cs []git.GraphCommit) string {
 				}
 			}
 		}
-		if L < 0 { // nobody expects it: a branch tip, new lane
+		if L < 0 { // nobody expects it (tag-only tip): a fresh lane
 			for i, l := range lanes {
 				if l == "" {
 					L = i
@@ -48,14 +54,8 @@ func renderGraph(cs []git.GraphCommit) string {
 			if L < 0 {
 				L = grow()
 			}
-			if !ever[L] {
-				if n := branchName(c.Refs); n != "" {
-					names[L] = n
-				}
-			}
 			lanes[L] = c.Hash
 		}
-		ever[L] = true
 
 		cells := make([]rune, 2*len(lanes))
 		for i := range lanes {
@@ -113,7 +113,7 @@ func renderGraph(cs []git.GraphCommit) string {
 						m = grow()
 						cells = append(cells, ' ', ' ')
 					}
-					lanes[m], ever[m] = p, true
+					lanes[m] = p
 					if m > L {
 						cells[2*m] = '╮'
 					} else {
@@ -165,22 +165,44 @@ func graphHeader(names map[int]string) []string {
 	return rows
 }
 
-// branchName picks a header label from a %D decoration: the shortest branch
-// name — "main" beats "origin/main" — skipping tags, capped so the header
-// stays short.
-func branchName(refs string) string {
-	best := ""
+// branchLabel builds a lane's header label from a %D decoration: the
+// commit's branch names comma-joined — HEAD's branch first, then locals,
+// then remotes with no same-named local ("origin/main" is dropped when
+// "main" is on the same commit). Tags skipped; capped for the header.
+func branchLabel(refs string) string {
+	var head string
+	var locals, remotes []string
+	isLocal := map[string]bool{}
 	for n := range strings.SplitSeq(refs, ", ") {
-		n = strings.TrimPrefix(n, "HEAD -> ")
+		if h, ok := strings.CutPrefix(n, "HEAD -> "); ok {
+			head = h
+			isLocal[h] = true
+			continue
+		}
 		if n == "" || n == "HEAD" || strings.HasPrefix(n, "tag: ") {
 			continue
 		}
-		if best == "" || len(n) < len(best) {
-			best = n
+		if strings.Contains(n, "/") {
+			remotes = append(remotes, n)
+		} else {
+			locals = append(locals, n)
+			isLocal[n] = true
 		}
 	}
-	if r := []rune(best); len(r) > 14 {
-		best = string(r[:13]) + "…"
+	var parts []string
+	if head != "" {
+		parts = append(parts, head)
 	}
-	return best
+	parts = append(parts, locals...)
+	for _, r := range remotes {
+		// origin/HEAD is a symref, not a branch — never worth a label.
+		if _, tail, _ := strings.Cut(r, "/"); !isLocal[tail] && tail != "HEAD" {
+			parts = append(parts, r)
+		}
+	}
+	lbl := strings.Join(parts, ",")
+	if r := []rune(lbl); len(r) > 14 {
+		lbl = string(r[:13]) + "…"
+	}
+	return lbl
 }
