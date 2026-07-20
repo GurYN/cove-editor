@@ -24,6 +24,8 @@ const (
 	ClassDiffAdd // git: added / removed / modified lines (diff views, gutter)
 	ClassDiffDel
 	ClassDiffMod
+	ClassMergeOurs // merge conflict block backgrounds (ours / theirs)
+	ClassMergeTheirs
 	numClasses
 )
 
@@ -45,6 +47,7 @@ var themeSlots = map[string]int{
 	"number": ClassNumber, "function": ClassFunction, "type": ClassType,
 	"constant": ClassConstant, "property": ClassProperty, "operator": ClassOperator,
 	"git.added": ClassDiffAdd, "git.deleted": ClassDiffDel, "git.modified": ClassDiffMod,
+	"merge.ours": ClassMergeOurs, "merge.theirs": ClassMergeTheirs,
 	"info": paintInfo, "warning": paintWarn, "error": paintErr,
 	"match": paintMatch, "selection": paintSelection,
 }
@@ -59,6 +62,7 @@ func init() {
 		"function": "74", "type": "115", "constant": "173", "property": "152",
 		"operator": "246", "info": "81", "warning": "214", "error": "203",
 		"match": "58", "selection": "24",
+		"merge.ours": "22", "merge.theirs": "17",
 	})
 }
 
@@ -72,7 +76,7 @@ func ApplyTheme(colors map[string]string) {
 			continue
 		}
 		switch idx {
-		case paintMatch, paintSelection:
+		case paintMatch, paintSelection, ClassMergeOurs, ClassMergeTheirs:
 			s[idx] = lipgloss.NewStyle().Background(lipgloss.Color(c))
 		case paintInfo, paintWarn, paintErr:
 			s[idx] = lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Underline(true)

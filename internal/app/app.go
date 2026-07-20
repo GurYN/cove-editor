@@ -120,15 +120,15 @@ type Model struct {
 
 	ovKind     overlayKind
 	ov         overlay.Model
-	ovActions  []action.Action // palette payload
-	ovFiles    []string        // finder payload
-	ovRefs     []lsp.Location  // references payload
-	ovDiags    []problemRef    // problems payload
-	ovBranches []string        // branch picker payload
-	ovCommits  []git.LogEntry  // history picker payload
-	ovRepo     *repoState      // repo the branch/history picker acts on
+	ovActions  []action.Action                  // palette payload
+	ovFiles    []string                         // finder payload
+	ovRefs     []lsp.Location                   // references payload
+	ovDiags    []problemRef                     // problems payload
+	ovBranches []git.Branch                     // branch picker payload
+	ovCommits  []git.LogEntry                   // history picker payload
+	ovRepo     *repoState                       // repo the branch/history picker acts on
 	ovRepoDo   func(*Model, *repoState) tea.Cmd // pending action behind the repo picker
-	aboutOpen  bool            // about box: any key or click closes
+	aboutOpen  bool                             // about box: any key or click closes
 
 	lspm          *lsp.Manager
 	lspStatus     map[string]string
@@ -276,6 +276,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.handleTermMsg(msg)
 	case gitOpMsg:
 		return m.handleGitOp(msg)
+	case gitFetchDoneMsg:
+		m.git.busy = ""
+		m.refreshGit()
+		msg.do(&m)
+		return m, nil
 	case blameMsg:
 		return m.handleBlame(msg)
 	case lspErrMsg:
@@ -551,15 +556,9 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 				r := m.ovRepo
 				return m.prompt(fmt.Sprintf("No branch %q — create from %s? y/n:", name, r.snap.Branch), "",
 					func(m *Model, text string) {
-						if !strings.EqualFold(text, "y") {
-							return
+						if strings.EqualFold(text, "y") {
+							m.deferred = m.gitFetchThen(r, func(m *Model) { m.gitCreateBranch(r, name) })
 						}
-						if err := git.CreateBranch(r.top, name); err != nil {
-							m.lastMsg = err.Error()
-						} else {
-							m.lastMsg = m.repoMsg(r, "on new branch "+name)
-						}
-						m.refreshGit()
 					}), nil
 			}
 		}
@@ -577,11 +576,17 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		m.jumpTo(m.ovRefs[chosen])
 		m.layout()
 	case overlayBranches:
-		name := m.ovBranches[chosen]
-		if err := git.Checkout(m.ovRepo.top, name); err != nil {
+		b := m.ovBranches[chosen]
+		if b.Remote {
+			if local, err := git.CheckoutRemote(m.ovRepo.top, b.Name); err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(m.ovRepo, "switched to "+local+" (tracking "+b.Name+")")
+			}
+		} else if err := git.Checkout(m.ovRepo.top, b.Name); err != nil {
 			m.lastMsg = err.Error()
 		} else {
-			m.lastMsg = m.repoMsg(m.ovRepo, "switched to "+name)
+			m.lastMsg = m.repoMsg(m.ovRepo, "switched to "+b.Name)
 		}
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files

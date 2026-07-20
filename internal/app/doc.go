@@ -27,12 +27,12 @@ type doc struct {
 	ed      editor.Model
 	crlf    bool
 	mtime   time.Time
-	confirm bool   // next save overwrites an externally-modified file
-	sentRev int    // last editor revision synced to the language server
+	confirm bool       // next save overwrites an externally-modified file
+	sentRev int        // last editor revision synced to the language server
 	virtual bool       // read-only in-memory view (git diff); never saved
 	repo    *repoState // repo a virtual git tab (graph/commit) belongs to
 	head    []byte     // file content at git HEAD (LF-normalized); nil = no baseline
-	lineMap []int  // buffer line → HEAD line (-1 added/modified); from updateSigns
+	lineMap []int      // buffer line → HEAD line (-1 added/modified); from updateSigns
 
 	blame     []git.BlameLine // per-HEAD-line; nil = not fetched, empty = unavailable
 	blameBusy bool
@@ -53,9 +53,13 @@ func newDoc(path string, data []byte) *doc {
 		d.warn = filepath.Base(path) + ": not valid UTF-8 — display may be lossy"
 	}
 	d.ed = editor.New(buffer.New(data))
+	// conflictSyntax overlays merge-marker styling; a no-op without markers.
+	// The h != nil dance avoids boxing a typed nil into the interface.
+	var inner editor.Syntax
 	if h := syntax.New(path, data); h != nil {
-		d.ed.Syntax = h
+		inner = h
 	}
+	d.ed.Syntax = conflictSyntax{inner: inner}
 	return d
 }
 

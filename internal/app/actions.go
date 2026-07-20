@@ -212,10 +212,19 @@ func newRegistry() *action.Registry {
 	})
 	reg("git.graph", "Git: Commit Graph", "g", action.Git, func(m *Model) tea.Cmd { return m.gitOpenGraph() })
 	reg("git.branch", "Git: Switch Branch…", "b", action.Git, func(m *Model) tea.Cmd {
-		return m.withRepo(func(m *Model, r *repoState) tea.Cmd { m.openBranchPicker(r); return nil })
+		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+			return m.gitFetchThen(r, func(m *Model) { m.openBranchPicker(r) })
+		})
 	})
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { return m.gitBranchPrompt() })
 	reg("git.restore", "Git: Discard File Changes (Restore)", "x", action.Git, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
+	reg("git.resolveOurs", "Git: Resolve Conflict — Keep Ours (Whole File)", "o", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(false); return nil })
+	reg("git.resolveTheirs", "Git: Resolve Conflict — Keep Theirs (Whole File)", "t", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(true); return nil })
+	// Per-block resolution in the editor, on the conflict under the cursor.
+	reg("merge.ours", "Merge: Accept Ours (Conflict at Cursor)", "", action.Editor, func(m *Model) tea.Cmd { m.mergeAccept("ours"); return nil })
+	reg("merge.theirs", "Merge: Accept Theirs (Conflict at Cursor)", "", action.Editor, func(m *Model) tea.Cmd { m.mergeAccept("theirs"); return nil })
+	reg("merge.both", "Merge: Accept Both (Conflict at Cursor)", "", action.Editor, func(m *Model) tea.Cmd { m.mergeAccept("both"); return nil })
+	reg("merge.next", "Merge: Next Conflict", "", action.Editor, func(m *Model) tea.Cmd { m.mergeNext(); return nil })
 	reg("git.blame", "Git: Toggle Inline Blame", "", action.Global, func(m *Model) tea.Cmd {
 		m.git.blameOn = !m.git.blameOn
 		// No "blame on" message: lastMsg and the blame annotation share the
