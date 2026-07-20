@@ -16,7 +16,10 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
-- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), branch switching, and per-file discard/restore. Multi-repo folders just work: open a directory containing several checkouts and the panel shows one section per repo, with every action targeting the repo under the cursor (or the active file's). Commit history opens in a fuzzy picker, and a commit-graph view renders `git log --graph` in a tab — press Enter on any line of either to open that commit's full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
+- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), and per-file discard/restore. Multi-repo folders just work: open a directory containing several checkouts and the panel shows one section per repo, with every action targeting the repo under the cursor (or the active file's). Commit history opens in a fuzzy picker; Enter on any commit opens its full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
+- **A commit graph you can actually read**: one row per commit, box-drawing lanes colored per branch, and each branch's name written vertically above its own column — with a line running down to its tip, even when that tip sits deep in history. Enter on a row opens the commit's diff.
+- **Branch switching that knows your remote**: the picker (`b`) fetches first and lists remote branches alongside local ones — selecting `origin/foo` checks it out as a local tracking branch. Creating a branch whose name already exists on the remote checks that one out instead of forking an unrelated copy.
+- **Merge conflicts resolved in the editor**: a conflicting pull highlights each `<<<<<<<` block — ours green, theirs blue — and the palette's *Merge: Accept Ours / Theirs / Both* resolves the block under the cursor as an undoable edit. Whole-file `o`/`t` shortcuts live in the panel's Conflicts section, a "Merging" banner tracks the in-progress merge, and `c` concludes it with git's prepared message prefilled.
 - **Multi-cursor editing, find & replace, undo/redo** — plus the line-editing staples: toggle comment (`Ctrl+_`), move line up/down (`Alt+Shift+Up`/`Down`), duplicate/delete line, indent/outdent, select all occurrences, and go to line (`Ctrl+L`).
 - **Plays nice with the outside world**: files edited outside Cove reload in place (undoable); a buffer with unsaved changes warns instead. The file tree and git status re-sync whenever the terminal regains focus, so changes from another shell or editor show up on their own.
 - **No terminal traps**: `Ctrl+C` copies, `Ctrl+Z` undoes. An opt-in Vim keymap exists; it is never the default.
@@ -125,8 +128,9 @@ Inside the panel (all of this is also in the palette):
 | `z`       | Undo last commit (keeps changes staged, with confirm) |
 | `l`       | Commit history (fuzzy picker; Enter opens the commit's diff) |
 | `g`       | Commit graph (read-only tab; Enter on a line opens that commit's diff) |
-| `b`       | Switch branch (fuzzy picker)               |
+| `b`       | Switch branch (fetches first; remote branches check out as tracking) |
 | `a` / `u` | Stage all / unstage all                    |
+| `o` / `t` | Resolve the selected conflict: keep ours / keep theirs (whole file) |
 | `x`       | Discard the file's changes (with confirm)  |
 | `f`       | Fetch                                      |
 | `r`       | Refresh status                             |
@@ -137,6 +141,8 @@ Mouse: clicking a file's status letter toggles staging; clicking its name opens 
 With several repos in the opened folder, each renders as its own bold `name · branch` section and every panel action applies to the section under the cursor — the commit prompt names its target (*Commit to sources (main):*), and toasts are prefixed with the repo name. Actions run from the palette follow the active file's repo; for a file outside every repo, a one-shot picker asks. The status bar shows the current repo as `⎇ name:branch`.
 
 Outside the panel, gutter signs next to the line numbers mark added, modified, and deleted lines as you type. *Git: Toggle Inline Blame* (palette) shows the last commit for the cursor line in the status bar: author, age, and summary; lines you have edited show *uncommitted changes*.
+
+**Merge conflicts.** A pull that conflicts stops mid-merge (Cove pulls with merge semantics when you haven't configured `pull.rebase`): conflicted files appear in a *Conflicts* section, the status bar shows `(merging)`, and Enter on a conflicted file opens it at the first block with both sides highlighted (ours green, theirs blue — `merge.ours`/`merge.theirs` in `[colors]` to retheme). Resolve per block from the palette — *Merge: Accept Ours / Theirs / Both*, *Merge: Next Conflict* — or edit the markers by hand; every accept is a normal undoable edit. Stage the file (`Space`) when done, then `c` commits and concludes the merge (the message is prefilled from git). `o`/`t` in the panel take one side for the whole file.
 
 ## Configuration
 
@@ -164,7 +170,7 @@ command = ["gopls"]            # override or add language servers
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & graph, push/pull, branches, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), and split panes — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & visual graph, push/pull, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), and split panes — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
 
 ## Contributing
 
