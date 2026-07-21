@@ -133,34 +133,24 @@ func renderGraph(cs []git.GraphCommit) string {
 		out = append(out, row)
 	}
 	if head := graphHeader(names); head != nil {
-		out = append(append(head, ""), out...) // blank row between names and graph
+		// One row of bare lane lines separates the names from the commits.
+		sep := strings.TrimRight(strings.Repeat("│ ", len(names)), " ")
+		out = append(append(head, sep), out...)
 	}
 	return strings.Join(out, "\n")
 }
 
-// graphHeader draws lane branch names vertically, bottom-aligned so the
-// letters end just above the graph, each at its lane's column.
+// graphHeader draws one row per labeled lane — the branch name horizontal,
+// a ╭─ corner dropping into its lane's column, earlier lanes passing
+// through as │. Header lanes are seeded first in renderGraph, so their
+// indices are contiguous from 0.
 func graphHeader(names map[int]string) []string {
 	if len(names) == 0 {
 		return nil
 	}
-	maxLane, maxLen := 0, 0
-	for l, n := range names {
-		maxLane = max(maxLane, l)
-		maxLen = max(maxLen, len([]rune(n)))
-	}
-	rows := make([]string, maxLen)
-	for r := range maxLen {
-		line := make([]rune, 2*maxLane+1)
-		for i := range line {
-			line[i] = ' '
-		}
-		for l, n := range names {
-			if rn := []rune(n); r >= maxLen-len(rn) {
-				line[2*l] = rn[r-(maxLen-len(rn))]
-			}
-		}
-		rows[r] = strings.TrimRight(string(line), " ")
+	rows := make([]string, len(names))
+	for l := range rows {
+		rows[l] = strings.Repeat("│ ", l) + "╭─ " + names[l]
 	}
 	return rows
 }
@@ -168,7 +158,7 @@ func graphHeader(names map[int]string) []string {
 // branchLabel builds a lane's header label from a %D decoration: the
 // commit's branch names comma-joined — HEAD's branch first, then locals,
 // then remotes with no same-named local ("origin/main" is dropped when
-// "main" is on the same commit). Tags skipped; capped for the header.
+// "main" is on the same commit). Tags skipped.
 func branchLabel(refs string) string {
 	var head string
 	var locals, remotes []string
@@ -200,9 +190,5 @@ func branchLabel(refs string) string {
 			parts = append(parts, r)
 		}
 	}
-	lbl := strings.Join(parts, ",")
-	if r := []rune(lbl); len(r) > 14 {
-		lbl = string(r[:13]) + "…"
-	}
-	return lbl
+	return strings.Join(parts, ",")
 }
