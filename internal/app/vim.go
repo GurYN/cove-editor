@@ -118,7 +118,7 @@ func (m Model) handleVim(k tea.KeyMsg) (Model, tea.Cmd, bool) {
 		v.mode = vimInsert
 	case 'o':
 		e.LineEdge(+1, false)
-		e.InsertText("\n")
+		e.InsertNewline()
 		v.mode = vimInsert
 	case 'O':
 		e.LineEdge(-1, false)
