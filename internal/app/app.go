@@ -90,7 +90,8 @@ const (
 	overlayDiags
 	overlayBranches
 	overlayHistory
-	overlayRepos // one-shot repo picker for ambiguous multi-repo git actions
+	overlayRepos   // one-shot repo picker for ambiguous multi-repo git actions
+	overlayActions // LSP code actions at the cursor
 )
 
 // problemRef is one row of the Problems list: where Enter should land.
@@ -128,7 +129,12 @@ type Model struct {
 	ovCommits  []git.LogEntry                   // history picker payload
 	ovRepo     *repoState                       // repo the branch/history picker acts on
 	ovRepoDo   func(*Model, *repoState) tea.Cmd // pending action behind the repo picker
+	ovActs     []lsp.CodeAction                 // code-action payload
+	ovActsRev  int                              // editor revision the actions were computed against
 	aboutOpen  bool                             // about box: any key or click closes
+
+	jumps   []jumpLoc // jump list: positions left by go-to-def/symbol/search jumps
+	jumpIdx int       // == len(jumps) when at the newest position
 
 	lspm          *lsp.Manager
 	lspStatus     map[string]string
@@ -219,6 +225,9 @@ func New(path string, data []byte) Model {
 	if d := m.doc(); d != nil {
 		m.lspm.Open(d.path, d.ed.Buf.Bytes(), d.ed.Rev)
 	}
+	if len(m.docs) == 0 { // dir or no argument: bring last session back
+		m.restoreSession()
+	}
 	return m
 }
 
@@ -298,6 +307,10 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.openReferences(msg.locs), nil
 	case symsMsg:
 		return m.openSymbols(msg.syms), nil
+	case wsSymsMsg:
+		return m.openWorkspaceSymbols(msg.syms), nil
+	case actionsMsg:
+		return m.openCodeActions(msg), nil
 	case hoverMsg:
 		if msg.text == "" {
 			m.lastMsg = "no documentation"
@@ -305,7 +318,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.hoverText = msg.text
 		return m, nil
 	case wsEditMsg:
-		m.applyWorkspaceEdit(msg.edit, msg.revs)
+		files, stale := m.applyWorkspaceEdit(msg.edit, msg.revs)
+		m.lastMsg = fmt.Sprintf("renamed in %d file(s)", files)
+		if stale > 0 {
+			m.lastMsg += fmt.Sprintf(", %d skipped (buffer changed — rename again)", stale)
+		}
 		return m, m.syncLSP()
 	case fmtMsg:
 		if d := m.docByPath(msg.path); d != nil && len(msg.edits) > 0 {
@@ -317,6 +334,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 		return m, m.syncLSP()
+	case psearchMsg:
+		return m.openProjectSearch(msg), nil
 	case complMsg:
 		d := m.doc()
 		if d != nil && len(msg.items) > 0 && d.ed.Rev == msg.rev {
@@ -346,9 +365,12 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		// for Claude Code), not Cove's Esc semantics.
 		termFocus := m.ovKind == overlayNone && m.mode == modeEdit &&
 			m.focus == paneTerminal && m.activeTerm() != nil
+		codeActionEnter := msg.Type == tea.KeyEnter && m.mode == modeEdit &&
+			m.ovKind == overlayNone && m.focus == paneEditor // alt+enter quick fix
 		if msg.Alt && !termFocus && msg.Type != tea.KeyUp && msg.Type != tea.KeyDown &&
 			msg.Type != tea.KeyShiftUp && msg.Type != tea.KeyShiftDown && // alt+shift+up/down move-line
-			!(msg.Type == tea.KeyEnter && m.mode == modeReplace) {
+			msg.Type != tea.KeyLeft && msg.Type != tea.KeyRight && // alt+left/right nav back/forward
+			!(msg.Type == tea.KeyEnter && m.mode == modeReplace) && !codeActionEnter {
 			m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyEscape})
 			msg.Alt = false
 			return m.dispatchKey(msg)
@@ -609,8 +631,26 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 			m.layout()
 			return m, cmd
 		}
+	case overlayActions:
+		a := m.ovActs[chosen]
+		if a.Edit != nil {
+			if d := m.doc(); d != nil && d.ed.Rev != m.ovActsRev {
+				m.lastMsg = "buffer changed — run quick fix again"
+				return m, nil
+			}
+			revs := make(map[string]int, len(m.docs))
+			for _, d := range m.docs {
+				revs[d.path] = d.ed.Rev
+			}
+			files, _ := m.applyWorkspaceEdit(a.Edit, revs)
+			m.lastMsg = fmt.Sprintf("%s (%d file(s))", a.Title, files)
+			return m, m.syncLSP()
+		}
+		m.lastMsg = a.Title
+		return m, cmdExecuteCommand(&m, a)
 	case overlayDiags:
 		ref := m.ovDiags[chosen]
+		m.pushJump()
 		m.openFile(ref.path)
 		if d := m.doc(); d != nil && same(d.path, ref.path) {
 			d.ed.Go(ref.line, ref.col)

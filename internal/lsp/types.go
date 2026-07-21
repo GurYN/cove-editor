@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"encoding/json"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,40 @@ type DocumentSymbol struct {
 	Kind           int              `json:"kind"`
 	SelectionRange Range            `json:"selectionRange"`
 	Children       []DocumentSymbol `json:"children,omitempty"`
+}
+
+// CodeAction is one textDocument/codeAction result. The spec allows both
+// CodeAction literals and bare Commands in the same array; a bare Command
+// decodes with Command as a JSON string and Arguments at the top level.
+type CodeAction struct {
+	Title     string          `json:"title"`
+	Kind      string          `json:"kind,omitempty"`
+	Edit      *WorkspaceEdit  `json:"edit,omitempty"`
+	Command   json.RawMessage `json:"command,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+// Cmd extracts the action's server command, handling both encodings.
+func (a CodeAction) Cmd() (name string, args json.RawMessage, ok bool) {
+	var s string
+	if json.Unmarshal(a.Command, &s) == nil && s != "" {
+		return s, a.Arguments, true
+	}
+	var c struct {
+		Command   string          `json:"command"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if json.Unmarshal(a.Command, &c) == nil && c.Command != "" {
+		return c.Command, c.Arguments, true
+	}
+	return "", nil, false
+}
+
+// WorkspaceSym is one workspace/symbol result (flat SymbolInformation).
+type WorkspaceSym struct {
+	Name     string   `json:"name"`
+	Kind     int      `json:"kind"`
+	Location Location `json:"location"`
 }
 
 type WorkspaceEdit struct {

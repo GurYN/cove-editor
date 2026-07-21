@@ -12,8 +12,10 @@ import (
 // Event is what the manager surfaces to the UI loop.
 type Event struct {
 	URI         string
-	Diagnostics []Diagnostic // valid when Kind == "diagnostics"
-	Kind        string       // "diagnostics" | "status"
+	Diagnostics []Diagnostic   // valid when Kind == "diagnostics"
+	Edit        *WorkspaceEdit // valid when Kind == "applyEdit"
+	Sel         *Range         // optional target range when Kind == "showDocument"
+	Kind        string         // "diagnostics" | "status" | "applyEdit" | "showDocument"
 	Lang        string
 	Status      string // "starting" | "ready" | "dead"
 }
@@ -28,9 +30,9 @@ type Client struct {
 	mu      sync.Mutex
 	conn    *conn
 	cmd     *exec.Cmd
-	state   string   // starting | ready | dead
-	queued  []func() // notifications deferred until ready
-	pull    bool     // server uses pull diagnostics (textDocument/diagnostic)
+	state   string          // starting | ready | dead
+	queued  []func()        // notifications deferred until ready
+	pull    bool            // server uses pull diagnostics (textDocument/diagnostic)
 	pulling map[string]bool // uri → pull request in flight
 	repull  map[string]bool // uri → doc changed mid-pull, go again
 }
@@ -85,10 +87,28 @@ func (c *Client) start() {
 				"completion": map[string]any{
 					"completionItem": map[string]any{"snippetSupport": false},
 				},
+				"codeAction": map[string]any{
+					// Literal support: servers send edits inline instead of
+					// hiding every fix behind an opaque command.
+					"codeActionLiteralSupport": map[string]any{
+						"codeActionKind": map[string]any{"valueSet": []string{
+							"quickfix", "refactor", "refactor.extract", "refactor.inline",
+							"refactor.rewrite", "source", "source.organizeImports",
+						}},
+					},
+				},
+			},
+			// Without this gopls never sends window/showDocument — the
+			// "browse …" code actions silently do nothing.
+			"window": map[string]any{
+				"showDocument": map[string]any{"support": true},
 			},
 			"workspace": map[string]any{
 				// Ask for plain Changes maps, not documentChanges.
-				"workspaceEdit": map[string]any{"documentChanges": false},
+				"workspaceEdit":  map[string]any{"documentChanges": false},
+				"applyEdit":      true,
+				"executeCommand": map[string]any{},
+				"symbol":         map[string]any{},
 			},
 		},
 	}
@@ -157,6 +177,28 @@ func (c *Client) onNotify(method string, params json.RawMessage) {
 		}
 		// Diagnostics block until the UI drains them — they must not be lost.
 		c.events <- Event{Kind: "diagnostics", URI: p.URI, Diagnostics: p.Diagnostics, Lang: c.lang}
+	case "workspace/applyEdit":
+		// Command-backed code actions come back as a server request; the
+		// transport already replied applied=true, the UI applies it here.
+		var p struct {
+			Edit WorkspaceEdit `json:"edit"`
+		}
+		if json.Unmarshal(params, &p) != nil {
+			return
+		}
+		p.Edit.Normalize()
+		c.events <- Event{Kind: "applyEdit", Edit: &p.Edit, Lang: c.lang}
+	case "window/showDocument":
+		// gopls's "browse …" code actions (docs, assembly) and file-creating
+		// ones ask the client to show a URL or file.
+		var p struct {
+			URI       string `json:"uri"`
+			Selection *Range `json:"selection"`
+		}
+		if json.Unmarshal(params, &p) != nil || p.URI == "" {
+			return
+		}
+		c.events <- Event{Kind: "showDocument", URI: p.URI, Sel: p.Selection, Lang: c.lang}
 	case "client/registerCapability":
 		// Dynamic route to the same pull flag the initialize result sets.
 		var p struct {
@@ -473,6 +515,60 @@ func (c *Client) Format(ctx context.Context, uri string) ([]TextEdit, error) {
 		return nil, err
 	}
 	return edits, nil
+}
+
+// CodeActions asks for fixes/refactors available at rng. diags are the
+// published diagnostics overlapping it — servers key quickfixes off them.
+func (c *Client) CodeActions(ctx context.Context, uri string, rng Range, diags []Diagnostic) ([]CodeAction, error) {
+	conn, err := c.readyConn()
+	if err != nil {
+		return nil, err
+	}
+	if diags == nil {
+		diags = []Diagnostic{}
+	}
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"range":        rng,
+		"context":      map[string]any{"diagnostics": diags},
+	}
+	var acts []CodeAction
+	if err := conn.Call(ctx, "textDocument/codeAction", params, &acts); err != nil {
+		return nil, err
+	}
+	for i := range acts {
+		if acts[i].Edit != nil {
+			acts[i].Edit.Normalize()
+		}
+	}
+	return acts, nil
+}
+
+// ExecuteCommand runs a server-side command (from a code action without an
+// inline edit). Any resulting edit arrives as a workspace/applyEdit Event.
+func (c *Client) ExecuteCommand(ctx context.Context, command string, args json.RawMessage) error {
+	conn, err := c.readyConn()
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"command": command}
+	if len(args) > 0 {
+		params["arguments"] = args
+	}
+	return conn.Call(ctx, "workspace/executeCommand", params, nil)
+}
+
+// WorkspaceSymbols fuzzy-searches symbols across the whole project.
+func (c *Client) WorkspaceSymbols(ctx context.Context, query string) ([]WorkspaceSym, error) {
+	conn, err := c.readyConn()
+	if err != nil {
+		return nil, err
+	}
+	var syms []WorkspaceSym
+	if err := conn.Call(ctx, "workspace/symbol", map[string]any{"query": query}, &syms); err != nil {
+		return nil, err
+	}
+	return syms, nil
 }
 
 // Kill terminates the server process (shutdown handshake skipped on quit).

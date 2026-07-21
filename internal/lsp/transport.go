@@ -136,11 +136,18 @@ func (c *conn) readLoop(r io.Reader) {
 			if c.notify != nil {
 				c.notify(resp.Method, resp.Params)
 			}
-		case resp.Method != "": // server->client request: surface, reply null
+		case resp.Method != "": // server->client request: surface, reply
 			if c.notify != nil {
 				c.notify(resp.Method, resp.Params)
 			}
-			c.write(map[string]any{"jsonrpc": "2.0", "id": resp.ID, "result": nil})
+			var result any // null satisfies most server requests, but
+			switch resp.Method {
+			case "workspace/applyEdit": // applied=false reads as client failure
+				result = map[string]bool{"applied": true}
+			case "window/showDocument": // success=false likewise
+				result = map[string]bool{"success": true}
+			}
+			c.write(map[string]any{"jsonrpc": "2.0", "id": resp.ID, "result": result})
 		case hasID: // response to one of our calls (ids are always numeric)
 			var id int64
 			if json.Unmarshal(resp.ID, &id) != nil {
