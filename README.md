@@ -9,8 +9,8 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 ## Features
 
 - **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
-- **Tree-sitter syntax highlighting** for twelve languages, with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
-- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, and CSS work out of the box — including TypeScript 7's native language server (both the push and pull diagnostics models are supported).
+- **Tree-sitter syntax highlighting** for fourteen languages plus the config files around them (`.env`, `.gitignore`, `go.mod`, lockfiles, shell dotfiles, …), with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
+- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, a symbol outline (`Ctrl+T`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, CSS, and Terraform work out of the box — including TypeScript 7's native language server (both the push and pull diagnostics models are supported).
 - **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
@@ -57,7 +57,9 @@ cove .
 
 ## Language support
 
-Syntax highlighting ships in the binary for Go, Python, TypeScript/JavaScript (including JSX/TSX), Rust, HTML, CSS, Bash, JSON, TOML, YAML (including Docker Compose files), Dockerfile (`Dockerfile`, `Dockerfile.*`, `Containerfile`, `*.dockerfile`), and Markdown. HTML highlights embedded `<script>` and `<style>` blocks; Markdown highlights bold/italic/links/code spans and fenced code blocks in their own language (` ```go `, ` ```js `, …).
+Syntax highlighting ships in the binary for Go (including `go.mod`), Python, TypeScript/JavaScript (including JSX/TSX), Rust, HTML (also `.svg`/`.xml`), CSS, Bash, JSON, TOML, YAML (including Docker Compose files), HCL/Terraform (`.tf`, `.tfvars`, `.hcl`), Dockerfile (`Dockerfile`, `Dockerfile.*`, `Containerfile`, `*.dockerfile`), and Markdown (also `.mdx`). HTML highlights embedded `<script>` and `<style>` blocks; Markdown highlights bold/italic/links/code spans and fenced code blocks in their own language (` ```go `, ` ```js `, …).
+
+Everyday config files color too, reusing those grammars: `.env` (and `.env.*`), `.gitignore`/`.dockerignore`/`.gitattributes`, shell dotfiles (`.bashrc`, `.zshrc`, …), INI-style files (`.ini`, `.cfg`, `.properties`, `.editorconfig`, `.gitconfig`, `.npmrc`), lockfiles and manifests (`Cargo.lock`, `Pipfile`, `uv.lock`, `poetry.lock`, `Procfile`), and `Makefile`/`Justfile`.
 
 Language intelligence needs the language's server on your `PATH`:
 
@@ -68,8 +70,17 @@ Language intelligence needs the language's server on your `PATH`:
 | TypeScript / JavaScript | `tsc --lsp` (TypeScript 7+) | `npm i -g typescript`                       |
 | Rust       | `rust-analyzer`              | `rustup component add rust-analyzer`                  |
 | HTML / CSS | `vscode-html-language-server` / `vscode-css-language-server` | `npm i -g vscode-langservers-extracted` |
+| Terraform  | `terraform-ls`               | `brew install hashicorp/tap/terraform-ls`             |
 
 Still on TypeScript 5? Nothing to configure: Cove probes your `tsc` version once and falls back to `typescript-language-server` (`npm i -g typescript-language-server typescript@5`) when tsc predates the native server. A `[lsp.typescript]` entry in the config file overrides the probe entirely.
+
+Any other language server speaking stdio registers in the config file:
+
+```toml
+[lsp.zig]
+command = ["zls"]
+extensions = ["zig"]
+```
 
 No server installed? Cove still works as a fast editor with syntax highlighting.
 

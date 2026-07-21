@@ -28,8 +28,9 @@ var defaultServers = map[string]ServerDef{
 	"typescript": {Resolve: resolveTypescript, LangID: "typescript"},
 	"rust":       {Argv: []string{"rust-analyzer"}, LangID: "rust"},
 	// html + css ship together in `npm i -g vscode-langservers-extracted`.
-	"html": {Argv: []string{"vscode-html-language-server", "--stdio"}, LangID: "html"},
-	"css":  {Argv: []string{"vscode-css-language-server", "--stdio"}, LangID: "css"},
+	"html":      {Argv: []string{"vscode-html-language-server", "--stdio"}, LangID: "html"},
+	"css":       {Argv: []string{"vscode-css-language-server", "--stdio"}, LangID: "css"},
+	"terraform": {Argv: []string{"terraform-ls", "serve"}, LangID: "terraform"},
 }
 
 // resolveTypescript probes once, on the first ts/js file open: tsc 7+ →
@@ -74,6 +75,7 @@ var extLang = map[string]string{
 	".ts": "typescript", ".tsx": "typescript",
 	".js": "typescript", ".jsx": "typescript", ".mjs": "typescript", ".cjs": "typescript",
 	".html": "html", ".htm": "html", ".css": "css",
+	".tf": "terraform", ".tfvars": "terraform",
 }
 
 // Configure registers or overrides a language server (from TOML config).

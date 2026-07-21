@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	tshcl "github.com/tree-sitter-grammars/tree-sitter-hcl/bindings/go"
 	tstoml "github.com/tree-sitter-grammars/tree-sitter-toml/bindings/go"
 	tsyaml "github.com/tree-sitter-grammars/tree-sitter-yaml/bindings/go"
 
@@ -17,6 +18,7 @@ import (
 	tsbash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
 	tscss "github.com/tree-sitter/tree-sitter-css/bindings/go"
 	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tsgomod "github.com/tree-sitter/tree-sitter-gomod/bindings/go"
 	tshtml "github.com/tree-sitter/tree-sitter-html/bindings/go"
 	tsjson "github.com/tree-sitter/tree-sitter-json/bindings/go"
 	tspython "github.com/tree-sitter/tree-sitter-python/bindings/go"
@@ -28,6 +30,12 @@ import (
 
 //go:embed queries/go.scm
 var goScm string
+
+//go:embed queries/hcl.scm
+var hclScm string
+
+//go:embed queries/gomod.scm
+var gomodScm string
 
 //go:embed queries/json.scm
 var jsonScm string
@@ -86,6 +94,8 @@ type langDef struct {
 // reference grammars directly; exts maps file extensions onto it.
 var langs = map[string]func() langDef{
 	"go":     func() langDef { return langDef{lang: ts.NewLanguage(tsgo.Language()), query: goScm} },
+	"gomod":  func() langDef { return langDef{lang: ts.NewLanguage(tsgomod.Language()), query: gomodScm} },
+	"hcl":    func() langDef { return langDef{lang: ts.NewLanguage(tshcl.Language()), query: hclScm} },
 	"json":   func() langDef { return langDef{lang: ts.NewLanguage(tsjson.Language()), query: jsonScm} },
 	"python": func() langDef { return langDef{lang: ts.NewLanguage(tspython.Language()), query: pythonScm} },
 	"rust":   func() langDef { return langDef{lang: ts.NewLanguage(tsrust.Language()), query: rustScm} },
@@ -124,20 +134,64 @@ var langs = map[string]func() langDef{
 var exts = map[string]string{
 	".go": "go", ".json": "json", ".py": "python", ".rs": "rust",
 	".ts": "typescript", ".js": "typescript", ".mjs": "typescript", ".cjs": "typescript",
+	".mts": "typescript", ".cts": "typescript",
 	".tsx": "tsx", ".jsx": "tsx",
 	".html": "html", ".htm": "html", ".css": "css",
+	".svg": "html", ".xml": "html",
 	".sh": "bash", ".bash": "bash", ".zsh": "bash",
-	".toml": "toml", ".md": "markdown", ".markdown": "markdown",
+	".toml": "toml", ".md": "markdown", ".markdown": "markdown", ".mdx": "markdown",
 	".yaml": "yaml", ".yml": "yaml", ".dockerfile": "dockerfile",
+	".env": "bash", ".jsonc": "json",
+	".ini": "toml", ".cfg": "toml", ".properties": "toml",
+	".tf": "hcl", ".tfvars": "hcl", ".hcl": "hcl",
+}
+
+// basenames routes well-known config dotfiles onto grammars that color them
+// well enough — no dedicated grammars. ponytail: bash colors # comments and
+// KEY=value; toml colors [sections], keys and # comments in INI-ish files
+// (unquoted values land in error nodes and stay plain, acceptable).
+var basenames = map[string]string{
+	"go.mod":         "gomod",
+	".gitignore":     "bash",
+	".dockerignore":  "bash",
+	".gitattributes": "bash",
+	".editorconfig":  "toml",
+	".gitconfig":     "toml",
+	".gitmodules":    "toml",
+	".npmrc":         "toml",
+	".eslintrc":      "json",
+	".babelrc":       "json",
+	".bashrc":        "bash",
+	".bash_profile":  "bash",
+	".profile":       "bash",
+	".zshrc":         "bash",
+	".zshenv":        "bash",
+	".zprofile":      "bash",
+	// ponytail: Makefile/Justfile under bash — comments and recipe lines
+	// color, make syntax itself doesn't; add tree-sitter-make if it matters.
+	"makefile":    "bash",
+	"gnumakefile": "bash",
+	"justfile":    "bash",
+	"cargo.lock":  "toml",
+	"pipfile":     "toml",
+	"uv.lock":     "toml",
+	"poetry.lock": "toml",
+	"procfile":    "yaml",
 }
 
 // langFor resolves a language from the file path: extension first, then
-// extensionless basenames (Dockerfile, Dockerfile.prod, Containerfile).
+// known basenames (.gitignore, .env.local, Dockerfile.prod, Containerfile).
 func langFor(path string) (string, bool) {
 	if name, ok := exts[strings.ToLower(filepath.Ext(path))]; ok {
 		return name, true
 	}
 	base := strings.ToLower(filepath.Base(path))
+	if name, ok := basenames[base]; ok {
+		return name, true
+	}
+	if strings.HasPrefix(base, ".env.") {
+		return "bash", true
+	}
 	if base == "containerfile" || base == "dockerfile" || strings.HasPrefix(base, "dockerfile.") {
 		return "dockerfile", true
 	}
@@ -156,6 +210,7 @@ var fenceLangs = map[string]string{
 	"toml": "toml",
 	"yaml": "yaml", "yml": "yaml",
 	"dockerfile": "dockerfile", "docker": "dockerfile",
+	"hcl": "hcl", "terraform": "hcl", "tf": "hcl",
 }
 
 // classFor maps a tree-sitter capture name to an editor style class.
