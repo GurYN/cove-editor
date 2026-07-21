@@ -3,7 +3,9 @@ package app
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -30,6 +32,11 @@ type complMsg struct {
 	rev   int // editor revision at request time
 }
 type symsMsg struct{ syms []lsp.DocumentSymbol }
+type wsSymsMsg struct{ syms []lsp.WorkspaceSym }
+type actionsMsg struct {
+	acts []lsp.CodeAction
+	rev  int // editor revision at request time
+}
 type wsEditMsg struct {
 	edit *lsp.WorkspaceEdit
 	revs map[string]int // open-doc revisions at request time
@@ -58,6 +65,41 @@ func (m *Model) handleLSPEvent(ev lsp.Event) {
 				d.ed.Diags = toDiagSpans(d.ed.Buf, ev.Diagnostics)
 			}
 		}
+	case "applyEdit":
+		// Edits were computed against the last-synced text; a rev snapshot
+		// taken now always matches, so only that 150ms sync window can skew.
+		revs := make(map[string]int, len(m.docs))
+		for _, d := range m.docs {
+			revs[d.path] = d.ed.Rev
+		}
+		files, _ := m.applyWorkspaceEdit(ev.Edit, revs)
+		m.lastMsg = fmt.Sprintf("applied edit in %d file(s)", files)
+	case "showDocument":
+		// gopls "browse …" actions send URLs; file-creating ones (add test,
+		// extract to new file) send the file to reveal.
+		if strings.HasPrefix(ev.URI, "file://") {
+			path := lsp.URIToPath(ev.URI)
+			m.openFile(path)
+			if d := m.doc(); ev.Sel != nil && d != nil && same(d.path, path) {
+				line := min(ev.Sel.Start.Line, d.ed.Buf.LineCount()-1)
+				d.ed.Go(line, lsp.ByteCol(d.ed.Buf.Line(line), ev.Sel.Start.Character))
+				d.ed.Center()
+			}
+		} else {
+			openBrowser(ev.URI)
+			m.lastMsg = "opened in browser"
+		}
+	}
+}
+
+// openBrowser hands a URL to the OS opener; unsupported platforms just
+// leave the URL in the footer via the caller's message.
+func openBrowser(url string) {
+	switch runtime.GOOS {
+	case "darwin":
+		exec.Command("open", url).Start()
+	default:
+		exec.Command("xdg-open", url).Start()
 	}
 }
 
@@ -194,6 +236,77 @@ func cmdSymbols(m *Model) tea.Cmd {
 	})
 }
 
+// cmdCodeActions asks for fixes at the cursor, passing along any published
+// diagnostics touching the cursor's line — servers key quickfixes off them.
+func cmdCodeActions(m *Model) tea.Cmd {
+	d := m.doc()
+	if d == nil {
+		return nil
+	}
+	rev := d.ed.Rev
+	line, _ := d.ed.Cursor()
+	buf := d.ed.Buf
+	posOf := func(off int) lsp.Position {
+		l, c := buf.Pos(min(off, buf.Len()))
+		return lsp.Position{Line: l, Character: lsp.UTF16Col(buf.Line(l), c)}
+	}
+	var diags []lsp.Diagnostic
+	for _, sp := range d.ed.Diags {
+		if l, _ := buf.Pos(min(sp.Start, buf.Len())); l == line {
+			diags = append(diags, lsp.Diagnostic{
+				Range:    lsp.Range{Start: posOf(sp.Start), End: posOf(sp.End)},
+				Severity: sp.Severity,
+				Message:  sp.Message,
+			})
+		}
+	}
+	return m.lspCmd(func(c *lsp.Client, uri string, pos lsp.Position) tea.Msg {
+		ctx, cancel := lsp.Ctx()
+		defer cancel()
+		acts, err := c.CodeActions(ctx, uri, lsp.Range{Start: pos, End: pos}, diags)
+		if err != nil {
+			return lspErrMsg{err}
+		}
+		return actionsMsg{acts: acts, rev: rev}
+	})
+}
+
+func cmdExecuteCommand(m *Model, act lsp.CodeAction) tea.Cmd {
+	d := m.doc()
+	if d == nil {
+		return nil
+	}
+	c := m.lspm.Client(d.path)
+	if c == nil {
+		return nil
+	}
+	name, args, ok := act.Cmd()
+	if !ok {
+		m.lastMsg = "code action has no edit or command"
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := lsp.Ctx()
+		defer cancel()
+		if err := c.ExecuteCommand(ctx, name, args); err != nil {
+			return lspErrMsg{err}
+		}
+		return nil
+	}
+}
+
+func cmdWorkspaceSymbols(m *Model, query string) tea.Cmd {
+	return m.lspCmd(func(c *lsp.Client, uri string, pos lsp.Position) tea.Msg {
+		ctx, cancel := lsp.Ctx()
+		defer cancel()
+		syms, err := c.WorkspaceSymbols(ctx, query)
+		if err != nil {
+			return lspErrMsg{err}
+		}
+		return wsSymsMsg{syms}
+	})
+}
+
 func cmdRename(m *Model, newName string) tea.Cmd {
 	// Snapshot open-doc revisions: edits computed now must not land on
 	// buffers the user has since typed in (stale offsets corrupt text).
@@ -233,6 +346,7 @@ func cmdFormat(m *Model) tea.Cmd {
 
 func (m *Model) jumpTo(loc lsp.Location) {
 	path := lsp.URIToPath(loc.URI)
+	m.pushJump()
 	m.openFile(path)
 	d := m.doc()
 	if d == nil || !same(d.path, path) {
@@ -261,14 +375,15 @@ func toEditorEdits(buf *buffer.Buffer, edits []lsp.TextEdit) []editor.Edit {
 	return out
 }
 
-// applyWorkspaceEdit applies a rename result: open docs get an undoable
-// transaction; closed files are edited on disk. Docs edited since the
-// request (rev mismatch) are skipped — the offsets no longer fit.
-func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit, revs map[string]int) {
+// applyWorkspaceEdit applies a workspace edit (rename, code action): open
+// docs get an undoable transaction; closed files are edited on disk. Docs
+// edited since the request (rev mismatch) are skipped — the offsets no
+// longer fit. Callers compose the status message from the counts.
+func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit, revs map[string]int) (files, stale int) {
 	if we == nil {
-		return
+		return 0, 0
 	}
-	files, stale := 0, 0
+	var created []string
 	for uri, edits := range we.Changes {
 		if len(edits) == 0 {
 			continue
@@ -286,9 +401,14 @@ func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit, revs map[string]int) {
 		}
 		files++
 		data, err := os.ReadFile(path)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			m.lastMsg = err.Error()
 			continue
+		}
+		if os.IsNotExist(err) { // server creating a file (add test, extract)
+			data = nil
+			os.MkdirAll(filepath.Dir(path), 0o755)
+			created = append(created, path)
 		}
 		buf := buffer.New(data)
 		ee := toEditorEdits(buf, edits)
@@ -300,10 +420,11 @@ func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit, revs map[string]int) {
 			m.lastMsg = err.Error()
 		}
 	}
-	m.lastMsg = fmt.Sprintf("renamed in %d file(s)", files)
-	if stale > 0 {
-		m.lastMsg += fmt.Sprintf(", %d skipped (buffer changed — rename again)", stale)
+	if len(created) > 0 { // reveal what the server just made
+		m.side.Refresh()
+		m.openFile(created[0])
 	}
+	return files, stale
 }
 
 func (m *Model) docByPath(path string) *doc {
@@ -330,6 +451,45 @@ func (m Model) openReferences(locs []lsp.Location) Model {
 		items[i] = overlay.Item{Label: label, Detail: detail}
 	}
 	m.ov = overlay.New("References:", items, m.width)
+	return m
+}
+
+// openWorkspaceSymbols lists project-wide symbol matches; rows reuse the
+// references overlay plumbing: pick → jump (which records a jump-list entry).
+func (m Model) openWorkspaceSymbols(syms []lsp.WorkspaceSym) Model {
+	if len(syms) == 0 {
+		m.lastMsg = "no matching symbols"
+		return m
+	}
+	m.ovKind = overlayRefs
+	m.ovRefs = m.ovRefs[:0]
+	items := make([]overlay.Item, len(syms))
+	for i, s := range syms {
+		m.ovRefs = append(m.ovRefs, s.Location)
+		path := lsp.URIToPath(s.Location.URI)
+		items[i] = overlay.Item{
+			Label:  symbolGlyph(s.Kind) + " " + s.Name,
+			Detail: fmt.Sprintf("%s:%d", filepath.Base(path), s.Location.Range.Start.Line+1),
+		}
+	}
+	m.ov = overlay.New("Symbol:", items, m.width)
+	return m
+}
+
+// openCodeActions shows the fixes/refactors the server offered at the cursor.
+func (m Model) openCodeActions(msg actionsMsg) Model {
+	if len(msg.acts) == 0 {
+		m.lastMsg = "no code actions here"
+		return m
+	}
+	m.ovKind = overlayActions
+	m.ovActs = msg.acts
+	m.ovActsRev = msg.rev
+	items := make([]overlay.Item, len(msg.acts))
+	for i, a := range msg.acts {
+		items[i] = overlay.Item{Label: a.Title, Detail: a.Kind}
+	}
+	m.ov = overlay.New("Fix:", items, m.width)
 	return m
 }
 

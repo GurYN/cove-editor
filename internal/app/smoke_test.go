@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,9 @@ func greet(name string) {
 
 func setup(t *testing.T) tea.Model {
 	t.Helper()
+	// Isolate config AND session files (quit saves a session) from the
+	// developer's real ~/.config/cove.
+	t.Setenv("COVE_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	src := []byte(sampleSrc)
 	if err := os.WriteFile("/tmp/sample.go", src, 0o644); err != nil {

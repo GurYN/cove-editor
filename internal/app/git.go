@@ -497,7 +497,7 @@ func (m *Model) reloadDoc(abs string) {
 		d.ed.ApplyEdits([]editor.Edit{{Off: 0, Old: old, New: data}})
 		d.ed.Go(line, col) // keep the cursor in place instead of jumping to EOF
 	}
-	d.ed.Dirty = false
+	d.ed.MarkSaved()
 	if fi, err := os.Stat(abs); err == nil {
 		d.mtime = fi.ModTime()
 	}
@@ -812,6 +812,10 @@ const gitGraphTitle = "Git Graph"
 // remembers its repo so that Enter targets the right one.
 func (m *Model) gitOpenGraph() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		// ponytail: hard cap at the newest 500 commits (v2: lazy-load more on
+		// scroll-to-bottom). Silent truncation: a branch whose tip is older
+		// than the window gets no lane and no header name. Branch count
+		// itself is uncapped — each tip in the window costs 2 columns.
 		cs, err := git.GraphLog(r.top, 500)
 		if err != nil {
 			m.lastMsg = err.Error()

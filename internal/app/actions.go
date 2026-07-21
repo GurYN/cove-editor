@@ -77,6 +77,7 @@ func newRegistry() *action.Registry {
 
 	// ---- global ----
 	quit := func(m *Model) tea.Cmd {
+		m.saveSession()
 		m.lspm.Shutdown()
 		for _, t := range m.terms {
 			t.Close()
@@ -275,6 +276,30 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 
+	// ---- navigation history ----
+	reg("nav.back", "Go Back (Jump List)", "alt+left", action.Global, func(m *Model) tea.Cmd { m.navBack(); return nil })
+	reg("nav.forward", "Go Forward (Jump List)", "alt+right", action.Global, func(m *Model) tea.Cmd { m.navForward(); return nil })
+
+	// ---- project-wide search ----
+	reg("search.project", "Search in Project…", "f7", action.Global, func(m *Model) tea.Cmd {
+		initial := ""
+		if d := m.doc(); d != nil {
+			if sel := d.ed.Selection(); len(sel) > 0 && !bytes.Contains(sel, []byte("\n")) {
+				initial = string(sel)
+			}
+		}
+		*m = m.prompt("Search project:", initial, func(m *Model, q string) {
+			if strings.TrimSpace(q) != "" {
+				m.lastMsg = "searching…"
+				m.deferred = m.projectSearchCmd(q)
+			}
+		})
+		return nil
+	})
+	reg("search.replaceProject", "Replace in Project…", "", action.Global, func(m *Model) tea.Cmd {
+		return m.replaceProjectPrompt()
+	})
+
 	// ---- editor: search ----
 	reg("find.open", "Find", "ctrl+f", action.Editor, func(m *Model) tea.Cmd {
 		d := m.doc()
@@ -365,6 +390,7 @@ func newRegistry() *action.Registry {
 				return
 			}
 			if d := m.doc(); d != nil {
+				m.pushJump()
 				d.ed.Go(n-1, 0)
 				d.ed.Center()
 			}
@@ -393,6 +419,18 @@ func newRegistry() *action.Registry {
 	reg("lsp.complete", "Trigger Completion", "ctrl+@", action.Editor, func(m *Model) tea.Cmd { return cmdCompletion(m) })
 	reg("lsp.format", "Format Document", "", action.Editor, func(m *Model) tea.Cmd { return cmdFormat(m) })
 	reg("lsp.symbols", "Go to Symbol in File (Outline)", "ctrl+t", action.Editor, func(m *Model) tea.Cmd { return cmdSymbols(m) })
+	reg("lsp.workspaceSymbols", "Go to Symbol in Project…", "f3", action.Editor, func(m *Model) tea.Cmd {
+		if m.doc() == nil {
+			return nil
+		}
+		*m = m.prompt("Symbol search:", "", func(m *Model, q string) {
+			if strings.TrimSpace(q) != "" {
+				m.deferred = cmdWorkspaceSymbols(m, q)
+			}
+		})
+		return nil
+	})
+	reg("lsp.codeAction", "Quick Fix / Code Action", "alt+enter", action.Editor, func(m *Model) tea.Cmd { return cmdCodeActions(m) })
 	reg("lsp.problems", "Problems: List Errors and Warnings", "f8", action.Global, func(m *Model) tea.Cmd { *m = m.openProblems(); return nil })
 	reg("lsp.rename", "Rename Symbol", "f2", action.Editor, func(m *Model) tea.Cmd {
 		d := m.doc()

@@ -187,6 +187,6 @@ func (d *doc) save() string {
 	if fi, err := os.Stat(d.path); err == nil {
 		d.mtime = fi.ModTime()
 	}
-	d.ed.Dirty = false
+	d.ed.MarkSaved()
 	return "saved"
 }
