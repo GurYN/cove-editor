@@ -124,6 +124,56 @@ func TestUndoRedo(t *testing.T) {
 	}
 }
 
+// Dirty tracks distance from the last MarkSaved point: undoing back to it
+// clears the flag; editing below it orphans the mark for good.
+func TestDirtyFollowsUndo(t *testing.T) {
+	m := New(buffer.New([]byte("hello\n")))
+	m.Width, m.Height = 80, 10
+	m = typeRunes(m, "x")
+	if !m.Dirty {
+		t.Fatal("dirty after edit")
+	}
+	m.UndoStep()
+	if m.Dirty {
+		t.Fatal("clean after undoing back to load state")
+	}
+	m.RedoStep()
+	if !m.Dirty {
+		t.Fatal("dirty after redo")
+	}
+	m.MarkSaved()
+	if m.Dirty {
+		t.Fatal("clean after save")
+	}
+	m.UndoStep()
+	if !m.Dirty {
+		t.Fatal("dirty after undoing past the save point")
+	}
+	m.RedoStep()
+	if m.Dirty {
+		t.Fatal("clean after redoing back to the save point")
+	}
+	// Undo below the save point, then edit: the saved state is orphaned —
+	// no undo/redo sequence reaches it, so Dirty must stick.
+	m.UndoStep()
+	m = typeRunes(m, "y")
+	m.UndoStep()
+	m.RedoStep()
+	if !m.Dirty {
+		t.Fatal("orphaned save point must stay dirty")
+	}
+	// Manually erasing the edit (no undo) restores the saved content: clean.
+	m.DeleteRune(-1)
+	m = typeRunes(m, "x")
+	if m.Dirty {
+		t.Fatal("clean after hand-restoring the saved content")
+	}
+	m.DeleteRune(-1)
+	if !m.Dirty {
+		t.Fatal("dirty again after diverging from restored content")
+	}
+}
+
 func TestMultiCursorTyping(t *testing.T) {
 	m := New(buffer.New([]byte("aaa\nbbb\nccc\n")))
 	m.Width, m.Height = 80, 10

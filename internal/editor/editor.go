@@ -6,6 +6,7 @@ package editor
 
 import (
 	"bytes"
+	"hash/maphash"
 	"slices"
 	"sort"
 	"strings"
@@ -70,13 +71,16 @@ type Model struct {
 	Diags    []DiagSpan // set by the app; offsets clamped at render time
 	Signs    []byte     // git gutter sign per line ('a'/'m'/'d', 0 none); set by the app
 
-	cursors []Cursor // sorted by sel start, non-overlapping, len >= 1
-	primary int      // index into cursors; scroll follows this one
-	top     int      // first visible line
-	xoff    int      // horizontal scroll, in screen cells
-	hist    history
-	search  searchState
-	clip    []byte // internal clipboard; OSC 52 integration is Phase 2
+	cursors  []Cursor // sorted by sel start, non-overlapping, len >= 1
+	primary  int      // index into cursors; scroll follows this one
+	top      int      // first visible line
+	xoff     int      // horizontal scroll, in screen cells
+	hist     history
+	saved    int    // undo depth at last save; -1 once that history is orphaned
+	savedLen int    // content length at last save
+	savedSum uint64 // content hash at last save
+	search   searchState
+	clip     []byte // internal clipboard; OSC 52 integration is Phase 2
 
 	lastClickAt  time.Time
 	lastClickPos int
@@ -84,7 +88,9 @@ type Model struct {
 }
 
 func New(buf *buffer.Buffer) Model {
-	return Model{Buf: buf, cursors: []Cursor{{}}}
+	m := Model{Buf: buf, cursors: []Cursor{{}}}
+	m.MarkSaved()
+	return m
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -444,10 +450,34 @@ func (m *Model) apply(tx Tx) {
 	}
 	m.cursors = append([]Cursor(nil), tx.After...)
 	m.normalize()
+	if len(m.hist.undo) < m.saved {
+		m.saved = -1 // push clears redo, orphaning the saved state
+	}
 	m.hist.push(tx)
-	m.Dirty = true
+	m.recalcDirty()
 	m.search.dirty = true
 	m.scrollToCursor()
+}
+
+// MarkSaved records the current state as clean: matching it again — by
+// undoing back or by edits that restore the same content — clears Dirty.
+func (m *Model) MarkSaved() {
+	m.hist.seal() // typing must not coalesce across the save point
+	m.saved = len(m.hist.undo)
+	m.savedLen = m.Buf.Len()
+	m.savedSum = maphash.Bytes(bufSeed, m.Buf.Bytes())
+	m.Dirty = false
+}
+
+var bufSeed = maphash.MakeSeed()
+
+// recalcDirty: matching the save point's undo depth means identical content
+// (apply orphans the depth when its history is discarded). Any other depth
+// falls back to comparing content — length first, hash only on a length
+// match — so typing something and manually erasing it reads clean again.
+func (m *Model) recalcDirty() {
+	m.Dirty = len(m.hist.undo) != m.saved &&
+		(m.Buf.Len() != m.savedLen || maphash.Bytes(bufSeed, m.Buf.Bytes()) != m.savedSum)
 }
 
 // ApplyEdits applies external (LSP) edits as one undoable transaction.
@@ -522,7 +552,7 @@ func (m *Model) UndoStep() {
 	m.cursors = append([]Cursor(nil), tx.Before...)
 	m.primary = len(m.cursors) - 1
 	m.normalize()
-	m.Dirty = true
+	m.recalcDirty()
 	m.search.dirty = true
 	m.scrollToCursor()
 }
@@ -537,7 +567,7 @@ func (m *Model) RedoStep() {
 	m.cursors = append([]Cursor(nil), tx.After...)
 	m.primary = len(m.cursors) - 1
 	m.normalize()
-	m.Dirty = true
+	m.recalcDirty()
 	m.search.dirty = true
 	m.scrollToCursor()
 }
