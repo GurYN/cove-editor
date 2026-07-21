@@ -41,12 +41,13 @@ type TextEdit struct {
 }
 
 type CompletionItem struct {
-	Label      string    `json:"label"`
-	Kind       int       `json:"kind,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	InsertText string    `json:"insertText,omitempty"`
-	TextEdit   *TextEdit `json:"textEdit,omitempty"`
-	SortText   string    `json:"sortText,omitempty"`
+	Label            string    `json:"label"`
+	Kind             int       `json:"kind,omitempty"`
+	Detail           string    `json:"detail,omitempty"`
+	InsertText       string    `json:"insertText,omitempty"`
+	InsertTextFormat int       `json:"insertTextFormat,omitempty"` // 2 = snippet
+	TextEdit         *TextEdit `json:"textEdit,omitempty"`
+	SortText         string    `json:"sortText,omitempty"`
 }
 
 // DocumentSymbol is one node of a textDocument/documentSymbol response.

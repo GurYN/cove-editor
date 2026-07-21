@@ -121,7 +121,83 @@ func (m *Model) acceptCompletion() {
 	if start > end {
 		start = end
 	}
+	// Some servers (vscode-html-languageserver's close-tag completion) send
+	// snippet syntax like "$0</html>" even though we declare snippetSupport
+	// false. Strip tab stops/placeholders; caret is where the cursor lands.
+	caret := -1
+	if it.InsertTextFormat == 2 || strings.Contains(newText, "$0") {
+		newText, caret = stripSnippet(newText)
+	}
 	d.ed.ApplyEdits([]editor.Edit{{Off: start, Old: append([]byte(nil), d.ed.Buf.Slice(start, end)...), New: []byte(newText)}})
+	if caret >= 0 {
+		line, col := d.ed.Buf.Pos(start + caret)
+		d.ed.Go(line, col)
+	}
+}
+
+// stripSnippet removes LSP snippet syntax ($1, ${1}, ${1:placeholder} —
+// placeholder text is kept) and returns the byte offset of the first real
+// tab stop (else $0) as the caret position, -1 if there is none.
+// ponytail: no nested placeholders or choice syntax; extend if a server sends them.
+func stripSnippet(s string) (string, int) {
+	var out strings.Builder
+	first, zeroPos := -1, -1
+	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+1 < len(s) { // \$ etc. — unescape
+			out.WriteByte(s[i+1])
+			i += 2
+			continue
+		}
+		if s[i] != '$' || i+1 >= len(s) {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		j, zero := i+1, false
+		if s[j] == '{' {
+			j++
+		}
+		n := j
+		for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+			n++
+		}
+		if n == j { // lone $, not a tab stop
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		zero = s[j:n] == "0"
+		if s[i+1] == '{' {
+			if n < len(s) && s[n] == ':' { // ${1:placeholder}
+				end := strings.IndexByte(s[n:], '}')
+				if end < 0 {
+					out.WriteString(s[i:])
+					break
+				}
+				if zero {
+					zeroPos = out.Len()
+				} else if first < 0 {
+					first = out.Len()
+				}
+				out.WriteString(s[n+1 : n+end])
+				i = n + end + 1
+				continue
+			}
+			if n < len(s) && s[n] == '}' {
+				n++
+			}
+		}
+		if zero {
+			zeroPos = out.Len()
+		} else if first < 0 {
+			first = out.Len()
+		}
+		i = n
+	}
+	if first < 0 {
+		first = zeroPos
+	}
+	return out.String(), first
 }
 
 // renderCompl renders the completion menu box (no positioning).

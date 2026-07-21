@@ -144,11 +144,15 @@ func (m *Model) handleKey(k tea.KeyMsg) {
 		if k.Alt {
 			return // alt-chords are not text
 		}
-		m.InsertText(string(k.Runes))
+		if r := k.Runes; len(r) == 1 && (r[0] == '}' || r[0] == ')' || r[0] == ']') {
+			m.InsertCloser(string(r))
+		} else {
+			m.InsertText(string(r))
+		}
 	case tea.KeySpace:
 		m.InsertText(" ")
 	case tea.KeyEnter:
-		m.InsertText("\n")
+		m.InsertNewline()
 	case tea.KeyTab:
 		if m.selSpansLines() {
 			m.IndentLines(+1)
@@ -394,6 +398,79 @@ func (m *Model) InsertText(s string) {
 		if c.hasSel() {
 			typing = false
 		}
+	}
+	m.apply(Tx{Edits: edits, typing: typing})
+}
+
+// InsertNewline inserts \n at every cursor, carrying the current line's
+// leading whitespace onto the new line and adding one indent level when the
+// last non-blank character before the cursor opens a block ({, (, [, :).
+// ponytail: no language awareness and no auto-dedent on }; revisit if tree-sitter
+// indent queries ever land.
+func (m *Model) InsertNewline() {
+	edits := make([]Edit, len(m.cursors))
+	typing := true
+	for i, c := range m.cursors {
+		lo, hi := c.sel()
+		if c.hasSel() {
+			typing = false
+		}
+		line, col := m.Buf.Pos(lo)
+		lb := m.Buf.Line(line)
+		col = min(col, len(lb))
+		ind := 0
+		for ind < col && (lb[ind] == ' ' || lb[ind] == '\t') {
+			ind++
+		}
+		text := append([]byte("\n"), lb[:ind]...)
+		for p := col - 1; p >= 0; p-- { // last non-blank before the cursor
+			if lb[p] == ' ' || lb[p] == '\t' {
+				continue
+			}
+			if lb[p] == '{' || lb[p] == '(' || lb[p] == '[' || lb[p] == ':' {
+				text = append(text, '\t')
+			}
+			break
+		}
+		edits[i] = Edit{Off: lo, Old: append([]byte(nil), m.Buf.Slice(lo, hi)...), New: text}
+	}
+	m.apply(Tx{Edits: edits, typing: typing})
+}
+
+// InsertCloser inserts a closing bracket, first removing one indent level
+// when the cursor sits in pure leading whitespace — typing } on a fresh
+// auto-indented line snaps it back to the opener's level.
+// ponytail: dedents one IndentLines unit (tab, or ≤4 spaces), not to the
+// matching opener's actual column; use tree-sitter if this mis-fires.
+func (m *Model) InsertCloser(s string) {
+	edits := make([]Edit, len(m.cursors))
+	typing := true
+	for i, c := range m.cursors {
+		lo, hi := c.sel()
+		if c.hasSel() {
+			typing = false
+		}
+		line, col := m.Buf.Pos(lo)
+		lb := m.Buf.Line(line)
+		col = min(col, len(lb))
+		blank := col > 0
+		for p := 0; p < col; p++ {
+			if lb[p] != ' ' && lb[p] != '\t' {
+				blank = false
+				break
+			}
+		}
+		n := 0
+		if blank {
+			if lb[col-1] == '\t' {
+				n = 1
+			} else {
+				for n < 4 && n < col && lb[col-1-n] == ' ' {
+					n++
+				}
+			}
+		}
+		edits[i] = Edit{Off: lo - n, Old: append([]byte(nil), m.Buf.Slice(lo-n, hi)...), New: []byte(s)}
 	}
 	m.apply(Tx{Edits: edits, typing: typing})
 }

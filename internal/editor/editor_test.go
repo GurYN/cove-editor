@@ -438,3 +438,72 @@ func TestHorizontalWheel(t *testing.T) {
 		t.Fatalf("xoff=%d after cursor move to col 1: cursor off screen", m.xoff)
 	}
 }
+
+func TestInsertNewlineAutoIndent(t *testing.T) {
+	m := New(buffer.New([]byte("\tfoo\n")))
+	m.Width, m.Height = 80, 10
+	m.Go(0, 4) // end of "\tfoo"
+	m.InsertNewline()
+	if got := string(m.Buf.Bytes()); got != "\tfoo\n\t\n" {
+		t.Fatalf("carry indent: %q", got)
+	}
+	if line, col := m.Cursor(); line != 1 || col != 1 {
+		t.Fatalf("cursor = %d:%d, want 1:1", line, col)
+	}
+
+	m = New(buffer.New([]byte("\tif x {\n")))
+	m.Width, m.Height = 80, 10
+	m.Go(0, 7) // after "{"
+	m.InsertNewline()
+	if got := string(m.Buf.Bytes()); got != "\tif x {\n\t\t\n" {
+		t.Fatalf("extra indent after {: %q", got)
+	}
+
+	// Enter at column 0 must not steal the line's indent.
+	m = New(buffer.New([]byte("\tfoo\n")))
+	m.Width, m.Height = 80, 10
+	m.Go(0, 0)
+	m.InsertNewline()
+	if got := string(m.Buf.Bytes()); got != "\n\tfoo\n" {
+		t.Fatalf("enter at col 0: %q", got)
+	}
+}
+
+func TestInsertCloserAutoDedent(t *testing.T) {
+	// Typing } on a fresh auto-indented line snaps back one level.
+	m := New(buffer.New([]byte("\tif x {\n")))
+	m.Width, m.Height = 80, 10
+	m.Go(0, 7)
+	m.InsertNewline() // "\t\t" line
+	m.InsertCloser("}")
+	if got := string(m.Buf.Bytes()); got != "\tif x {\n\t}\n" {
+		t.Fatalf("dedent tab: %q", got)
+	}
+
+	// Space indent: removes up to 4 trailing spaces.
+	m = New(buffer.New([]byte("        \n")))
+	m.Width, m.Height = 80, 10
+	m.Go(0, 8)
+	m.InsertCloser("}")
+	if got := string(m.Buf.Line(0)); got != "    }" {
+		t.Fatalf("dedent spaces: %q", got)
+	}
+
+	// After text on the line: plain insert, no dedent.
+	m = New(buffer.New([]byte("\tfoo\n")))
+	m.Width, m.Height = 80, 10
+	m.Go(0, 4)
+	m.InsertCloser("}")
+	if got := string(m.Buf.Line(0)); got != "\tfoo}" {
+		t.Fatalf("no dedent after text: %q", got)
+	}
+
+	// At column 0: nothing to dedent.
+	m = New(buffer.New([]byte("x\n")))
+	m.Width, m.Height = 80, 10
+	m.Go(0, 0)
+	m.InsertCloser("}")
+	if got := string(m.Buf.Line(0)); got != "}x" {
+		t.Fatalf("col 0: %q", got)
+	}
+}
