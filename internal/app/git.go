@@ -1210,7 +1210,8 @@ func (logSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 	var spans []editor.HLSpan
 	forEachLine(src, startOff, endOff, func(lo, hi int, line []byte) {
 		graphEnd := len(line)
-		if m := shaRe.FindIndex(line); m != nil {
+		m := shaRe.FindIndex(line)
+		if m != nil {
 			graphEnd = m[0]
 			spans = append(spans, editor.HLSpan{Start: lo + m[0], End: lo + m[1], Class: editor.ClassFunction})
 			rest := line[m[1]:]
@@ -1222,8 +1223,17 @@ func (logSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 			}
 		}
 		// Box-drawing glyphs are multi-byte: color by visual column, not byte.
+		header := m == nil // sha-less rows are the branch-name header
+		nameLane := -1     // header row: ╭ marks the lane whose name follows
 		for j, col := 0, 0; j < graphEnd; col++ {
 			r, size := utf8.DecodeRune(line[j:])
+			if header && r == '╭' {
+				nameLane = col / 2
+			} else if nameLane >= 0 && r != '─' && r != ' ' {
+				// The branch name: one span in its lane's color.
+				spans = append(spans, editor.HLSpan{Start: lo + j, End: lo + graphEnd, Class: laneClasses[nameLane%len(laneClasses)]})
+				break
+			}
 			if r != ' ' && r != '\n' {
 				spans = append(spans, editor.HLSpan{Start: lo + j, End: lo + j + size, Class: laneClasses[(col/2)%len(laneClasses)]})
 			}

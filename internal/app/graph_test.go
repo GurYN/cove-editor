@@ -22,11 +22,11 @@ func TestRenderGraph(t *testing.T) {
 	lines := strings.Split(out, "\n")
 
 	// Header: pre-seeded lanes — "main" (lane 0) and "feature" (lane 1) —
-	// vertical and bottom-aligned over 7 rows, blank row, 5 commit rows.
-	if len(lines) != 13 {
+	// one horizontal row each, a lane-line separator row, 5 commit rows.
+	if len(lines) != 8 {
 		t.Fatalf("lines = %d\n%s", len(lines), out)
 	}
-	if lines[0] != "  f" || lines[3] != "m t" || lines[6] != "n e" || lines[7] != "" {
+	if lines[0] != "╭─ main" || lines[1] != "│ ╭─ feature" || lines[2] != "│ │" {
 		t.Fatalf("header:\n%s", out)
 	}
 	want := []string{
@@ -37,8 +37,8 @@ func TestRenderGraph(t *testing.T) {
 		"●─╯  aaaa000 root · t, 5h ago",
 	}
 	for i, w := range want {
-		if lines[8+i] != w {
-			t.Fatalf("row %d = %q, want %q", i, lines[8+i], w)
+		if lines[3+i] != w {
+			t.Fatalf("row %d = %q, want %q", i, lines[3+i], w)
 		}
 	}
 }
