@@ -722,6 +722,43 @@ func (m *Model) gitFetchThen(r *repoState, do func(*Model)) tea.Cmd {
 	}
 }
 
+// gitAmendPrompt folds the staged changes into HEAD ("forgot a file") and/or
+// rewords it. The prompt pre-fills HEAD's subject; leaving it untouched keeps
+// a multi-line message intact (--no-edit) instead of truncating it to one line.
+func (m *Model) gitAmendPrompt() tea.Cmd {
+	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		if _, err := git.HeadSummary(r.top); err != nil {
+			m.lastMsg = m.repoMsg(r, "nothing to amend — no commits yet")
+			return nil
+		}
+		full := git.LastCommitMsg(r.top)
+		subject, _, multi := strings.Cut(full, "\n")
+		label := "Amend commit message:"
+		if git.HasUpstream(r.top) && r.snap.Ahead == 0 {
+			label = "HEAD is already pushed — amending will need a force push. " + label
+		}
+		*m = m.prompt(label, subject, func(m *Model, msg string) {
+			if strings.TrimSpace(msg) == "" {
+				return
+			}
+			var out string
+			var err error
+			if msg == subject && multi {
+				out, err = git.AmendNoEdit(r.top)
+			} else {
+				out, err = git.Amend(r.top, msg)
+			}
+			if err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, "amended: "+firstLine(out))
+			}
+			m.refreshGit()
+		})
+		return nil
+	})
+}
+
 func (m *Model) gitBranchPrompt() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
 		*m = m.prompt("New branch name:", "", func(m *Model, name string) {
@@ -952,6 +989,8 @@ func (m *Model) gitOpRepo(r *repoState, op string) tea.Cmd {
 		switch op {
 		case "push":
 			out, err = git.Push(top)
+		case "push force":
+			out, err = git.PushForce(top)
 		case "fetch":
 			out, err = git.Fetch(top)
 		case "stash":
@@ -1000,7 +1039,23 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 			m.lastMsg = m.repoMsg(msg.repo, "stash pop conflict — resolve, then git stash drop")
 		case strings.Contains(e, "MERGE_HEAD exists"):
 			m.lastMsg = m.repoMsg(msg.repo, "merge in progress — commit (c in git panel) to conclude it")
+		case strings.Contains(e, "stale info") || strings.Contains(e, "--force-with-lease"):
+			m.lastMsg = m.repoMsg(msg.repo, "force push refused — remote moved since last fetch: fetch, check what landed, retry")
 		case strings.Contains(e, "[rejected]") || strings.Contains(e, "non-fast-forward") || strings.Contains(e, "fetch first"):
+			// Diverged (ahead AND behind upstream) means the local history was
+			// rewritten — rebase/amend. Pulling would re-merge the old commits;
+			// the right move is a force push, behind a confirm.
+			m.refreshGit()
+			for _, r := range m.git.repos {
+				if r.top == msg.repo.top && r.snap.Ahead > 0 && r.snap.Behind > 0 {
+					return m.prompt("Push rejected — branch diverged (rebased/amended?). Force push with lease? y/n:", "",
+						func(m *Model, text string) {
+							if strings.EqualFold(text, "y") {
+								m.deferred = m.gitOpRepo(r, "push force")
+							}
+						}), nil
+				}
+			}
 			m.lastMsg = m.repoMsg(msg.repo, "push rejected — remote has new commits: pull, resolve, then push")
 		default:
 			m.lastMsg = e
@@ -1020,6 +1075,8 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 			s = "published branch " + branch + " to origin"
 		case msg.op == "push":
 			s = "pushed " + branch
+		case msg.op == "push force":
+			s = "force-pushed " + branch + " (with lease)"
 		case msg.op == "rebase":
 			s = "rebased " + branch + " onto " + msg.ref
 		case msg.op == "stash":

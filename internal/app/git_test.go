@@ -600,3 +600,83 @@ func TestGitStashSelectedFile(t *testing.T) {
 		return string(data) == "one\ntwo\n"
 	}, 5*time.Second)
 }
+
+// git.amend folds staged changes into HEAD; keeping the pre-filled subject
+// preserves a multi-line message via --no-edit.
+func TestGitAmend(t *testing.T) {
+	m, top := gitSetup(t)
+	g := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	gOut := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	g("commit", "-qam", "subject\n\nbody line") // commit the dirty a.txt, multi-line msg
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644)
+	g("add", "-A")
+	m.refreshGit()
+
+	m.reg.ByID("git.amend").Do(&m) // prompt pre-filled with "subject"
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := gOut("rev-list", "--count", "HEAD"); got != "2" {
+		t.Fatalf("commit count = %s, want 2 (amend must not add one)", got)
+	}
+	if got := gOut("log", "-1", "--format=%B"); !strings.Contains(got, "body line") {
+		t.Fatalf("unchanged subject should keep the body, got %q", got)
+	}
+	// Reword: type a new message over the pre-fill.
+	m.reg.ByID("git.amend").Do(&m)
+	m.promptText = "new subject"
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := gOut("log", "-1", "--format=%s"); got != "new subject" {
+		t.Fatalf("reword failed: %q", got)
+	}
+}
+
+// A push rejected because local history was rewritten (diverged from
+// upstream) offers a --force-with-lease push instead of the "pull first"
+// advice, which would re-merge the old commits.
+func TestGitPushForceAfterDivergence(t *testing.T) {
+	m, top := gitSetup(t)
+	g := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	bare := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("bare init: %v: %s", err, out)
+	}
+	g("remote", "add", "origin", bare)
+	g("commit", "-qam", "second")
+	g("push", "-qu", "origin", "main")
+	g("commit", "-q", "--amend", "-m", "second, rewritten") // diverge from origin/main
+	m.refreshGit()
+
+	cmd := m.reg.ByID("git.push").Do(&m)
+	m = pump(t, m, cmd, func(m Model) bool { return m.mode == modePrompt }, 5*time.Second).(Model)
+	if !strings.Contains(m.promptLabel, "Force push") {
+		t.Fatalf("expected force-push offer, got %q", m.promptLabel)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = pump(t, m2, cmd, func(m Model) bool { return strings.Contains(m.lastMsg, "force-pushed main") }, 5*time.Second).(Model)
+	if m.git.repos[0].snap.Ahead != 0 || m.git.repos[0].snap.Behind != 0 {
+		t.Fatalf("still diverged after force push: +%d -%d", m.git.repos[0].snap.Ahead, m.git.repos[0].snap.Behind)
+	}
+}

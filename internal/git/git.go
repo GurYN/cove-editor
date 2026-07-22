@@ -278,6 +278,24 @@ func Show(top, path string) ([]byte, error) {
 
 func Commit(top, msg string) (string, error) { return run(top, "commit", "-m", msg) }
 
+// Amend rewrites HEAD with whatever is staged and a new message.
+func Amend(top, msg string) (string, error) { return run(top, "commit", "--amend", "-m", msg) }
+
+// AmendNoEdit rewrites HEAD with the staged changes, keeping its message —
+// the "forgot a file" amend, and the only way a multi-line message survives.
+func AmendNoEdit(top string) (string, error) {
+	return run(top, "commit", "--amend", "--no-edit")
+}
+
+// LastCommitMsg returns HEAD's full commit message ("" when no commits).
+func LastCommitMsg(top string) string {
+	out, err := run(top, "log", "-1", "--format=%B")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
 // UndoCommit un-commits HEAD (reset --soft HEAD~1): the commit's changes
 // return to the index, the working tree is untouched. Fails on the initial
 // commit (no parent to reset to).
@@ -359,13 +377,26 @@ func HeadSummary(top string) (string, error) {
 	return run(top, "log", "-1", "--format=%h %s")
 }
 
+// HasUpstream reports whether the current branch tracks a remote branch.
+func HasUpstream(top string) bool {
+	_, err := run(top, "rev-parse", "--abbrev-ref", "@{upstream}")
+	return err == nil
+}
+
 // Push pushes the current branch; a branch with no upstream is published
 // (push -u origin HEAD) instead of failing.
 func Push(top string) (string, error) {
-	if _, err := run(top, "rev-parse", "--abbrev-ref", "@{upstream}"); err != nil {
+	if !HasUpstream(top) {
 		return runLoose(top, "push", "-u", "origin", "HEAD")
 	}
 	return runLoose(top, "push")
+}
+
+// PushForce force-pushes with lease: it refuses if the remote moved past
+// what we last fetched. The safe force after rebasing or amending commits
+// that were already pushed.
+func PushForce(top string) (string, error) {
+	return runLoose(top, "push", "--force-with-lease")
 }
 
 // Pull merges by default: git ≥2.27 refuses to pull divergent branches
