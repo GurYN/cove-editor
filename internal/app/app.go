@@ -497,8 +497,11 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.updatePrompt(msg)
 	}
 	if t := m.activeTerm(); m.focus == paneTerminal && t != nil {
-		// Only scrollback, the panel toggle, focus cycling, and quit stay with
-		// Cove (respecting rebinds); every other key goes to the shell.
+		// Only scrollback, the panel toggles (terminal/sidebar/git), focus
+		// cycling, the palette, and quit stay with Cove (respecting rebinds);
+		// every other key goes to the shell. The palette must escape — it's
+		// the discoverability front door — even though ctrl+p costs the
+		// shell its previous-history key.
 		switch msg.String() {
 		case "shift+pgup":
 			t.Scroll(+m.termRows())
@@ -509,7 +512,9 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		if act := m.reg.Lookup(action.Global, msg.String()); act != nil &&
 			(act.ID == "term.toggle" || act.ID == "app.quit" ||
-				act.ID == "focus.next" || act.ID == "focus.prev") {
+				act.ID == "focus.next" || act.ID == "focus.prev" ||
+				act.ID == "app.palette" || act.ID == "app.palette.f1" ||
+				act.ID == "sidebar.toggle" || act.ID == "git.toggle") {
 			cmd := act.Do(&m)
 			m.layout()
 			return m, cmd

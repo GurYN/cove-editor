@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestConfiguredAppAction proves [apps.*] config becomes a registry action
@@ -100,5 +102,45 @@ func TestConfigWarningSurvivesRestore(t *testing.T) {
 	m.layout()
 	if !strings.Contains(m.View(), "already bound") {
 		t.Fatal("config toast not rendered in View")
+	}
+}
+
+// TestPaletteFromTerminal: ctrl+p must open the palette even when the
+// terminal panel has focus (discoverability beats shell history).
+func TestPaletteFromTerminal(t *testing.T) {
+	t.Setenv("COVE_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	m := New(t.TempDir(), nil)
+	if cmd := m.newTerm(); cmd == nil {
+		t.Skip("no PTY available")
+	}
+	defer m.terms[0].Close()
+	if m.focus != paneTerminal {
+		t.Fatal("terminal not focused after spawn")
+	}
+	m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if m.ovKind != overlayPalette {
+		t.Fatalf("palette not open, ovKind = %d", m.ovKind)
+	}
+}
+
+// TestSidebarFromTerminal: ctrl+b / ctrl+g must reach Cove's panel toggles
+// from a focused terminal, not the shell.
+func TestSidebarFromTerminal(t *testing.T) {
+	t.Setenv("COVE_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	m := New(t.TempDir(), nil)
+	if cmd := m.newTerm(); cmd == nil {
+		t.Skip("no PTY available")
+	}
+	defer m.terms[0].Close()
+
+	m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyCtrlB})
+	if m.focus != paneSidebar {
+		t.Fatalf("ctrl+b: focus = %v, want sidebar", m.focus)
+	}
+
+	m.focus = paneTerminal
+	m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if m.focus != paneGit {
+		t.Fatalf("ctrl+g: focus = %v, want git panel", m.focus)
 	}
 }
