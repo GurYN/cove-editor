@@ -479,6 +479,25 @@ func (m *Model) gitRestorePrompt() {
 	})
 }
 
+// gitStashFile shelves just the selected file's changes (git stash push --
+// <path>); the whole-tree variant is git.stash in the palette. Sync exec
+// like restore — a one-file stash is local and instant.
+func (m *Model) gitStashFile() tea.Cmd {
+	r, ok := m.git.selected()
+	if !ok {
+		return nil
+	}
+	if _, err := git.StashFile(r.repo.top, r.fs.Path); err != nil {
+		m.lastMsg = err.Error()
+		return nil
+	}
+	m.lastMsg = m.repoMsg(r.repo, "stashed "+r.fs.Path+" — pop restores it")
+	m.reloadDoc(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
+	m.refreshGit()
+	m.side.Refresh() // an untracked file disappears from the tree
+	return m.syncLSP()
+}
+
 // reloadDoc syncs an open tab with the on-disk content after a git restore.
 func (m *Model) reloadDoc(abs string) {
 	d := m.docByPath(abs)
@@ -703,6 +722,43 @@ func (m *Model) gitFetchThen(r *repoState, do func(*Model)) tea.Cmd {
 	}
 }
 
+// gitAmendPrompt folds the staged changes into HEAD ("forgot a file") and/or
+// rewords it. The prompt pre-fills HEAD's subject; leaving it untouched keeps
+// a multi-line message intact (--no-edit) instead of truncating it to one line.
+func (m *Model) gitAmendPrompt() tea.Cmd {
+	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		if _, err := git.HeadSummary(r.top); err != nil {
+			m.lastMsg = m.repoMsg(r, "nothing to amend — no commits yet")
+			return nil
+		}
+		full := git.LastCommitMsg(r.top)
+		subject, _, multi := strings.Cut(full, "\n")
+		label := "Amend commit message:"
+		if git.HasUpstream(r.top) && r.snap.Ahead == 0 {
+			label = "HEAD is already pushed — amending will need a force push. " + label
+		}
+		*m = m.prompt(label, subject, func(m *Model, msg string) {
+			if strings.TrimSpace(msg) == "" {
+				return
+			}
+			var out string
+			var err error
+			if msg == subject && multi {
+				out, err = git.AmendNoEdit(r.top)
+			} else {
+				out, err = git.Amend(r.top, msg)
+			}
+			if err != nil {
+				m.lastMsg = err.Error()
+			} else {
+				m.lastMsg = m.repoMsg(r, "amended: "+firstLine(out))
+			}
+			m.refreshGit()
+		})
+		return nil
+	})
+}
+
 func (m *Model) gitBranchPrompt() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
 		*m = m.prompt("New branch name:", "", func(m *Model, name string) {
@@ -770,6 +826,45 @@ func (m *Model) openBranchPicker(r *repoState) {
 	title := "Branch:"
 	if m.git.multi() {
 		title = "Branch (" + r.name + "):"
+	}
+	m.ov = overlay.New(title, items, m.width)
+}
+
+// openSyncPicker lists rebase targets for the current branch — every local
+// and remote branch except the one we're on. Enter rebases (see overlaySync
+// in the selection switch); the fetch that precedes this picker is the same
+// gitFetchThen used by the branch switcher, so remote refs are fresh.
+func (m *Model) openSyncPicker(r *repoState) {
+	branches, err := git.Branches(r.top)
+	if err != nil {
+		m.lastMsg = err.Error()
+		return
+	}
+	var targets []git.Branch
+	for _, b := range branches {
+		if !b.Remote && b.Name == r.snap.Branch {
+			continue
+		}
+		targets = append(targets, b)
+	}
+	if len(targets) == 0 {
+		m.lastMsg = m.repoMsg(r, "no other branch to sync with")
+		return
+	}
+	m.ovKind = overlaySync
+	m.ovBranches = targets
+	m.ovRepo = r
+	items := make([]overlay.Item, len(targets))
+	for i, b := range targets {
+		detail := ""
+		if b.Remote {
+			detail = "remote"
+		}
+		items[i] = overlay.Item{Label: b.Name, Detail: detail}
+	}
+	title := "Rebase " + r.snap.Branch + " onto:"
+	if m.git.multi() {
+		title = "Rebase " + r.snap.Branch + " onto (" + r.name + "):"
 	}
 	m.ov = overlay.New(title, items, m.width)
 }
@@ -873,6 +968,7 @@ func (m *Model) gitOpenCommitAtCursor(d *doc) {
 type gitOpMsg struct {
 	repo    *repoState
 	op, out string
+	ref     string // rebase only: the branch we rebased onto
 	err     error
 }
 
@@ -893,12 +989,32 @@ func (m *Model) gitOpRepo(r *repoState, op string) tea.Cmd {
 		switch op {
 		case "push":
 			out, err = git.Push(top)
+		case "push force":
+			out, err = git.PushForce(top)
 		case "fetch":
 			out, err = git.Fetch(top)
+		case "stash":
+			out, err = git.Stash(top)
+		case "stash pop":
+			out, err = git.StashPop(top)
 		default:
 			out, err = git.Pull(top)
 		}
 		return gitOpMsg{repo: r, op: op, out: out, err: err}
+	}
+}
+
+// gitSyncRepo rebases the repo's current branch onto ref (git.sync picker).
+func (m *Model) gitSyncRepo(r *repoState, ref string) tea.Cmd {
+	if m.git.busy != "" {
+		m.lastMsg = "git " + m.git.busy + " already in progress"
+		return nil
+	}
+	m.git.busy = "rebase"
+	top := r.top
+	return func() tea.Msg {
+		out, err := git.Rebase(top, ref)
+		return gitOpMsg{repo: r, op: "rebase", out: out, ref: ref, err: err}
 	}
 }
 
@@ -908,9 +1024,38 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 		// Translate git's two everyday walls into the way out.
 		e := msg.err.Error()
 		switch {
+		case msg.op == "rebase":
+			// A conflicted rebase parks mid-flight; finishing it is a
+			// terminal job (edit, stage, rebase --continue / --abort).
+			if strings.Contains(e, "CONFLICT") || strings.Contains(e, "could not apply") {
+				m.lastMsg = m.repoMsg(msg.repo, "rebase conflict — resolve in terminal, then git rebase --continue (or --abort)")
+			} else {
+				m.lastMsg = e
+			}
+		case msg.op == "stash pop" && strings.Contains(e, "No stash entries"):
+			m.lastMsg = m.repoMsg(msg.repo, "no stash to pop")
+		case msg.op == "stash pop" && strings.Contains(e, "CONFLICT"):
+			// Pop keeps the stash entry when it conflicts.
+			m.lastMsg = m.repoMsg(msg.repo, "stash pop conflict — resolve, then git stash drop")
 		case strings.Contains(e, "MERGE_HEAD exists"):
 			m.lastMsg = m.repoMsg(msg.repo, "merge in progress — commit (c in git panel) to conclude it")
+		case strings.Contains(e, "stale info") || strings.Contains(e, "--force-with-lease"):
+			m.lastMsg = m.repoMsg(msg.repo, "force push refused — remote moved since last fetch: fetch, check what landed, retry")
 		case strings.Contains(e, "[rejected]") || strings.Contains(e, "non-fast-forward") || strings.Contains(e, "fetch first"):
+			// Diverged (ahead AND behind upstream) means the local history was
+			// rewritten — rebase/amend. Pulling would re-merge the old commits;
+			// the right move is a force push, behind a confirm.
+			m.refreshGit()
+			for _, r := range m.git.repos {
+				if r.top == msg.repo.top && r.snap.Ahead > 0 && r.snap.Behind > 0 {
+					return m.prompt("Push rejected — branch diverged (rebased/amended?). Force push with lease? y/n:", "",
+						func(m *Model, text string) {
+							if strings.EqualFold(text, "y") {
+								m.deferred = m.gitOpRepo(r, "push force")
+							}
+						}), nil
+				}
+			}
 			m.lastMsg = m.repoMsg(msg.repo, "push rejected — remote has new commits: pull, resolve, then push")
 		default:
 			m.lastMsg = e
@@ -930,17 +1075,33 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 			s = "published branch " + branch + " to origin"
 		case msg.op == "push":
 			s = "pushed " + branch
+		case msg.op == "push force":
+			s = "force-pushed " + branch + " (with lease)"
+		case msg.op == "rebase":
+			s = "rebased " + branch + " onto " + msg.ref
+		case msg.op == "stash":
+			if strings.Contains(low, "no local changes") {
+				s = "nothing to stash"
+			} else {
+				s = "stashed changes"
+			}
+		case msg.op == "stash pop":
+			s = "stash popped"
 		default:
 			s = "pulled " + branch
 		}
 		m.lastMsg = m.repoMsg(msg.repo, s)
 	}
 	m.refreshGit()
-	if msg.op == "pull" {
-		m.side.Refresh() // pull may create/delete files
+	if msg.op != "push" && msg.op != "fetch" {
+		m.side.Refresh() // pull/rebase/stash rewrite working-tree files
 		m.syncWatched()
 		// A conflicted merge exits non-zero with unhelpful first-line chatter;
 		// the post-refresh status is the reliable signal. Point at the fix.
+		// Pull only: rebase/stash-pop conflicts already set a specific message.
+		if msg.op != "pull" {
+			return m, nil
+		}
 		for _, r := range m.git.repos {
 			if r.top != msg.repo.top {
 				continue

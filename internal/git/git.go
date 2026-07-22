@@ -278,6 +278,24 @@ func Show(top, path string) ([]byte, error) {
 
 func Commit(top, msg string) (string, error) { return run(top, "commit", "-m", msg) }
 
+// Amend rewrites HEAD with whatever is staged and a new message.
+func Amend(top, msg string) (string, error) { return run(top, "commit", "--amend", "-m", msg) }
+
+// AmendNoEdit rewrites HEAD with the staged changes, keeping its message —
+// the "forgot a file" amend, and the only way a multi-line message survives.
+func AmendNoEdit(top string) (string, error) {
+	return run(top, "commit", "--amend", "--no-edit")
+}
+
+// LastCommitMsg returns HEAD's full commit message ("" when no commits).
+func LastCommitMsg(top string) string {
+	out, err := run(top, "log", "-1", "--format=%B")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
 // UndoCommit un-commits HEAD (reset --soft HEAD~1): the commit's changes
 // return to the index, the working tree is untouched. Fails on the initial
 // commit (no parent to reset to).
@@ -359,13 +377,26 @@ func HeadSummary(top string) (string, error) {
 	return run(top, "log", "-1", "--format=%h %s")
 }
 
+// HasUpstream reports whether the current branch tracks a remote branch.
+func HasUpstream(top string) bool {
+	_, err := run(top, "rev-parse", "--abbrev-ref", "@{upstream}")
+	return err == nil
+}
+
 // Push pushes the current branch; a branch with no upstream is published
 // (push -u origin HEAD) instead of failing.
 func Push(top string) (string, error) {
-	if _, err := run(top, "rev-parse", "--abbrev-ref", "@{upstream}"); err != nil {
+	if !HasUpstream(top) {
 		return runLoose(top, "push", "-u", "origin", "HEAD")
 	}
 	return runLoose(top, "push")
+}
+
+// PushForce force-pushes with lease: it refuses if the remote moved past
+// what we last fetched. The safe force after rebasing or amending commits
+// that were already pushed.
+func PushForce(top string) (string, error) {
+	return runLoose(top, "push", "--force-with-lease")
 }
 
 // Pull merges by default: git ≥2.27 refuses to pull divergent branches
@@ -383,6 +414,35 @@ func Pull(top string) (string, error) {
 
 // Fetch updates remote-tracking refs so ahead/behind counts are current.
 func Fetch(top string) (string, error) { return runLoose(top, "fetch") }
+
+// Stash shelves all working-tree changes; -u includes untracked files,
+// which is what "stash everything" means to anyone not steeped in git.
+func Stash(top string) (string, error) {
+	return runLoose(top, "stash", "push", "-u")
+}
+
+// StashFile shelves one file's changes ("--" keeps odd names from reading
+// as flags). Per-hunk stashing (stash -p) is interactive-only — terminal job.
+func StashFile(top, path string) (string, error) {
+	return runLoose(top, "stash", "push", "-u", "--", path)
+}
+
+// StashPop restores the most recent stash and drops it on success.
+func StashPop(top string) (string, error) {
+	return runLoose(top, "stash", "pop")
+}
+
+// Rebase replays the current branch onto ref ("main", "origin/main", …).
+// --autostash carries uncommitted work across the rebase — the everyday
+// "sync before I commit" case; on conflict git parks it in a stash and
+// says so in the output.
+func Rebase(top, ref string) (string, error) {
+	// ref is a branch name, never a flag (git rebase has no reliable "--").
+	if strings.HasPrefix(ref, "-") {
+		return "", fmt.Errorf("invalid rebase target %q", ref)
+	}
+	return runLoose(top, "rebase", "--autostash", ref)
+}
 
 // Branch is one pickable ref: a local branch, or a remote-tracking branch
 // ("origin/foo") with no local counterpart.

@@ -19,7 +19,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height. Register your favorite TUI apps (`lazygit`, `redis-tui`, `btop`, …) in the config and they get their own palette entry and optional keybinding, running as a named panel instance — invoking again refocuses the running app instead of starting a second one.
-- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), and per-file discard/restore. Multi-repo folders just work: open a directory containing several checkouts and the panel shows one section per repo, with every action targeting the repo under the cursor (or the active file's). Commit history opens in a fuzzy picker; Enter on any commit opens its full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
+- **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, amend (keeps a multi-line message intact when you only add files), undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically; a push rejected because you rebased or amended offers `--force-with-lease` behind a confirm), stash (everything, or just the selected file — pop brings it back), sync your branch (fetch + rebase onto any branch from a picker, carrying uncommitted work across), and per-file discard/restore. Multi-repo folders just work: open a directory containing several checkouts and the panel shows one section per repo, with every action targeting the repo under the cursor (or the active file's). Commit history opens in a fuzzy picker; Enter on any commit opens its full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **A commit graph you can actually read**: one row per commit, box-drawing lanes colored per branch, and each branch's name written vertically above its own column — with a line running down to its tip, even when that tip sits deep in history. Enter on a row opens the commit's diff.
 - **Branch switching that knows your remote**: the picker (`b`) fetches first and lists remote branches alongside local ones — selecting `origin/foo` checks it out as a local tracking branch. Creating a branch whose name already exists on the remote checks that one out instead of forking an unrelated copy.
 - **Merge conflicts resolved in the editor**: a conflicting pull highlights each `<<<<<<<` block — ours green, theirs blue — and the palette's *Merge: Accept Ours / Theirs / Both* resolves the block under the cursor as an undoable edit. Whole-file `o`/`t` shortcuts live in the panel's Conflicts section, a "Merging" banner tracks the in-progress merge, and `c` concludes it with git's prepared message prefilled.
@@ -143,10 +143,13 @@ Inside the panel (all of this is also in the palette):
 | `Space`   | Stage / unstage the selected file          |
 | `Enter`   | Open the file's diff (read-only tab)       |
 | `c`       | Commit staged files                        |
+| `m`       | Amend last commit (Enter keeps the message; typing rewords) |
 | `z`       | Undo last commit (keeps changes staged, with confirm) |
 | `l`       | Commit history (fuzzy picker; Enter opens the commit's diff) |
 | `g`       | Commit graph (read-only tab; Enter on a line opens that commit's diff) |
 | `b`       | Switch branch (fetches first; remote branches check out as tracking) |
+| `s`       | Sync branch: fetch, then rebase onto a picked branch (uncommitted work rides along via autostash) |
+| `h` / `p` | Stash the selected file / pop the latest stash |
 | `a` / `u` | Stage all / unstage all                    |
 | `o` / `t` | Resolve the selected conflict: keep ours / keep theirs (whole file) |
 | `x`       | Discard the file's changes (with confirm)  |
@@ -154,7 +157,9 @@ Inside the panel (all of this is also in the palette):
 | `r`       | Refresh status                             |
 | `Esc`     | Back to the editor                         |
 
-Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, fetch, and *New Branch…* are in the palette.
+Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, fetch, *New Branch…*, *Stash All Changes*, and *Push — Force With Lease* are in the palette.
+
+**Syncing a branch before the PR.** On a feature branch, `s` fetches and lists every other branch — pick `origin/main` and Cove rebases your branch onto it, autostashing uncommitted work across the rebase. If the branch was already pushed, the next push detects the rewritten history and offers a `--force-with-lease` push (never a blind force: it refuses if the remote gained commits you haven't seen). A conflicted rebase points you to the terminal to resolve and `git rebase --continue`.
 
 With several repos in the opened folder, each renders as its own bold `name · branch` section and every panel action applies to the section under the cursor — the commit prompt names its target (*Commit to sources (main):*), and toasts are prefixed with the repo name. Actions run from the palette follow the active file's repo; for a file outside every repo, a one-shot picker asks. The status bar shows the current repo as `⎇ name:branch`.
 
@@ -194,7 +199,7 @@ Config mistakes don't fail silently: a binding that collides with an existing sh
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & visual graph, push/pull, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace, code actions, a jump list, per-workspace session restore, and user-defined TUI app launchers — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, amend, undo-commit, history & visual graph, push/pull with a safe force-with-lease path, branch sync via rebase, stash, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace, code actions, a jump list, per-workspace session restore, and user-defined TUI app launchers — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
 
 ## Contributing
 

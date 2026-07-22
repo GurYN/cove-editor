@@ -513,3 +513,170 @@ func TestGitMultiRepoPanel(t *testing.T) {
 		t.Fatal("escape left a pending repo action")
 	}
 }
+
+// git.sync rebases the current branch onto the picked one; --autostash
+// carries the dirty a.txt across the rebase.
+func TestGitSyncRebase(t *testing.T) {
+	m, top := gitSetup(t)
+	g := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	// feature forks at init; main gains b.txt; feature keeps the dirty a.txt.
+	g("branch", "feature")
+	os.WriteFile(filepath.Join(top, "b.txt"), []byte("b\n"), 0o644)
+	g("add", "b.txt")
+	g("commit", "-q", "-m", "on main")
+	g("checkout", "-q", "feature")
+	m.refreshGit() // branch moved under the app's feet
+
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}}) // panel: sync picker (fetch first)
+	m = pump(t, m2, cmd, func(m Model) bool { return m.ovKind == overlaySync }, 5*time.Second).(Model)
+	for _, r := range "main" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m2, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = pump(t, m2, cmd, func(m Model) bool {
+		return strings.Contains(m.lastMsg, "rebased feature onto main")
+	}, 5*time.Second).(Model)
+
+	if _, err := os.Stat(filepath.Join(top, "b.txt")); err != nil {
+		t.Fatalf("main's commit missing after rebase: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(top, "a.txt")); string(data) != "one\ntwo\n" {
+		t.Fatalf("autostash lost the dirty edit: %q", data)
+	}
+}
+
+// git.stash shelves the dirty edit (a.txt back to HEAD), git.stashPop
+// restores it; popping an empty stash reports instead of erroring raw.
+func TestGitStashAndPop(t *testing.T) {
+	m, top := gitSetup(t) // a.txt committed as "one\n", dirty as "one\ntwo\n"
+	stashed := func(m Model) bool {
+		data, _ := os.ReadFile(filepath.Join(top, "a.txt"))
+		return string(data) == "one\n"
+	}
+	cmd := m.reg.ByID("git.stash").Do(&m)
+	m = pump(t, m, cmd, stashed, 5*time.Second).(Model)
+	if !strings.Contains(m.lastMsg, "stashed") {
+		t.Fatalf("lastMsg = %q", m.lastMsg)
+	}
+	cmd = m.reg.ByID("git.stashPop").Do(&m)
+	m = pump(t, m, cmd, func(m Model) bool { return !stashed(m) }, 5*time.Second).(Model)
+	if !strings.Contains(m.lastMsg, "stash popped") {
+		t.Fatalf("lastMsg = %q", m.lastMsg)
+	}
+	cmd = m.reg.ByID("git.stashPop").Do(&m)
+	pump(t, m, cmd, func(m Model) bool {
+		return strings.Contains(m.lastMsg, "no stash to pop")
+	}, 5*time.Second)
+}
+
+// git.stashFile shelves only the selected row; other dirty files stay put.
+func TestGitStashSelectedFile(t *testing.T) {
+	m, top := gitSetup(t) // a.txt dirty
+	os.WriteFile(filepath.Join(top, "b.txt"), []byte("b\n"), 0o644)
+	m.refreshGit()
+	for i, r := range m.git.rows { // select the a.txt row
+		if r.header == "" && r.fs.Path == "a.txt" {
+			m.git.sel = i
+			break
+		}
+	}
+	m.reg.ByID("git.stashFile").Do(&m)
+	if data, _ := os.ReadFile(filepath.Join(top, "a.txt")); string(data) != "one\n" {
+		t.Fatalf("a.txt not stashed: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(top, "b.txt")); err != nil {
+		t.Fatalf("b.txt should be untouched: %v", err)
+	}
+	cmd := m.reg.ByID("git.stashPop").Do(&m)
+	pump(t, m, cmd, func(m Model) bool {
+		data, _ := os.ReadFile(filepath.Join(top, "a.txt"))
+		return string(data) == "one\ntwo\n"
+	}, 5*time.Second)
+}
+
+// git.amend folds staged changes into HEAD; keeping the pre-filled subject
+// preserves a multi-line message via --no-edit.
+func TestGitAmend(t *testing.T) {
+	m, top := gitSetup(t)
+	g := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	gOut := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	g("commit", "-qam", "subject\n\nbody line") // commit the dirty a.txt, multi-line msg
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644)
+	g("add", "-A")
+	m.refreshGit()
+
+	m.reg.ByID("git.amend").Do(&m) // prompt pre-filled with "subject"
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := gOut("rev-list", "--count", "HEAD"); got != "2" {
+		t.Fatalf("commit count = %s, want 2 (amend must not add one)", got)
+	}
+	if got := gOut("log", "-1", "--format=%B"); !strings.Contains(got, "body line") {
+		t.Fatalf("unchanged subject should keep the body, got %q", got)
+	}
+	// Reword: type a new message over the pre-fill.
+	m.reg.ByID("git.amend").Do(&m)
+	m.promptText = "new subject"
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := gOut("log", "-1", "--format=%s"); got != "new subject" {
+		t.Fatalf("reword failed: %q", got)
+	}
+}
+
+// A push rejected because local history was rewritten (diverged from
+// upstream) offers a --force-with-lease push instead of the "pull first"
+// advice, which would re-merge the old commits.
+func TestGitPushForceAfterDivergence(t *testing.T) {
+	m, top := gitSetup(t)
+	g := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	bare := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("bare init: %v: %s", err, out)
+	}
+	g("remote", "add", "origin", bare)
+	g("commit", "-qam", "second")
+	g("push", "-qu", "origin", "main")
+	g("commit", "-q", "--amend", "-m", "second, rewritten") // diverge from origin/main
+	m.refreshGit()
+
+	cmd := m.reg.ByID("git.push").Do(&m)
+	m = pump(t, m, cmd, func(m Model) bool { return m.mode == modePrompt }, 5*time.Second).(Model)
+	if !strings.Contains(m.promptLabel, "Force push") {
+		t.Fatalf("expected force-push offer, got %q", m.promptLabel)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = pump(t, m2, cmd, func(m Model) bool { return strings.Contains(m.lastMsg, "force-pushed main") }, 5*time.Second).(Model)
+	if m.git.repos[0].snap.Ahead != 0 || m.git.repos[0].snap.Behind != 0 {
+		t.Fatalf("still diverged after force push: +%d -%d", m.git.repos[0].snap.Ahead, m.git.repos[0].snap.Behind)
+	}
+}
