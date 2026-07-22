@@ -38,15 +38,21 @@ type Term struct {
 	// cosmetic, re-select.
 	selA, selB [2]int // {x, absolute y}
 	selOn      bool
+
+	Label string // panel chip text; "" = numbered shell instance
 }
 
-// New starts $SHELL (fallback /bin/sh) in dir on a cols×rows PTY.
-func New(dir string, cols, rows int) (*Term, error) {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
+// New starts argv (default: $SHELL, fallback /bin/sh) in dir on a
+// cols×rows PTY.
+func New(dir string, argv []string, cols, rows int) (*Term, error) {
+	if len(argv) == 0 {
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		argv = []string{shell}
 	}
-	cmd := exec.Command(shell)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	// COLORTERM tells apps the emulator accepts 24-bit color (vt10x parses
 	// 38;2/48;2 and View re-emits it) — without it chalk/ink apps drop to

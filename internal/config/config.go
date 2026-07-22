@@ -36,6 +36,15 @@ type Config struct {
 	// Colors overrides theme entries with hex or ANSI-256 values:
 	// [colors] keyword = "#c586c0".
 	Colors map[string]string `toml:"colors"`
+
+	// Apps registers favorite TUI apps, launched as terminal-panel
+	// instances from the palette: [apps.redis] command = ["redis-tui"].
+	Apps map[string]App `toml:"apps"`
+}
+
+type App struct {
+	Command []string `toml:"command"`
+	Key     string   `toml:"key"` // optional keybinding
 }
 
 type Server struct {

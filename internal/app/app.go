@@ -170,6 +170,8 @@ type Model struct {
 
 	width, height int
 	lastMsg       string
+	cfgWarns      []string             // startup config problems, shown as a toast until any key
+	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
 	lastCost      time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
@@ -195,7 +197,7 @@ func New(path string, data []byte) Model {
 		m.vim = &vimState{}
 	}
 	if cfgErr != nil {
-		m.lastMsg = "config error: " + cfgErr.Error()
+		m.cfgWarns = append(m.cfgWarns, cfgErr.Error())
 	}
 	if path != "" {
 		if fi, err := os.Stat(path); err == nil && fi.IsDir() {
@@ -215,13 +217,52 @@ func New(path string, data []byte) Model {
 	m.refreshGit() // branch segment in the status bar from the first frame
 	m.git.err = "" // not being a repo is fine until the panel is opened
 	m.reg = newRegistry()
+	// Terminal encoding folds these ctrl-chords into other keys before
+	// bubbletea sees them — a binding on the alias can never fire.
+	deadKey := map[string]string{"ctrl+i": "tab", "ctrl+m": "enter", "ctrl+[": "esc"}
+	warnDead := func(key string) {
+		if k, ok := deadKey[key]; ok {
+			m.cfgWarns = append(m.cfgWarns, key+" arrives as "+k+" in terminals; binding will never fire")
+		}
+	}
+	var bound [][2]string // user-config {id, key}, conflict-checked after all rebinds
+	for name, a := range cfg.Apps {
+		if len(a.Command) == 0 {
+			m.cfgWarns = append(m.cfgWarns, "apps."+name+" has no command")
+			continue
+		}
+		argv := a.Command
+		label := name
+		m.reg.Register(action.Action{ID: "app." + name, Title: "App: " + name,
+			Key: a.Key, When: action.Global,
+			Do: func(app any) tea.Cmd { return app.(*Model).openApp(label, argv) }})
+		warnDead(a.Key)
+		if a.Key != "" {
+			bound = append(bound, [2]string{"app." + name, a.Key})
+		}
+	}
 	for id, key := range cfg.Keys {
 		if !m.reg.Rebind(id, key) {
-			m.lastMsg = "config: unknown action " + id
+			m.cfgWarns = append(m.cfgWarns, "unknown action "+id)
+		} else if key != "" {
+			bound = append(bound, [2]string{id, key})
+		}
+		warnDead(key)
+	}
+	// Checked against the final state so swapping two keys in [keys]
+	// doesn't warn mid-swap.
+	for _, b := range bound {
+		act := m.reg.ByID(b[0])
+		if act == nil || act.Key != b[1] { // a later binding took the key
+			continue
+		}
+		if o := m.reg.Owner(b[0], b[1], act.When); o != "" {
+			m.cfgWarns = append(m.cfgWarns, b[1]+" is already bound to "+o)
 		}
 	}
 	m.lspm = lsp.NewManager(m.side.Root)
 	m.lspStatus = map[string]string{}
+	m.syncWatched() // baseline mtime sweep; later sweeps diff against it
 	if d := m.doc(); d != nil {
 		m.lspm.Open(d.path, d.ed.Buf.Bytes(), d.ed.Rev)
 	}
@@ -266,6 +307,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		// ponytail: no fsnotify watcher; add one if focus-refresh proves too coarse.
 		m.side.Refresh()
 		m.refreshGit()
+		m.syncWatched() // language servers need the same resync (stale-diagnostics fix)
 		return m, nil
 
 	case lspEventMsg:
@@ -355,6 +397,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastMsg = ""
+		m.cfgWarns = nil // any key dismisses the config toast
 		m.hoverText = "" // any key dismisses the hover card
 		// The terminal never delivers a lone Esc: bubbletea's parser buffers
 		// the ESC byte until the next key arrives and fuses them into an
@@ -457,8 +500,11 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.updatePrompt(msg)
 	}
 	if t := m.activeTerm(); m.focus == paneTerminal && t != nil {
-		// Only scrollback, the panel toggle, focus cycling, and quit stay with
-		// Cove (respecting rebinds); every other key goes to the shell.
+		// Only scrollback, the panel toggles (terminal/sidebar/git), focus
+		// cycling, the palette, and quit stay with Cove (respecting rebinds);
+		// every other key goes to the shell. The palette must escape — it's
+		// the discoverability front door — even though ctrl+p costs the
+		// shell its previous-history key.
 		switch msg.String() {
 		case "shift+pgup":
 			t.Scroll(+m.termRows())
@@ -469,7 +515,9 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		if act := m.reg.Lookup(action.Global, msg.String()); act != nil &&
 			(act.ID == "term.toggle" || act.ID == "app.quit" ||
-				act.ID == "focus.next" || act.ID == "focus.prev") {
+				act.ID == "focus.next" || act.ID == "focus.prev" ||
+				act.ID == "app.palette" || act.ID == "app.palette.f1" ||
+				act.ID == "sidebar.toggle" || act.ID == "git.toggle") {
 			cmd := act.Do(&m)
 			m.layout()
 			return m, cmd
@@ -612,6 +660,7 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files
+		m.syncWatched()
 	case overlayHistory:
 		c := m.ovCommits[chosen]
 		text, err := git.ShowCommit(m.ovRepo.top, c.SHA)
@@ -1286,6 +1335,12 @@ func (m Model) View() string {
 				middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 			}
 		}
+	}
+	if len(m.cfgWarns) > 0 { // config toast tops everything: it explains why a key is dead
+		toast := m.renderCfgToast()
+		h := lipgloss.Height(toast)
+		w := lipgloss.Width(toast)
+		middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 	}
 	return m.renderTabBar() + "\n" + middle + "\n" + m.bottomBar()
 }

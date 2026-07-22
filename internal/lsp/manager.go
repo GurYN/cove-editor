@@ -119,6 +119,19 @@ func NewManager(root string) *Manager {
 
 func (m *Manager) Events() <-chan Event { return m.events }
 
+// NotifyWatched forwards externally-changed files to every running server;
+// each ignores paths it doesn't care about.
+func (m *Manager) NotifyWatched(events []FileEvent) {
+	if len(events) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.clients {
+		c.DidChangeWatchedFiles(events)
+	}
+}
+
 // LangFor returns the language for a path, "" if unsupported.
 func LangFor(path string) string {
 	return extLang[strings.ToLower(filepath.Ext(path))]

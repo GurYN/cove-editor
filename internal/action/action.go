@@ -85,6 +85,18 @@ func (r *Registry) Rebind(id, key string) bool {
 	return true
 }
 
+// Owner returns the ID of a different action bound to key in a context
+// that collides with when (same context, or Global on either side — Lookup
+// falls back to Global, so those shadow each other). "" means no conflict.
+func (r *Registry) Owner(id, key string, when Context) string {
+	for _, a := range r.list {
+		if a.ID != id && a.Key == key && (a.When == when || a.When == Global || when == Global) {
+			return a.ID
+		}
+	}
+	return ""
+}
+
 // ByID returns the action with the given ID, or nil.
 func (r *Registry) ByID(id string) *Action {
 	if i, ok := r.byID[id]; ok {

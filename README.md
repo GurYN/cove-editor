@@ -18,7 +18,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
-- **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height.
+- **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height. Register your favorite TUI apps (`lazygit`, `redis-tui`, `btop`, …) in the config and they get their own palette entry and optional keybinding, running as a named panel instance — invoking again refocuses the running app instead of starting a second one.
 - **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically), and per-file discard/restore. Multi-repo folders just work: open a directory containing several checkouts and the panel shows one section per repo, with every action targeting the repo under the cursor (or the active file's). Commit history opens in a fuzzy picker; Enter on any commit opens its full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **A commit graph you can actually read**: one row per commit, box-drawing lanes colored per branch, and each branch's name written vertically above its own column — with a line running down to its tip, even when that tip sits deep in history. Enter on a row opens the commit's diff.
 - **Branch switching that knows your remote**: the picker (`b`) fetches first and lists remote branches alongside local ones — selecting `origin/foo` checks it out as a local tracking branch. Creating a branch whose name already exists on the remote checks that one out instead of forking an unrelated copy.
@@ -126,7 +126,7 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 
 Every action has a stable ID (shown in the palette footer) and can be rebound in the config file. *File: Save All*, *Edit: Duplicate Line*, *Edit: Delete Line*, and more live in the palette without a default binding.
 
-When the terminal panel has focus, every key goes to your shell except `Ctrl+J` (hide panel), `Ctrl+Q` (quit), and `Shift+PgUp`/`PgDn` (scrollback).
+When the terminal panel has focus, every key goes to your shell except the ones that keep Cove reachable: `Ctrl+J` (hide panel), `Ctrl+P`/`F1` (palette), `Ctrl+B` (sidebar), `Ctrl+G` (git panel), `F6`/`Shift+F6` (cycle panels), `Ctrl+Q` (quit), and `Shift+PgUp`/`PgDn` (scrollback). Rebinding any of these moves the exception with it. (tmux inside Cove: rebind `sidebar.toggle` to free up `Ctrl+B` for the tmux prefix.)
 
 > **Shift+Enter in the terminal panel** (Claude Code and other TUI apps): if your terminal is configured to send a newline (`\n`) for `Shift+Enter`, that byte is indistinguishable from `Ctrl+J` — so it toggles the panel instead of reaching your app. Configure it to send `\x1b\r` (ESC + CR) instead, which TUI apps read as the same "insert newline" chord. In Ghostty: `keybind = shift+enter=text:\x1b\r`. The same applies to any terminal with a custom `Shift+Enter` → `\n` mapping (iTerm2, WezTerm, Alacritty, …).
 
@@ -184,11 +184,17 @@ command = ["gopls"]            # override or add language servers
 
 [colors]
 "git.added" = "#98c379"        # override any theme color, incl. git states
+
+[apps.lazygit]                 # favorite TUI apps: palette entry "App: lazygit",
+command = ["lazygit"]          # runs as a named terminal-panel instance
+key = "ctrl+alt+g"             # optional
 ```
+
+Config mistakes don't fail silently: a binding that collides with an existing shortcut, a key terminals can't deliver (`ctrl+i` arrives as Tab), or an unknown action ID shows up in a toast at startup.
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & visual graph, push/pull, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace, code actions, a jump list, and per-workspace session restore — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, undo-commit, history & visual graph, push/pull, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace, code actions, a jump list, per-workspace session restore, and user-defined TUI app launchers — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
 
 ## Contributing
 

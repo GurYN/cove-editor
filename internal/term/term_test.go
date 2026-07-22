@@ -27,7 +27,7 @@ func hasOutputLine(screen, want string) bool {
 
 // TestShellRoundTrip proves the pipeline: keys → PTY → shell → emulator → View.
 func TestShellRoundTrip(t *testing.T) {
-	tm, err := New(t.TempDir(), 40, 6)
+	tm, err := New(t.TempDir(), nil, 40, 6)
 	if err != nil {
 		t.Fatal(err)
 	}
