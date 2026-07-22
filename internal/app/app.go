@@ -170,7 +170,8 @@ type Model struct {
 
 	width, height int
 	lastMsg       string
-	cfgWarns      []string // startup config problems, shown as a toast until any key
+	cfgWarns      []string             // startup config problems, shown as a toast until any key
+	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
 	lastCost      time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
@@ -261,6 +262,7 @@ func New(path string, data []byte) Model {
 	}
 	m.lspm = lsp.NewManager(m.side.Root)
 	m.lspStatus = map[string]string{}
+	m.syncWatched() // baseline mtime sweep; later sweeps diff against it
 	if d := m.doc(); d != nil {
 		m.lspm.Open(d.path, d.ed.Buf.Bytes(), d.ed.Rev)
 	}
@@ -305,6 +307,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		// ponytail: no fsnotify watcher; add one if focus-refresh proves too coarse.
 		m.side.Refresh()
 		m.refreshGit()
+		m.syncWatched() // language servers need the same resync (stale-diagnostics fix)
 		return m, nil
 
 	case lspEventMsg:
@@ -657,6 +660,7 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files
+		m.syncWatched()
 	case overlayHistory:
 		c := m.ovCommits[chosen]
 		text, err := git.ShowCommit(m.ovRepo.top, c.SHA)

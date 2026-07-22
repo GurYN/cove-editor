@@ -105,8 +105,11 @@ func (c *Client) start() {
 			},
 			"workspace": map[string]any{
 				// Ask for plain Changes maps, not documentChanges.
-				"workspaceEdit":  map[string]any{"documentChanges": false},
-				"applyEdit":      true,
+				"workspaceEdit": map[string]any{"documentChanges": false},
+				"applyEdit":     true,
+				// No dynamic registration: Cove sends didChangeWatchedFiles
+				// on its own schedule (focus-regain mtime sweep).
+				"didChangeWatchedFiles": map[string]any{"dynamicRegistration": false},
 				"executeCommand": map[string]any{},
 				"symbol":         map[string]any{},
 			},
@@ -327,6 +330,24 @@ func (c *Client) DidChange(uri string, version int, fullText string) {
 				"contentChanges": []map[string]any{{"text": fullText}}, // full sync
 			})
 			c.maybePull(uri)
+		}
+	})
+}
+
+// FileEvent is one workspace/didChangeWatchedFiles change:
+// 1 created, 2 changed, 3 deleted.
+type FileEvent struct {
+	URI  string `json:"uri"`
+	Type int    `json:"type"`
+}
+
+// DidChangeWatchedFiles reports files changed outside the editor. Servers
+// key their disk cache off this — without it they never re-read a closed
+// file (Cove registers no fs watcher, so the server is owed these events).
+func (c *Client) DidChangeWatchedFiles(events []FileEvent) {
+	c.notifyOrQueue(func() {
+		if conn, err := c.readyConn(); err == nil {
+			conn.Notify("workspace/didChangeWatchedFiles", map[string]any{"changes": events})
 		}
 	})
 }

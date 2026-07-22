@@ -729,6 +729,7 @@ func (m *Model) gitCreateBranch(r *repoState, name string) {
 			}
 			m.refreshGit()
 			m.side.Refresh() // checkout swaps working-tree files
+			m.syncWatched()
 			return
 		}
 	}
@@ -937,6 +938,7 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 	m.refreshGit()
 	if msg.op == "pull" {
 		m.side.Refresh() // pull may create/delete files
+		m.syncWatched()
 		// A conflicted merge exits non-zero with unhelpful first-line chatter;
 		// the post-refresh status is the reliable signal. Point at the fix.
 		for _, r := range m.git.repos {
