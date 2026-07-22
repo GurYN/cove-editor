@@ -92,6 +92,7 @@ const (
 	overlayHistory
 	overlayRepos   // one-shot repo picker for ambiguous multi-repo git actions
 	overlayActions // LSP code actions at the cursor
+	overlaySync    // branch picker variant: rebase current branch onto choice
 )
 
 // problemRef is one row of the Problems list: where Enter should land.
@@ -661,6 +662,8 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files
 		m.syncWatched()
+	case overlaySync:
+		return m, m.gitSyncRepo(m.ovRepo, m.ovBranches[chosen].Name)
 	case overlayHistory:
 		c := m.ovCommits[chosen]
 		text, err := git.ShowCommit(m.ovRepo.top, c.SHA)

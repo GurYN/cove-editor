@@ -223,6 +223,14 @@ func newRegistry() *action.Registry {
 			return m.gitFetchThen(r, func(m *Model) { m.openBranchPicker(r) })
 		})
 	})
+	reg("git.sync", "Git: Sync Branch — Rebase Onto…", "s", action.Git, func(m *Model) tea.Cmd {
+		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+			return m.gitFetchThen(r, func(m *Model) { m.openSyncPicker(r) })
+		})
+	})
+	reg("git.stash", "Git: Stash All Changes", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("stash") })
+	reg("git.stashFile", "Git: Stash Selected File", "h", action.Git, func(m *Model) tea.Cmd { return m.gitStashFile() })
+	reg("git.stashPop", "Git: Stash Pop (Restore)", "", action.Global, func(m *Model) tea.Cmd { return m.gitOp("stash pop") })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { return m.gitBranchPrompt() })
 	reg("git.restore", "Git: Discard File Changes (Restore)", "x", action.Git, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
 	reg("git.resolveOurs", "Git: Resolve Conflict — Keep Ours (Whole File)", "o", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(false); return nil })

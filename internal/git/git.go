@@ -384,6 +384,35 @@ func Pull(top string) (string, error) {
 // Fetch updates remote-tracking refs so ahead/behind counts are current.
 func Fetch(top string) (string, error) { return runLoose(top, "fetch") }
 
+// Stash shelves all working-tree changes; -u includes untracked files,
+// which is what "stash everything" means to anyone not steeped in git.
+func Stash(top string) (string, error) {
+	return runLoose(top, "stash", "push", "-u")
+}
+
+// StashFile shelves one file's changes ("--" keeps odd names from reading
+// as flags). Per-hunk stashing (stash -p) is interactive-only — terminal job.
+func StashFile(top, path string) (string, error) {
+	return runLoose(top, "stash", "push", "-u", "--", path)
+}
+
+// StashPop restores the most recent stash and drops it on success.
+func StashPop(top string) (string, error) {
+	return runLoose(top, "stash", "pop")
+}
+
+// Rebase replays the current branch onto ref ("main", "origin/main", …).
+// --autostash carries uncommitted work across the rebase — the everyday
+// "sync before I commit" case; on conflict git parks it in a stash and
+// says so in the output.
+func Rebase(top, ref string) (string, error) {
+	// ref is a branch name, never a flag (git rebase has no reliable "--").
+	if strings.HasPrefix(ref, "-") {
+		return "", fmt.Errorf("invalid rebase target %q", ref)
+	}
+	return runLoose(top, "rebase", "--autostash", ref)
+}
+
 // Branch is one pickable ref: a local branch, or a remote-tracking branch
 // ("origin/foo") with no local counterpart.
 type Branch struct {
