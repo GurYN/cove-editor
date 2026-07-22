@@ -258,6 +258,20 @@ func (m Model) renderToast(d editor.DiagSpan) string {
 	return style.Render(title + "\n" + msg)
 }
 
+// renderCfgToast lists startup config problems, same card as renderToast,
+// warning-colored; dismissed by any key.
+func (m Model) renderCfgToast() string {
+	const color = "214"
+	w := min(60, max(24, m.width/3))
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(color)).
+		Padding(0, 1).
+		Width(w)
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render("▲ config")
+	return style.Render(title + "\n• " + strings.Join(m.cfgWarns, "\n• "))
+}
+
 func (m Model) renderHover() string {
 	lines := strings.Split(m.hoverText, "\n")
 	if len(lines) > 12 {

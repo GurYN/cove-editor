@@ -49,17 +49,35 @@ func (m *Model) panelRows() int {
 }
 
 // newTerm starts another shell instance and makes it active.
-func (m *Model) newTerm() tea.Cmd {
-	t, err := term.New(m.side.Root, max(2, m.width-m.editorX()), m.termRows())
+func (m *Model) newTerm() tea.Cmd { return m.spawnTerm(nil, "") }
+
+// spawnTerm starts argv (nil = shell) as a new panel instance.
+func (m *Model) spawnTerm(argv []string, label string) tea.Cmd {
+	t, err := term.New(m.side.Root, argv, max(2, m.width-m.editorX()), m.termRows())
 	if err != nil {
 		m.lastMsg = "terminal: " + err.Error()
 		return nil
 	}
+	t.Label = label
 	m.terms = append(m.terms, t)
 	m.termActive = len(m.terms) - 1
 	m.termOpen = true
 	m.focus = paneTerminal
 	return listenTerm(t)
+}
+
+// openApp focuses the named [apps.*] instance if it's already running,
+// otherwise launches it.
+func (m *Model) openApp(name string, argv []string) tea.Cmd {
+	for i, t := range m.terms {
+		if t.Label == name {
+			m.termActive = i
+			m.termOpen = true
+			m.focus = paneTerminal
+			return nil
+		}
+	}
+	return m.spawnTerm(argv, name)
 }
 
 // toggleTerm shows/hides the panel, starting the first shell on first open.
@@ -109,8 +127,12 @@ func (m Model) handleTermMsg(msg termMsg) (Model, tea.Cmd) {
 // termChips are the clickable instance tabs plus the trailing "+" button.
 func (m Model) termChips() []string {
 	chips := make([]string, 0, len(m.terms)+1)
-	for i := range m.terms {
-		chips = append(chips, fmt.Sprintf(" %d ", i+1))
+	for i, t := range m.terms {
+		if t.Label != "" {
+			chips = append(chips, " "+t.Label+" ")
+		} else {
+			chips = append(chips, fmt.Sprintf(" %d ", i+1))
+		}
 	}
 	return append(chips, " + ")
 }

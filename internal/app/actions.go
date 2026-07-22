@@ -49,6 +49,12 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # command = ["zls"]
 # extensions = [".zig"]
 # language_id = "zig"       # LSP languageId sent to the server (defaults to the key)
+
+# Favorite TUI apps: each gets a palette entry ("App: redis") that runs it
+# in the terminal panel. Re-invoking focuses the running instance.
+# [apps.redis]
+# command = ["redis-tui"]
+# key = "ctrl+alt+r"        # optional; rebindable via [keys] "app.redis"
 `
 
 // newRegistry declares every user action: ID, palette title, default key,

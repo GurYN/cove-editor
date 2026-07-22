@@ -170,6 +170,7 @@ type Model struct {
 
 	width, height int
 	lastMsg       string
+	cfgWarns      []string // startup config problems, shown as a toast until any key
 	lastCost      time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
@@ -195,7 +196,7 @@ func New(path string, data []byte) Model {
 		m.vim = &vimState{}
 	}
 	if cfgErr != nil {
-		m.lastMsg = "config error: " + cfgErr.Error()
+		m.cfgWarns = append(m.cfgWarns, cfgErr.Error())
 	}
 	if path != "" {
 		if fi, err := os.Stat(path); err == nil && fi.IsDir() {
@@ -215,9 +216,47 @@ func New(path string, data []byte) Model {
 	m.refreshGit() // branch segment in the status bar from the first frame
 	m.git.err = "" // not being a repo is fine until the panel is opened
 	m.reg = newRegistry()
+	// Terminal encoding folds these ctrl-chords into other keys before
+	// bubbletea sees them — a binding on the alias can never fire.
+	deadKey := map[string]string{"ctrl+i": "tab", "ctrl+m": "enter", "ctrl+[": "esc"}
+	warnDead := func(key string) {
+		if k, ok := deadKey[key]; ok {
+			m.cfgWarns = append(m.cfgWarns, key+" arrives as "+k+" in terminals; binding will never fire")
+		}
+	}
+	var bound [][2]string // user-config {id, key}, conflict-checked after all rebinds
+	for name, a := range cfg.Apps {
+		if len(a.Command) == 0 {
+			m.cfgWarns = append(m.cfgWarns, "apps."+name+" has no command")
+			continue
+		}
+		argv := a.Command
+		label := name
+		m.reg.Register(action.Action{ID: "app." + name, Title: "App: " + name,
+			Key: a.Key, When: action.Global,
+			Do: func(app any) tea.Cmd { return app.(*Model).openApp(label, argv) }})
+		warnDead(a.Key)
+		if a.Key != "" {
+			bound = append(bound, [2]string{"app." + name, a.Key})
+		}
+	}
 	for id, key := range cfg.Keys {
 		if !m.reg.Rebind(id, key) {
-			m.lastMsg = "config: unknown action " + id
+			m.cfgWarns = append(m.cfgWarns, "unknown action "+id)
+		} else if key != "" {
+			bound = append(bound, [2]string{id, key})
+		}
+		warnDead(key)
+	}
+	// Checked against the final state so swapping two keys in [keys]
+	// doesn't warn mid-swap.
+	for _, b := range bound {
+		act := m.reg.ByID(b[0])
+		if act == nil || act.Key != b[1] { // a later binding took the key
+			continue
+		}
+		if o := m.reg.Owner(b[0], b[1], act.When); o != "" {
+			m.cfgWarns = append(m.cfgWarns, b[1]+" is already bound to "+o)
 		}
 	}
 	m.lspm = lsp.NewManager(m.side.Root)
@@ -355,6 +394,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastMsg = ""
+		m.cfgWarns = nil // any key dismisses the config toast
 		m.hoverText = "" // any key dismisses the hover card
 		// The terminal never delivers a lone Esc: bubbletea's parser buffers
 		// the ESC byte until the next key arrives and fuses them into an
@@ -1286,6 +1326,12 @@ func (m Model) View() string {
 				middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 			}
 		}
+	}
+	if len(m.cfgWarns) > 0 { // config toast tops everything: it explains why a key is dead
+		toast := m.renderCfgToast()
+		h := lipgloss.Height(toast)
+		w := lipgloss.Width(toast)
+		middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 	}
 	return m.renderTabBar() + "\n" + middle + "\n" + m.bottomBar()
 }
