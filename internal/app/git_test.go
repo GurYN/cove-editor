@@ -680,3 +680,82 @@ func TestGitPushForceAfterDivergence(t *testing.T) {
 		t.Fatalf("still diverged after force push: +%d -%d", m.git.repos[0].snap.Ahead, m.git.repos[0].snap.Behind)
 	}
 }
+
+func TestGitPanelTreeView(t *testing.T) {
+	m, top := gitSetup(t)
+	os.MkdirAll(filepath.Join(top, "pkg", "sub"), 0o755)
+	os.WriteFile(filepath.Join(top, "pkg", "b.txt"), []byte("b\n"), 0o644)
+	os.WriteFile(filepath.Join(top, "pkg", "sub", "c.txt"), []byte("c\n"), 0o644)
+
+	m.git.tree = true
+	m.refreshGit()
+	v := frame(m)
+	for _, want := range []string{"▾ pkg/", "  ▾ sub/", "U   b.txt", "U     c.txt", "M a.txt"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("tree view missing %q:\n%s", want, v)
+		}
+	}
+	if strings.Contains(v, "pkg/b.txt") {
+		t.Fatalf("tree view still shows full paths:\n%s", v)
+	}
+	// selection starts on a file row; dir rows never satisfy selected()
+	if r, ok := m.git.selected(); !ok || r.fs.Path == "" {
+		t.Fatalf("selection not on a file row: %+v", r)
+	}
+
+	// Collapse pkg/: move onto the dir row, Enter folds everything under it.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyDown}) // a.txt → pkg/
+	if r := m.git.rows[m.git.sel]; r.dir != "pkg" {
+		t.Fatalf("cursor row = %+v, want dir pkg", r)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = frame(m)
+	if !strings.Contains(v, "▸ pkg/") || strings.Contains(v, "b.txt") || strings.Contains(v, "sub/") {
+		t.Fatalf("collapse failed:\n%s", v)
+	}
+	if r := m.git.rows[m.git.sel]; r.dir != "pkg" {
+		t.Fatalf("cursor left the toggled dir: %+v", r)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter}) // expand again
+	if v = frame(m); !strings.Contains(v, "▾ pkg/") || !strings.Contains(v, "U   b.txt") {
+		t.Fatalf("expand failed:\n%s", v)
+	}
+	// Collapse survives a refresh.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m.refreshGit()
+	if v = frame(m); !strings.Contains(v, "▸ pkg/") || strings.Contains(v, "b.txt") {
+		t.Fatalf("collapse lost on refresh:\n%s", v)
+	}
+
+	// [git] view = "tree" wires through config
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(cfg, []byte("[git]\nview = \"tree\"\n"), 0o644)
+	t.Setenv("COVE_CONFIG", cfg)
+	m2 := New(top, nil)
+	if !m2.git.tree {
+		t.Fatal("config [git] view=tree not applied")
+	}
+}
+
+func TestGitPanelFlatDefault(t *testing.T) {
+	m, _ := gitSetup(t)
+	if m.git.tree {
+		t.Fatal("tree view must be opt-in; default is flat")
+	}
+}
+
+func TestGitPanelOpenFile(t *testing.T) {
+	m, top := gitSetup(t)
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if m.focus != paneEditor {
+		t.Fatalf("focus = %v, want editor", m.focus)
+	}
+	d := m.doc()
+	if d == nil || d.virtual || !strings.HasSuffix(d.path, "a.txt") {
+		t.Fatalf("expected a.txt open as a real tab, got %+v", d)
+	}
+	if !strings.Contains(string(d.ed.Buf.Bytes()), "two") {
+		t.Fatal("opened buffer is not the working copy")
+	}
+	_ = top
+}

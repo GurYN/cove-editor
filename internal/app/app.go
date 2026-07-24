@@ -32,6 +32,8 @@ var (
 	tabActiveStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
 	tabStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(lipgloss.Color("236"))
 	tabBarStyle    = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	// Accent-background block so the scroll arrows read as buttons.
+	tabArrowStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("235")).Background(lipgloss.Color("39"))
 	borderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	flashStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	welcomeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
@@ -53,6 +55,10 @@ func applyChrome(colors map[string]string) {
 	}
 	if accent := colors["function"]; accent != "" {
 		flashStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(accent))
+		tabArrowStyle = lipgloss.NewStyle().Bold(true).Background(lipgloss.Color(accent))
+		if bg != "" {
+			tabArrowStyle = tabArrowStyle.Foreground(lipgloss.Color(bg))
+		}
 	}
 	applyGitChrome(colors)
 	sidebar.ApplyTheme(colors)
@@ -197,6 +203,7 @@ func New(path string, data []byte) Model {
 	if cfg.Keymap == "vim" {
 		m.vim = &vimState{}
 	}
+	m.git.tree = cfg.Git.View == "tree"
 	if cfgErr != nil {
 		m.cfgWarns = append(m.cfgWarns, cfgErr.Error())
 	}
@@ -963,14 +970,51 @@ func (m *Model) forceClose() {
 	}
 }
 
+// tabWindow computes which tabs the bar shows — [first, last] plus the x
+// where first renders — when the strip is wider than the screen. Stateless:
+// derived from m.active each frame, the window ends at the active tab and
+// fills leftward, so switching tabs always scrolls it into view. Hidden
+// sides are marked with ‹ › indicators: a 3-cell padded accent block plus
+// a margin cell against the screen border, 4 cells each — hence the -4/-8.
+func (m Model) tabWindow() (first, last, x int) {
+	n := len(m.docs)
+	if n == 0 {
+		return 0, -1, 0
+	}
+	wid := func(i int) int { return lipgloss.Width(m.tabLabel(m.docs[i])) }
+	total := 0
+	for i := range m.docs {
+		total += wid(i)
+	}
+	if total <= m.width {
+		return 0, n - 1, 0
+	}
+	first = m.active
+	for w := wid(first); first > 0 && w+wid(first-1) <= m.width-8; first-- {
+		w += wid(first - 1)
+	}
+	if first > 0 {
+		x = 4 // the ‹ indicator's cells
+	}
+	last, xx := m.active, x
+	for i := first; i <= m.active; i++ {
+		xx += wid(i)
+	}
+	for last+1 < n && xx+wid(last+1) <= m.width-4 {
+		last++
+		xx += wid(last)
+	}
+	return first, last, x
+}
+
 // tabRanges returns each tab's [start, end) x-range and the x of its close
-// glyph, matching renderTabBar exactly.
+// glyph, matching renderTabBar exactly; tabs scrolled out of view keep the
+// zero range and can never match a click.
 func (m Model) tabRanges() []struct{ start, end, closeX int } {
 	out := make([]struct{ start, end, closeX int }, len(m.docs))
-	x := 0
-	for i, d := range m.docs {
-		label := m.tabLabel(d)
-		w := lipgloss.Width(label)
+	first, last, x := m.tabWindow()
+	for i := first; i >= 0 && i <= last; i++ {
+		w := lipgloss.Width(m.tabLabel(m.docs[i]))
 		out[i] = struct{ start, end, closeX int }{x, x + w, x + w - 2}
 		x += w
 	}
@@ -986,9 +1030,14 @@ func (m Model) tabLabel(d *doc) string {
 }
 
 func (m Model) renderTabBar() string {
+	first, last, _ := m.tabWindow()
 	var sb strings.Builder
-	for i, d := range m.docs {
-		label := m.tabLabel(d)
+	if first > 0 {
+		sb.WriteString(tabBarStyle.Render(" "))
+		sb.WriteString(tabArrowStyle.Render(" ‹ "))
+	}
+	for i := first; i >= 0 && i <= last; i++ {
+		label := m.tabLabel(m.docs[i])
 		if i == m.active {
 			sb.WriteString(tabActiveStyle.Render(label))
 		} else {
@@ -996,8 +1045,15 @@ func (m Model) renderTabBar() string {
 		}
 	}
 	rest := m.width - lipgloss.Width(sb.String())
+	if last < len(m.docs)-1 {
+		rest -= 4
+	}
 	if rest > 0 {
 		sb.WriteString(tabBarStyle.Render(strings.Repeat(" ", rest)))
+	}
+	if last < len(m.docs)-1 {
+		sb.WriteString(tabArrowStyle.Render(" › "))
+		sb.WriteString(tabBarStyle.Render(" "))
 	}
 	return sb.String()
 }
@@ -1155,14 +1211,21 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		for i, r := range m.tabRanges() {
-			if msg.X >= r.start && msg.X < r.end {
+			if msg.X >= r.start && msg.X < r.end && r.end > r.start {
 				if msg.X >= r.closeX {
 					m.active = i
 					return m.closeActive(), nil
 				}
 				m.active = i
 				m.focus = paneEditor
+				return m, nil
 			}
+		}
+		// The ‹ › overflow indicators jump to the nearest hidden tab.
+		if first, last, _ := m.tabWindow(); msg.X <= 3 && first > 0 {
+			m.active = first - 1
+		} else if msg.X >= m.width-4 && last < len(m.docs)-1 {
+			m.active = last + 1
 		}
 	case paneGit:
 		switch {

@@ -26,6 +26,12 @@ type Config struct {
 		Hidden []string `toml:"hidden"`
 	} `toml:"files"`
 
+	// Git tunes the git panel: [git] view = "tree" groups changed files
+	// under their directories; anything else (default) is the flat list.
+	Git struct {
+		View string `toml:"view"`
+	} `toml:"git"`
+
 	// Keys maps action IDs to key overrides: "file.save" = "ctrl+s".
 	// An empty string unbinds (palette-only).
 	Keys map[string]string `toml:"keys"`

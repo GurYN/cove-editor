@@ -142,6 +142,7 @@ Inside the panel (all of this is also in the palette):
 | --------- | ----------------------------------------- |
 | `Space`   | Stage / unstage the selected file          |
 | `Enter`   | Open the file's diff (read-only tab)       |
+| `o`       | Open the file itself (on a conflict row: keep ours) |
 | `c`       | Commit staged files                        |
 | `m`       | Amend last commit (Enter keeps the message; typing rewords) |
 | `z`       | Undo last commit (keeps changes staged, with confirm) |
@@ -180,6 +181,9 @@ confirm_quit = true   # false: Ctrl+Q quits without asking
 
 [files]
 hidden = [".DS_Store", "*.pyc"]   # hide from the file tree (git panel still shows them)
+
+[git]
+view = "flat"                     # or "tree": changed files under collapsible directories (Enter/Space/click folds)
 
 [keys]
 "file.save" = "ctrl+shift+s"   # rebind any action by its ID

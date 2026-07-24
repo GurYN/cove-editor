@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -53,13 +54,16 @@ type repoState struct {
 	err  string
 }
 
-// gitRow is one line of the panel: a repo header, a section header, or a file.
+// gitRow is one line of the panel: a repo header, a section header, a
+// directory (tree view), or a file.
 type gitRow struct {
 	repo     *repoState
-	header   string // header text; "" = file row
+	header   string // header text; "" = file or dir row
 	repoHead bool   // header is a repo title (multi-repo panel only)
 	fs       git.FileStatus
-	staged   bool // row lives in the Staged section
+	staged   bool   // row lives in the Staged section
+	disp     string // tree view: indented display text instead of fs.Path
+	dir      string // tree view: repo-relative dir path; non-"" = dir row
 }
 
 // gitPanel is the git panel's state — the sidebar-slot component showing
@@ -76,6 +80,10 @@ type gitPanel struct {
 	err     string // "not a git repository" when nothing was found
 	busy    string // "push"/"pull" while one is in flight
 	blameOn bool   // inline blame for the cursor line (git.blame toggle)
+	tree    bool   // [git] view = "tree": group files under directory rows
+	// collapsed dirs, keyed repo.top+"\x00"+dir — shared across sections so
+	// folding vendor/ in Changes folds it in Staged too. Stale keys are inert.
+	collapsed map[string]bool
 }
 
 func (p *gitPanel) multi() bool { return len(p.repos) > 1 }
@@ -317,6 +325,76 @@ func (m *Model) gitRepo() bool {
 	return true
 }
 
+func dirKey(top, dir string) string { return top + "\x00" + dir }
+
+// addFiles appends one row per file; tree view interleaves collapsible
+// directory rows (files arrive sorted by path from git.Status, so a plain
+// component walk yields the nesting). A collapsed dir clips the walk at its
+// level: descendants — dirs and files — are simply not emitted.
+func (p *gitPanel) addFiles(r *repoState, files []git.FileStatus, staged bool) {
+	if !p.tree {
+		for _, f := range files {
+			p.rows = append(p.rows, gitRow{repo: r, fs: f, staged: staged})
+		}
+		return
+	}
+	var prev []string
+	for _, f := range files {
+		var dirs []string
+		if d := path.Dir(f.Path); d != "." {
+			dirs = strings.Split(d, "/")
+		}
+		show := true
+		for j := range dirs {
+			if p.collapsed[dirKey(r.top, strings.Join(dirs[:j+1], "/"))] {
+				dirs, show = dirs[:j+1], false
+				break
+			}
+		}
+		i := 0
+		for i < len(dirs) && i < len(prev) && dirs[i] == prev[i] {
+			i++
+		}
+		for ; i < len(dirs); i++ {
+			dp := strings.Join(dirs[:i+1], "/")
+			mark := "▾"
+			if p.collapsed[dirKey(r.top, dp)] {
+				mark = "▸"
+			}
+			p.rows = append(p.rows, gitRow{repo: r, dir: dp,
+				disp: strings.Repeat("  ", i) + mark + " " + dirs[i] + "/"})
+		}
+		if show {
+			p.rows = append(p.rows, gitRow{repo: r, fs: f, staged: staged,
+				disp: strings.Repeat("  ", len(dirs)) + path.Base(f.Path)})
+		}
+		prev = dirs
+	}
+}
+
+// toggleDir folds/unfolds the dir row under the cursor; h is the visible
+// height. Returns false when the cursor is not on a dir row.
+func (p *gitPanel) toggleDir(h int) bool {
+	if p.sel >= len(p.rows) || p.rows[p.sel].dir == "" {
+		return false
+	}
+	r := p.rows[p.sel]
+	if p.collapsed == nil {
+		p.collapsed = map[string]bool{}
+	}
+	k := dirKey(r.repo.top, r.dir)
+	p.collapsed[k] = !p.collapsed[k]
+	p.build(h)
+	for i, row := range p.rows { // keep the cursor on the toggled dir
+		if row.dir == r.dir && row.repo == r.repo {
+			p.sel = i
+			break
+		}
+	}
+	p.scroll(h)
+	return true
+}
+
 // build regenerates the row list from the repo snapshots; h is the visible
 // height. Single repo renders exactly like the classic panel; several repos
 // get a bold name·branch header above each one's sections.
@@ -357,21 +435,15 @@ func (p *gitPanel) build(h int) {
 		}
 		if len(conflicts) > 0 {
 			p.rows = append(p.rows, gitRow{repo: r, header: fmt.Sprintf("Conflicts (%d) — o: ours · t: theirs", len(conflicts))})
-			for _, f := range conflicts {
-				p.rows = append(p.rows, gitRow{repo: r, fs: f})
-			}
+			p.addFiles(r, conflicts, false)
 		}
 		if len(staged) > 0 {
 			p.rows = append(p.rows, gitRow{repo: r, header: fmt.Sprintf("Staged (%d)", len(staged))})
-			for _, f := range staged {
-				p.rows = append(p.rows, gitRow{repo: r, fs: f, staged: true})
-			}
+			p.addFiles(r, staged, true)
 		}
 		if len(changed) > 0 {
 			p.rows = append(p.rows, gitRow{repo: r, header: fmt.Sprintf("Changes (%d)", len(changed))})
-			for _, f := range changed {
-				p.rows = append(p.rows, gitRow{repo: r, fs: f})
-			}
+			p.addFiles(r, changed, false)
 		}
 	}
 	// keep the selection on a file row
@@ -428,8 +500,10 @@ func (p *gitPanel) wheel(delta, h int) {
 	p.top = clampInt(p.top+delta, 0, max(0, len(p.rows)-h))
 }
 
+// selected returns the file row under the cursor; headers and dir rows
+// yield false, so file-targeted actions (stage, diff, restore…) skip them.
 func (p *gitPanel) selected() (gitRow, bool) {
-	if p.sel < len(p.rows) && p.rows[p.sel].header == "" {
+	if p.sel < len(p.rows) && p.rows[p.sel].header == "" && p.rows[p.sel].dir == "" {
 		return p.rows[p.sel], true
 	}
 	return gitRow{}, false
@@ -572,11 +646,25 @@ func (m *Model) gitClick(y, x int) {
 		return
 	}
 	m.git.sel = i
+	if m.git.rows[i].dir != "" {
+		m.git.toggleDir(m.gitHeight())
+		return
+	}
 	if x <= 2 {
 		m.gitStageToggle()
 		return
 	}
 	m.gitOpenDiff(m.git.rows[i])
+}
+
+// gitOpenFile opens the selected file itself (not its diff) in a tab —
+// 'o' in the panel. Deleted files surface loadDoc's error as a toast.
+func (m *Model) gitOpenFile() {
+	r, ok := m.git.selected()
+	if !ok {
+		return
+	}
+	m.openFile(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
 }
 
 // gitOpenDiff shows the file's diff in a read-only tab.
@@ -1293,8 +1381,24 @@ func (m Model) gitPanelView() string {
 			sb.WriteString(gitSectionStyle.Render(sidebar.Pad(" "+r.header, w)))
 			continue
 		}
+		if r.dir != "" {
+			plain := sidebar.Pad(" "+r.disp, w)
+			switch {
+			case i == m.git.sel && m.focus == paneGit:
+				sb.WriteString(gitSelStyle.Render(plain))
+			case i == m.git.sel:
+				sb.WriteString(gitSelStyle.Faint(true).Render(plain))
+			default:
+				sb.WriteString(gitSectionStyle.Render(plain))
+			}
+			continue
+		}
 		letter, st := gitLetter(r)
-		plain := sidebar.Pad(" "+letter+" "+r.fs.Path, w)
+		name := r.fs.Path
+		if r.disp != "" {
+			name = r.disp
+		}
+		plain := sidebar.Pad(" "+letter+" "+name, w)
 		switch {
 		case i == m.git.sel && m.focus == paneGit:
 			sb.WriteString(gitSelStyle.Render(plain))
@@ -1303,7 +1407,7 @@ func (m Model) gitPanelView() string {
 		default:
 			sb.WriteString(" ")
 			sb.WriteString(st.Render(letter))
-			sb.WriteString(sidebar.Pad(" "+r.fs.Path, w-2))
+			sb.WriteString(sidebar.Pad(" "+name, w-2))
 		}
 	}
 	return sb.String()
