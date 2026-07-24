@@ -132,7 +132,7 @@ When the terminal panel has focus, every key goes to your shell except the ones 
 
 `Ctrl+B` and `Ctrl+G` are tri-state: they open and focus their panel, refocus it if it's open but unfocused, and close it when it already has focus.
 
-In the file tree: `n` new file, `N` new folder, `r` rename, `x` delete (with confirm).
+In the file tree: `n` new file, `N` new folder, `r` rename, `x` delete (with confirm). Right-click any row for the same actions as a menu.
 
 ### Git panel
 
@@ -142,6 +142,7 @@ Inside the panel (all of this is also in the palette):
 | --------- | ----------------------------------------- |
 | `Space`   | Stage / unstage the selected file          |
 | `Enter`   | Open the file's diff (read-only tab)       |
+| `o`       | Open the file itself (on a conflict row: keep ours) |
 | `c`       | Commit staged files                        |
 | `m`       | Amend last commit (Enter keeps the message; typing rewords) |
 | `z`       | Undo last commit (keeps changes staged, with confirm) |
@@ -157,7 +158,7 @@ Inside the panel (all of this is also in the palette):
 | `r`       | Refresh status                             |
 | `Esc`     | Back to the editor                         |
 
-Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Push, pull, fetch, *New Branch…*, *Stash All Changes*, and *Push — Force With Lease* are in the palette.
+Mouse: clicking a file's status letter toggles staging; clicking its name opens the diff. Right-click opens a context menu — file actions on a file row (stage, diff, open, stash, discard), resolve on a conflict row, repo actions (commit, push, pull…) anywhere else. Push, pull, fetch, *New Branch…*, *Stash All Changes*, and *Push — Force With Lease* are in the palette.
 
 **Syncing a branch before the PR.** On a feature branch, `s` fetches and lists every other branch — pick `origin/main` and Cove rebases your branch onto it, autostashing uncommitted work across the rebase. If the branch was already pushed, the next push detects the rewritten history and offers a `--force-with-lease` push (never a blind force: it refuses if the remote gained commits you haven't seen). A conflicted rebase points you to the terminal to resolve and `git rebase --continue`.
 
@@ -180,6 +181,9 @@ confirm_quit = true   # false: Ctrl+Q quits without asking
 
 [files]
 hidden = [".DS_Store", "*.pyc"]   # hide from the file tree (git panel still shows them)
+
+[git]
+view = "flat"                     # or "tree": changed files under collapsible directories (Enter/Space/click folds)
 
 [keys]
 "file.save" = "ctrl+shift+s"   # rebind any action by its ID

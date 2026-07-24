@@ -235,7 +235,20 @@ func newRegistry() *action.Registry {
 	reg("git.stashPop", "Git: Stash Pop (Restore)", "p", action.Git, func(m *Model) tea.Cmd { return m.gitOp("stash pop") })
 	reg("git.branchNew", "Git: New Branch…", "", action.Global, func(m *Model) tea.Cmd { return m.gitBranchPrompt() })
 	reg("git.restore", "Git: Discard File Changes (Restore)", "x", action.Git, func(m *Model) tea.Cmd { m.gitRestorePrompt(); return nil })
-	reg("git.resolveOurs", "Git: Resolve Conflict — Keep Ours (Whole File)", "o", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(false); return nil })
+	// 'o' is overloaded on the selected row: conflicted → keep ours (the
+	// Conflicts header advertises it), anything else → open the file.
+	reg("git.openFile", "Git: Open Selected File", "o", action.Git, func(m *Model) tea.Cmd {
+		if m.git.toggleDir(m.gitHeight()) {
+			return nil
+		}
+		if r, ok := m.git.selected(); ok && r.fs.Conflict() {
+			m.gitResolveSide(false)
+		} else {
+			m.gitOpenFile()
+		}
+		return nil
+	})
+	reg("git.resolveOurs", "Git: Resolve Conflict — Keep Ours (Whole File)", "", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(false); return nil })
 	reg("git.resolveTheirs", "Git: Resolve Conflict — Keep Theirs (Whole File)", "t", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(true); return nil })
 	// Per-block resolution in the editor, on the conflict under the cursor.
 	reg("merge.ours", "Merge: Accept Ours (Conflict at Cursor)", "", action.Editor, func(m *Model) tea.Cmd { m.mergeAccept("ours"); return nil })
@@ -278,8 +291,16 @@ func newRegistry() *action.Registry {
 	ghid := func(id, key string, do func(*Model) tea.Cmd) { hid(id, key, action.Git, do) }
 	ghid("git.up", "up", func(m *Model) tea.Cmd { m.git.move(-1, m.gitHeight()); return nil })
 	ghid("git.down", "down", func(m *Model) tea.Cmd { m.git.move(+1, m.gitHeight()); return nil })
-	ghid("git.stage", " ", func(m *Model) tea.Cmd { m.gitStageToggle(); return nil })
+	ghid("git.stage", " ", func(m *Model) tea.Cmd {
+		if !m.git.toggleDir(m.gitHeight()) {
+			m.gitStageToggle()
+		}
+		return nil
+	})
 	ghid("git.open", "enter", func(m *Model) tea.Cmd {
+		if m.git.toggleDir(m.gitHeight()) {
+			return nil
+		}
 		if r, ok := m.git.selected(); ok {
 			m.gitOpenDiff(r)
 		}
