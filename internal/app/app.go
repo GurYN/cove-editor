@@ -605,6 +605,123 @@ func (m Model) openPalette() Model {
 	return m
 }
 
+// ctxItem pairs a right-click menu label with an existing registry action —
+// the menus never define behavior of their own, they only surface bindings.
+type ctxItem struct{ label, id string }
+
+// openCtxMenu shows a small action menu using the palette overlay (Enter
+// runs, the detail column shows the existing shortcut). back is the pane
+// the menu belongs to: the overlay's close switches focus to the editor,
+// so each action restores it first — repo/row targeting depends on it.
+func (m Model) openCtxMenu(title string, back pane, items []ctxItem) Model {
+	var acts []action.Action
+	for _, it := range items {
+		a := m.reg.ByID(it.id)
+		if a == nil {
+			continue
+		}
+		do := a.Do
+		acts = append(acts, action.Action{ID: a.ID, Title: it.label, Key: a.Key,
+			Do: func(app any) tea.Cmd { app.(*Model).focus = back; return do(app) }})
+	}
+	if len(acts) == 0 {
+		return m
+	}
+	m.ovKind = overlayPalette
+	m.ovActions = acts
+	ovItems := make([]overlay.Item, len(acts))
+	for i, a := range acts {
+		key := a.Key
+		if key == " " {
+			key = "space"
+		}
+		ovItems[i] = overlay.Item{Label: a.Title, Detail: key}
+	}
+	m.ov = overlay.New(title, ovItems, m.width)
+	return m
+}
+
+// treeCtxMenu is the file tree's right-click menu at tree line y. Entries
+// follow the row: a file opens, a folder expands and can hold new entries.
+func (m Model) treeCtxMenu(y int) Model {
+	m.focus = paneSidebar
+	title := "File tree:"
+	var isDir, ok bool
+	if m.side.Select(y) {
+		var p string
+		if p, isDir, ok = m.side.Selected(); ok {
+			title = filepath.Base(p) + ":"
+		}
+	}
+	var items []ctxItem
+	switch {
+	case ok && isDir:
+		items = []ctxItem{
+			{"Expand / Collapse", "tree.open"},
+			{"New File…", "tree.newFile"},
+			{"New Folder…", "tree.newDir"},
+			{"Rename…", "tree.rename"},
+			{"Delete…", "tree.delete"},
+		}
+	case ok:
+		items = []ctxItem{
+			{"Open", "tree.open"},
+			{"Rename…", "tree.rename"},
+			{"Delete…", "tree.delete"},
+		}
+	default: // empty area: only creation makes sense (targets the root)
+		items = []ctxItem{
+			{"New File…", "tree.newFile"},
+			{"New Folder…", "tree.newDir"},
+		}
+	}
+	return m.openCtxMenu(title, paneSidebar, items)
+}
+
+// gitCtxMenu is the git panel's right-click menu at panel line y: file rows
+// get file actions, conflict rows the resolve pair, anything else the
+// repo-level menu (dir rows add fold on top).
+func (m Model) gitCtxMenu(y int) Model {
+	m.focus = paneGit
+	i := m.git.top + y
+	onRow := i >= 0 && i < len(m.git.rows) && m.git.rows[i].header == ""
+	if onRow {
+		m.git.sel = i
+	}
+	if r, ok := m.git.selected(); ok && onRow {
+		if r.fs.Conflict() {
+			return m.openCtxMenu(filepath.Base(r.fs.Path)+":", paneGit, []ctxItem{
+				{"Open File", "git.openFile"},
+				{"Keep Ours (Whole File)", "git.resolveOurs"},
+				{"Keep Theirs (Whole File)", "git.resolveTheirs"},
+			})
+		}
+		stage := "Stage"
+		if r.staged {
+			stage = "Unstage"
+		}
+		return m.openCtxMenu(filepath.Base(r.fs.Path)+":", paneGit, []ctxItem{
+			{"Open Diff", "git.open"},
+			{"Open File", "git.openFile"},
+			{stage, "git.stage"},
+			{"Stash File", "git.stashFile"},
+			{"Discard Changes…", "git.restore"},
+		})
+	}
+	items := []ctxItem{
+		{"Commit Staged…", "git.commit"},
+		{"Stage All", "git.stageAll"},
+		{"Unstage All", "git.unstageAll"},
+		{"Push", "git.push"},
+		{"Pull", "git.pull"},
+		{"Fetch", "git.fetch"},
+	}
+	if onRow && m.git.rows[i].dir != "" {
+		items = append([]ctxItem{{"Fold / Unfold", "git.open"}}, items...)
+	}
+	return m.openCtxMenu("Git:", paneGit, items)
+}
+
 func (m Model) openFinder() Model {
 	m.ovKind = overlayFinder
 	m.ovFiles = listFiles(m.side.Root)
@@ -1236,6 +1353,12 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 			m.focus = paneGit
 			m.gitClick(msg.Y-2, msg.X) // -1 tab bar, -1 header
+			// A click is a preview: the diff/file tab it opens must not steal
+			// focus, or the panel's shortcuts (a, c, space…) go dead until a
+			// re-Ctrl+G. Enter keeps its jump-into-the-tab semantics.
+			m.focus = paneGit
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonRight:
+			m = m.gitCtxMenu(msg.Y - 2)
 		}
 	case paneSidebar:
 		switch {
@@ -1248,6 +1371,8 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			if f := m.side.Click(msg.Y - 2); f != "" { // -1 tab bar, -1 header
 				m.openFile(f)
 			}
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonRight:
+			m = m.treeCtxMenu(msg.Y - 2)
 		}
 	case paneEditor:
 		if m.split && msg.Action == tea.MouseActionPress {
@@ -1553,7 +1678,10 @@ func (m Model) bottomBar() string {
 		name = rel(m.side.Root, d.path)
 	}
 	left := fmt.Sprintf(" %s%s%s  %d:%d%s", vimLabel, name, dirty, line+1, col+1, multi)
-	right := fmt.Sprintf("%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), m.lastCost.Round(time.Microsecond))
+	// Fixed-width cost cell (" 0.89ms"…"99.99ms") so the digit count can't
+	// change and shove the segments to its left around on every keystroke.
+	cost := fmt.Sprintf("%5.2fms", float64(m.lastCost.Microseconds())/1000)
+	right := fmt.Sprintf("%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
 	// The message slot: a transient message wins, else the blame annotation.
 	msg := m.lastMsg
 	if msg == "" {

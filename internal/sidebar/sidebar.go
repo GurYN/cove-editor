@@ -242,6 +242,17 @@ func (m *Model) Expand() {
 	}
 }
 
+// Select moves the selection to the row at tree line y without opening or
+// toggling anything (right-click). Returns false when y is past the rows.
+func (m *Model) Select(y int) bool {
+	i := m.top + y
+	if i < 0 || i >= len(m.rows) {
+		return false
+	}
+	m.sel = i
+	return true
+}
+
 // Click selects the row at tree line y (header already subtracted by the
 // caller). A file click opens it; a directory click toggles it.
 func (m *Model) Click(y int) (openFile string) {

@@ -759,3 +759,20 @@ func TestGitPanelOpenFile(t *testing.T) {
 	}
 	_ = top
 }
+
+func TestGitClickKeepsPanelFocus(t *testing.T) {
+	m, _ := gitSetup(t)
+	// Click the file row: diff preview opens but the panel keeps focus…
+	m, _ = m.update(tea.MouseMsg{X: 10, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if len(m.docs) != 1 || !m.docs[0].virtual {
+		t.Fatalf("click did not open the diff preview: %+v", m.docs)
+	}
+	if m.focus != paneGit {
+		t.Fatalf("focus = %v, want git panel", m.focus)
+	}
+	// …so panel shortcuts still work: 'a' stages everything.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if v := frame(m); !strings.Contains(v, "Staged (1)") {
+		t.Fatalf("'a' after click did not stage:\n%s", v)
+	}
+}
