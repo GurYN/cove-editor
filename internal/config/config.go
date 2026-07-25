@@ -46,6 +46,12 @@ type Config struct {
 	// Apps registers favorite TUI apps, launched as terminal-panel
 	// instances from the palette: [apps.redis] command = ["redis-tui"].
 	Apps map[string]App `toml:"apps"`
+
+	// Update tunes the launch version check: [update] check = false
+	// disables the once-a-day GitHub release lookup.
+	Update struct {
+		Check bool `toml:"check"`
+	} `toml:"update"`
 }
 
 type App struct {
@@ -82,6 +88,7 @@ func Load() (Config, error) {
 	c.Editor.TabSize = 4
 	c.Editor.LineNumbers = true // toml.Decode only overrides present keys
 	c.Editor.ConfirmQuit = true
+	c.Update.Check = true
 	data, err := os.ReadFile(Path())
 	if err != nil {
 		return c, nil // no config file is the normal case

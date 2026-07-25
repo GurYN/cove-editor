@@ -34,9 +34,9 @@ var (
 	tabBarStyle    = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 	// Accent-background block so the scroll arrows read as buttons.
 	tabArrowStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("235")).Background(lipgloss.Color("39"))
-	borderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	flashStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	welcomeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	borderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	flashStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	welcomeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
 // applyChrome themes the panel chrome (tab bar tint, pane border) from the
@@ -178,10 +178,12 @@ type Model struct {
 	width, height int
 	lastMsg       string
 	cfgWarns      []string             // startup config problems, shown as a toast until any key
+	updateToast   string               // new-release notice, shown as a toast until any key
 	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
 	lastCost      time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
+	updateCheck bool // launch new-release check; [update] check = false disables
 }
 
 // New builds the app. path may be a file (opened as the first tab), a
@@ -199,7 +201,7 @@ func New(path string, data []byte) Model {
 
 	root := "."
 	m := Model{sidebarOpen: true, focus: paneEditor, sidebarW: sidebarWidth, termH: termDefaultRows,
-		confirmQuit: cfg.Editor.ConfirmQuit}
+		confirmQuit: cfg.Editor.ConfirmQuit, updateCheck: cfg.Update.Check}
 	if cfg.Keymap == "vim" {
 		m.vim = &vimState{}
 	}
@@ -287,7 +289,9 @@ func (m *Model) doc() *doc {
 	return m.docs[m.active]
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(listenLSP(m.lspm), watchTick()) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(listenLSP(m.lspm), watchTick(), m.maybeCheckUpdate())
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	start := time.Now()
@@ -331,6 +335,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case watchTickMsg:
 		m.checkDiskChanges()
 		return m, tea.Batch(watchTick(), m.syncLSP())
+	case updateCheckMsg:
+		return m.handleUpdateCheck(msg), nil
 	case termMsg:
 		return m.handleTermMsg(msg)
 	case gitOpMsg:
@@ -405,8 +411,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastMsg = ""
-		m.cfgWarns = nil // any key dismisses the config toast
-		m.hoverText = "" // any key dismisses the hover card
+		m.cfgWarns = nil   // any key dismisses the config toast
+		m.updateToast = "" // and the new-release toast
+		m.hoverText = ""   // any key dismisses the hover card
 		// The terminal never delivers a lone Esc: bubbletea's parser buffers
 		// the ESC byte until the next key arrives and fuses them into an
 		// alt-chord. Unfuse: treat as Esc, then the bare key. Deliberate
@@ -1526,6 +1533,12 @@ func (m Model) View() string {
 				middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 			}
 		}
+	}
+	if m.updateToast != "" && len(m.cfgWarns) == 0 { // config problems outrank release news
+		toast := m.renderUpdateToast()
+		h := lipgloss.Height(toast)
+		w := lipgloss.Width(toast)
+		middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 	}
 	if len(m.cfgWarns) > 0 { // config toast tops everything: it explains why a key is dead
 		toast := m.renderCfgToast()
