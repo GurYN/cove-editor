@@ -70,7 +70,7 @@ func (m Model) maybeCheckUpdate() tea.Cmd {
 func (m Model) handleUpdateCheck(msg updateCheckMsg) Model {
 	switch {
 	case newerVersion(Version, msg.tag):
-		m.lastMsg = "Cove " + msg.tag + " available — brew upgrade cove"
+		m.updateToast = "Cove " + msg.tag + " is available (you have " + Version + ").\nbrew upgrade cove"
 	case msg.manual && msg.tag == "":
 		m.lastMsg = "update check failed"
 	case msg.manual:

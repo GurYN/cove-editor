@@ -5,8 +5,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestNewerVersion(t *testing.T) {
@@ -70,17 +74,34 @@ func TestHandleUpdateCheck(t *testing.T) {
 	defer func() { Version = oldV }()
 
 	var m Model
-	if got := m.handleUpdateCheck(updateCheckMsg{tag: "v0.2.0"}).lastMsg; got != "Cove v0.2.0 available — brew upgrade cove" {
-		t.Fatalf("newer: lastMsg = %q", got)
+	if got := m.handleUpdateCheck(updateCheckMsg{tag: "v0.2.0"}).updateToast; got != "Cove v0.2.0 is available (you have v0.1.0).\nbrew upgrade cove" {
+		t.Fatalf("newer: updateToast = %q", got)
 	}
-	if got := m.handleUpdateCheck(updateCheckMsg{tag: "v0.1.0"}).lastMsg; got != "" {
-		t.Fatalf("auto up-to-date must stay silent, got %q", got)
+	if got := m.handleUpdateCheck(updateCheckMsg{tag: "v0.1.0"}); got.lastMsg != "" || got.updateToast != "" {
+		t.Fatalf("auto up-to-date must stay silent, got %q / %q", got.lastMsg, got.updateToast)
 	}
 	if got := m.handleUpdateCheck(updateCheckMsg{tag: "v0.1.0", manual: true}).lastMsg; got != "up to date — latest release is v0.1.0" {
 		t.Fatalf("manual up-to-date: lastMsg = %q", got)
 	}
 	if got := m.handleUpdateCheck(updateCheckMsg{manual: true}).lastMsg; got != "update check failed" {
 		t.Fatalf("manual failure: lastMsg = %q", got)
+	}
+}
+
+func TestUpdateToastRendered(t *testing.T) {
+	oldV := Version
+	Version = "v0.1.0"
+	defer func() { Version = oldV }()
+	m := setup(t).(Model)
+	m = m.handleUpdateCheck(updateCheckMsg{tag: "v99.0.0"})
+	frame := ansi.Strip(m.View())
+	if !strings.Contains(frame, "↑ update") || !strings.Contains(frame, "brew upgrade cove") {
+		t.Fatal("update toast not rendered")
+	}
+	// any key dismisses it
+	m2, _ := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if strings.Contains(ansi.Strip(m2.View()), "↑ update") {
+		t.Fatal("toast survived a keypress")
 	}
 }
 

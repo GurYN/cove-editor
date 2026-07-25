@@ -34,9 +34,9 @@ var (
 	tabBarStyle    = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 	// Accent-background block so the scroll arrows read as buttons.
 	tabArrowStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("235")).Background(lipgloss.Color("39"))
-	borderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	flashStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	welcomeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	borderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	flashStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	welcomeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
 // applyChrome themes the panel chrome (tab bar tint, pane border) from the
@@ -178,6 +178,7 @@ type Model struct {
 	width, height int
 	lastMsg       string
 	cfgWarns      []string             // startup config problems, shown as a toast until any key
+	updateToast   string               // new-release notice, shown as a toast until any key
 	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
 	lastCost      time.Duration
 
@@ -410,8 +411,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastMsg = ""
-		m.cfgWarns = nil // any key dismisses the config toast
-		m.hoverText = "" // any key dismisses the hover card
+		m.cfgWarns = nil   // any key dismisses the config toast
+		m.updateToast = "" // and the new-release toast
+		m.hoverText = ""   // any key dismisses the hover card
 		// The terminal never delivers a lone Esc: bubbletea's parser buffers
 		// the ESC byte until the next key arrives and fuses them into an
 		// alt-chord. Unfuse: treat as Esc, then the bare key. Deliberate
@@ -1531,6 +1533,12 @@ func (m Model) View() string {
 				middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 			}
 		}
+	}
+	if m.updateToast != "" && len(m.cfgWarns) == 0 { // config problems outrank release news
+		toast := m.renderUpdateToast()
+		h := lipgloss.Height(toast)
+		w := lipgloss.Width(toast)
+		middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 	}
 	if len(m.cfgWarns) > 0 { // config toast tops everything: it explains why a key is dead
 		toast := m.renderCfgToast()

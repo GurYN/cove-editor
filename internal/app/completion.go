@@ -258,6 +258,20 @@ func (m Model) renderToast(d editor.DiagSpan) string {
 	return style.Render(title + "\n" + msg)
 }
 
+// renderUpdateToast announces a new release, same card as renderToast,
+// accent-colored; dismissed by any key.
+func (m Model) renderUpdateToast() string {
+	const color = "116" // Cove teal
+	w := min(60, max(24, m.width/3))
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(color)).
+		Padding(0, 1).
+		Width(w)
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render("↑ update")
+	return style.Render(title + "\n" + m.updateToast)
+}
+
 // renderCfgToast lists startup config problems, same card as renderToast,
 // warning-colored; dismissed by any key.
 func (m Model) renderCfgToast() string {
