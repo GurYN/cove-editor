@@ -182,6 +182,7 @@ type Model struct {
 	lastCost      time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
+	updateCheck bool // launch new-release check; [update] check = false disables
 }
 
 // New builds the app. path may be a file (opened as the first tab), a
@@ -199,7 +200,7 @@ func New(path string, data []byte) Model {
 
 	root := "."
 	m := Model{sidebarOpen: true, focus: paneEditor, sidebarW: sidebarWidth, termH: termDefaultRows,
-		confirmQuit: cfg.Editor.ConfirmQuit}
+		confirmQuit: cfg.Editor.ConfirmQuit, updateCheck: cfg.Update.Check}
 	if cfg.Keymap == "vim" {
 		m.vim = &vimState{}
 	}
@@ -287,7 +288,9 @@ func (m *Model) doc() *doc {
 	return m.docs[m.active]
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(listenLSP(m.lspm), watchTick()) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(listenLSP(m.lspm), watchTick(), m.maybeCheckUpdate())
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	start := time.Now()
@@ -331,6 +334,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case watchTickMsg:
 		m.checkDiskChanges()
 		return m, tea.Batch(watchTick(), m.syncLSP())
+	case updateCheckMsg:
+		return m.handleUpdateCheck(msg), nil
 	case termMsg:
 		return m.handleTermMsg(msg)
 	case gitOpMsg:
