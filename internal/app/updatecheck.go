@@ -4,15 +4,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/GurYN/cove-editor/internal/config"
 )
 
 // updateCheckMsg carries the latest release tag ("" on any failure —
@@ -46,24 +42,15 @@ func checkUpdate(manual bool) tea.Cmd {
 	}
 }
 
-// updateStampPath is the last-check marker, next to config.toml; its
-// mtime is the timestamp (the file stays empty).
-func updateStampPath() string {
-	return filepath.Join(filepath.Dir(config.Path()), "last-update-check")
-}
-
-// maybeCheckUpdate fires the launch version check: at most once a day,
-// never for dev builds, never when [update] check = false.
+// maybeCheckUpdate fires the launch version check: every launch (one
+// background GET, silent on failure — far under GitHub's unauthenticated
+// rate limit), never for dev builds, never when [update] check = false.
+// A time throttle here proved worse than none: it hid releases published
+// within the window (up to 24h of "no toast" after an update shipped).
 func (m Model) maybeCheckUpdate() tea.Cmd {
 	if !m.updateCheck || Version == "dev" {
 		return nil
 	}
-	p := updateStampPath()
-	if fi, err := os.Stat(p); err == nil && time.Since(fi.ModTime()) < 24*time.Hour {
-		return nil
-	}
-	os.MkdirAll(filepath.Dir(p), 0o755)
-	os.WriteFile(p, nil, 0o644)
 	return checkUpdate(false)
 }
 
