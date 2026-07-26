@@ -35,6 +35,7 @@ type Model struct {
 	query   string
 	matches []fuzzy.Match // filtered view; empty query → all items
 	sel     int
+	first   int // first visible list row; keyboard nav edge-follows, hover never scrolls
 	width   int
 }
 
@@ -62,7 +63,7 @@ func (s source) String(i int) string { return s[i].Label }
 func (s source) Len() int            { return len(s) }
 
 func (m *Model) filter() {
-	m.sel = 0
+	m.sel, m.first = 0, 0
 	if m.query == "" {
 		m.matches = m.matches[:0]
 		for i := range m.items {
@@ -101,12 +102,16 @@ func (m Model) Update(k tea.KeyMsg) (Model, int, bool) {
 		return m, m.matches[m.sel].Index, true
 	case tea.KeyUp:
 		m.sel = max(0, m.sel-1)
+		m.scrollTo()
 	case tea.KeyDown:
 		m.sel = min(len(m.matches)-1, m.sel+1)
+		m.scrollTo()
 	case tea.KeyPgUp:
 		m.sel = max(0, m.sel-maxRows)
+		m.scrollTo()
 	case tea.KeyPgDown:
 		m.sel = min(len(m.matches)-1, m.sel+maxRows)
+		m.scrollTo()
 	case tea.KeyBackspace:
 		if len(m.query) > 0 {
 			r := []rune(m.query)
@@ -125,6 +130,39 @@ func (m Model) Update(k tea.KeyMsg) (Model, int, bool) {
 	return m, -1, false
 }
 
+// visibleFirst is the index of the first list row View draws.
+func (m Model) visibleFirst() int {
+	return max(0, min(m.first, len(m.matches)-maxRows))
+}
+
+// Wheel scrolls the list by delta rows, dragging the selection along so it
+// stays inside the visible window.
+func (m *Model) Wheel(delta int) {
+	m.first = max(0, min(m.first+delta, len(m.matches)-maxRows))
+	m.sel = max(m.first, min(m.sel, m.first+maxRows-1))
+}
+
+// scrollTo nudges the window just enough to keep the selection visible.
+func (m *Model) scrollTo() {
+	if m.sel < m.first {
+		m.first = m.sel
+	} else if m.sel >= m.first+maxRows {
+		m.first = m.sel - maxRows + 1
+	}
+}
+
+// ClickRow selects the visible list row y (0 = the row right under the
+// title) and reports whether it holds an item — false for a click on the
+// box chrome or past the end of the list.
+func (m *Model) ClickRow(y int) bool {
+	i := m.visibleFirst() + y
+	if y < 0 || y >= maxRows || i >= len(m.matches) {
+		return false
+	}
+	m.sel = i
+	return true
+}
+
 // View renders the overlay box; the app centers it over the editor.
 func (m Model) View() string {
 	w := min(m.width-6, 72) // content cells per row inside the box
@@ -134,7 +172,7 @@ func (m Model) View() string {
 	sb.WriteString(m.query)
 	sb.WriteString("█")
 
-	first := max(0, min(m.sel-maxRows/2, len(m.matches)-maxRows))
+	first := m.visibleFirst()
 	last := min(len(m.matches), first+maxRows)
 	if len(m.matches) == 0 {
 		sb.WriteString("\n")

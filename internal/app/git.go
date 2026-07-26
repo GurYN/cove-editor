@@ -243,14 +243,49 @@ func (m *Model) withRepo(do func(*Model, *repoState) tea.Cmd) tea.Cmd {
 	if r := m.curRepo(); r != nil {
 		return do(m, r)
 	}
+	m.openRepoPicker(do)
+	return nil
+}
+
+// withRepoAsk is withRepo for whole-repo ops (push, pull, stash…): with
+// several repos the active file is a weak signal of intent — a push meant
+// for repo B silently lands on repo A because its file happened to be open.
+// So unless the git panel cursor names the target explicitly, always ask.
+func (m *Model) withRepoAsk(do func(*Model, *repoState) tea.Cmd) tea.Cmd {
+	if !m.gitRepo() {
+		return nil
+	}
+	if !m.git.multi() {
+		return do(m, m.git.repos[0])
+	}
+	if m.focus == paneGit && m.git.sel < len(m.git.rows) {
+		if r := m.git.rows[m.git.sel].repo; r != nil {
+			return do(m, r)
+		}
+	}
+	m.openRepoPicker(do)
+	return nil
+}
+
+// openRepoPicker pops the one-shot repo picker; Enter runs do on the choice.
+func (m *Model) openRepoPicker(do func(*Model, *repoState) tea.Cmd) {
 	m.ovKind = overlayRepos
 	m.ovRepoDo = do
 	items := make([]overlay.Item, len(m.git.repos))
 	for i, r := range m.git.repos {
-		items[i] = overlay.Item{Label: r.name, Detail: r.snap.Branch}
+		detail := r.snap.Branch
+		if r.snap.Ahead > 0 {
+			detail += fmt.Sprintf(" ↑%d", r.snap.Ahead)
+		}
+		if r.snap.Behind > 0 {
+			detail += fmt.Sprintf(" ↓%d", r.snap.Behind)
+		}
+		if n := len(r.snap.Files); n > 0 {
+			detail += fmt.Sprintf(" ±%d", n)
+		}
+		items[i] = overlay.Item{Label: r.name, Detail: detail}
 	}
 	m.ov = overlay.New("Repository:", items, m.width)
-	return nil
 }
 
 // repoMsg prefixes a status message with the repo name when several repos
@@ -1061,7 +1096,7 @@ type gitOpMsg struct {
 }
 
 func (m *Model) gitOp(op string) tea.Cmd {
-	return m.withRepo(func(m *Model, r *repoState) tea.Cmd { return m.gitOpRepo(r, op) })
+	return m.withRepoAsk(func(m *Model, r *repoState) tea.Cmd { return m.gitOpRepo(r, op) })
 }
 
 func (m *Model) gitOpRepo(r *repoState, op string) tea.Cmd {

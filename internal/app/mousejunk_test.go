@@ -60,3 +60,23 @@ func TestBrokenMouseReportDropped(t *testing.T) {
 		t.Fatalf("cold alt+[ no longer unfuses to '[':\n%.200s", got)
 	}
 }
+
+func TestWheelFloodFragmentsDontCloseOverlay(t *testing.T) {
+	m, _ := gitSetup(t)
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	// A wheel tick, then the flood-split fragments a fast scroll produces:
+	// the fused alt-chord cut mid-number, and its bare-runes remainder.
+	m, _ = m.update(tea.MouseMsg{X: 40, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	for _, frag := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("[<66;5"), Alt: true},
+		{Type: tea.KeyRunes, Runes: []rune("7;12M")},
+	} {
+		m, _ = m.update(frag)
+	}
+	if m.ovKind == overlayNone {
+		t.Fatal("mouse-report fragment closed the palette")
+	}
+	if q := m.ov.Query(); q != "" {
+		t.Fatalf("fragment leaked into the query: %q", q)
+	}
+}
