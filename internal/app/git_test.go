@@ -514,6 +514,36 @@ func TestGitMultiRepoPanel(t *testing.T) {
 	}
 }
 
+// Whole-repo ops (push/pull/stash…) don't trust the active file with several
+// repos — an open alpha file must not silently push alpha. Only the git panel
+// cursor is an explicit target; everything else asks via the repo picker.
+func TestGitRemoteOpsAskRepo(t *testing.T) {
+	m, root := multiSetup(t)
+	var got *repoState
+	do := func(_ *Model, r *repoState) tea.Cmd { got = r; return nil }
+
+	// Panel focused, cursor on alpha's file row: explicit target, no picker.
+	m.withRepoAsk(do)
+	if m.ovKind != overlayNone || got != m.git.repos[0] {
+		t.Fatalf("panel cursor should resolve directly: kind=%v got=%v", m.ovKind, got)
+	}
+
+	// Editor focus + alpha's file open: weak signal — must ask, not push alpha.
+	m.openFile(filepath.Join(root, "alpha", "alpha.txt"))
+	got = nil
+	m.withRepoAsk(do)
+	if m.ovKind != overlayRepos || got != nil {
+		t.Fatalf("active-file anchor should open the picker: kind=%v got=%v", m.ovKind, got)
+	}
+	for _, r := range "beta" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got == nil || got.name != "beta" {
+		t.Fatalf("picked repo = %v, want beta", got)
+	}
+}
+
 // git.sync rebases the current branch onto the picked one; --autostash
 // carries the dirty a.txt across the rebase.
 func TestGitSyncRebase(t *testing.T) {
