@@ -228,12 +228,12 @@ func newRegistry() *action.Registry {
 	})
 	reg("git.graph", "Git: Commit Graph", "g", action.Git, func(m *Model) tea.Cmd { return m.gitOpenGraph() })
 	reg("git.branch", "Git: Switch Branch…", "b", action.Git, func(m *Model) tea.Cmd {
-		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		return m.withRepoAsk(func(m *Model, r *repoState) tea.Cmd {
 			return m.gitFetchThen(r, func(m *Model) { m.openBranchPicker(r) })
 		})
 	})
 	reg("git.sync", "Git: Sync Branch — Rebase Onto…", "s", action.Git, func(m *Model) tea.Cmd {
-		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+		return m.withRepoAsk(func(m *Model, r *repoState) tea.Cmd {
 			return m.gitFetchThen(r, func(m *Model) { m.openSyncPicker(r) })
 		})
 	})

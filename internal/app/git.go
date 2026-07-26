@@ -883,7 +883,7 @@ func (m *Model) gitAmendPrompt() tea.Cmd {
 }
 
 func (m *Model) gitBranchPrompt() tea.Cmd {
-	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
+	return m.withRepoAsk(func(m *Model, r *repoState) tea.Cmd {
 		*m = m.prompt("New branch name:", "", func(m *Model, name string) {
 			if name = strings.TrimSpace(name); name != "" {
 				m.deferred = m.gitFetchThen(r, func(m *Model) { m.gitCreateBranch(r, name) })
