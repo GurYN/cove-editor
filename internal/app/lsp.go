@@ -73,7 +73,7 @@ func (m *Model) handleLSPEvent(ev lsp.Event) {
 			revs[d.path] = d.ed.Rev
 		}
 		files, _ := m.applyWorkspaceEdit(ev.Edit, revs)
-		m.lastMsg = fmt.Sprintf("applied edit in %d file(s)", files)
+		m.notify(fmt.Sprintf("applied edit in %d file(s)", files))
 	case "showDocument":
 		// gopls "browse …" actions send URLs; file-creating ones (add test,
 		// extract to new file) send the file to reveal.
@@ -87,7 +87,7 @@ func (m *Model) handleLSPEvent(ev lsp.Event) {
 			}
 		} else {
 			openBrowser(ev.URI)
-			m.lastMsg = "opened in browser"
+			m.notify("opened in browser")
 		}
 	}
 }
@@ -166,7 +166,7 @@ func (m *Model) lspCmd(f func(c *lsp.Client, uri string, pos lsp.Position) tea.M
 	}
 	c := m.lspm.Client(m.doc().path)
 	if c == nil {
-		m.lastMsg = "no language server for this file"
+		m.notify("no language server for this file")
 		return nil
 	}
 	return func() tea.Msg { return f(c, uri, pos) }
@@ -282,7 +282,7 @@ func cmdExecuteCommand(m *Model, act lsp.CodeAction) tea.Cmd {
 	}
 	name, args, ok := act.Cmd()
 	if !ok {
-		m.lastMsg = "code action has no edit or command"
+		m.notify("code action has no edit or command")
 		return nil
 	}
 	return func() tea.Msg {
@@ -396,13 +396,15 @@ func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit, revs map[string]int) (
 			}
 			files++
 			d.ed.ApplyEdits(toEditorEdits(d.ed.Buf, edits))
-			m.lastMsg = d.save()
+			if s := d.save(); s != "saved" {
+				m.notifyErr(s)
+			}
 			continue
 		}
 		files++
 		data, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
-			m.lastMsg = err.Error()
+			m.notifyErr(err.Error())
 			continue
 		}
 		if os.IsNotExist(err) { // server creating a file (add test, extract)
@@ -417,7 +419,7 @@ func (m *Model) applyWorkspaceEdit(we *lsp.WorkspaceEdit, revs map[string]int) (
 			buf.Insert(e.Off, e.New)
 		}
 		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-			m.lastMsg = err.Error()
+			m.notifyErr(err.Error())
 		}
 	}
 	if len(created) > 0 { // reveal what the server just made
@@ -440,7 +442,7 @@ func (m *Model) docByPath(path string) *doc {
 
 func (m Model) openReferences(locs []lsp.Location) Model {
 	if len(locs) == 0 {
-		m.lastMsg = "no references"
+		m.notify("no references")
 		return m
 	}
 	m.ovKind = overlayRefs
@@ -458,7 +460,7 @@ func (m Model) openReferences(locs []lsp.Location) Model {
 // references overlay plumbing: pick → jump (which records a jump-list entry).
 func (m Model) openWorkspaceSymbols(syms []lsp.WorkspaceSym) Model {
 	if len(syms) == 0 {
-		m.lastMsg = "no matching symbols"
+		m.notify("no matching symbols")
 		return m
 	}
 	m.ovKind = overlayRefs
@@ -479,7 +481,7 @@ func (m Model) openWorkspaceSymbols(syms []lsp.WorkspaceSym) Model {
 // openCodeActions shows the fixes/refactors the server offered at the cursor.
 func (m Model) openCodeActions(msg actionsMsg) Model {
 	if len(msg.acts) == 0 {
-		m.lastMsg = "no code actions here"
+		m.notify("no code actions here")
 		return m
 	}
 	m.ovKind = overlayActions

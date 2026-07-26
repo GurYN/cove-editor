@@ -142,12 +142,12 @@ func (m *Model) checkDiskChanges() {
 		}
 		if !d.ed.Dirty {
 			m.reloadDoc(d.path)
-			m.lastMsg = filepath.Base(d.path) + " reloaded (changed on disk)"
+			m.notify(filepath.Base(d.path) + " reloaded (changed on disk)")
 			continue
 		}
 		if !fi.ModTime().Equal(d.seen) {
 			d.seen = fi.ModTime()
-			m.lastMsg = filepath.Base(d.path) + " changed on disk — buffer has unsaved edits"
+			m.notify(filepath.Base(d.path) + " changed on disk — buffer has unsaved edits")
 		}
 	}
 }

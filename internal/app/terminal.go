@@ -55,7 +55,7 @@ func (m *Model) newTerm() tea.Cmd { return m.spawnTerm(nil, "") }
 func (m *Model) spawnTerm(argv []string, label string) tea.Cmd {
 	t, err := term.New(m.side.Root, argv, max(2, m.width-m.editorX()), m.termRows())
 	if err != nil {
-		m.lastMsg = "terminal: " + err.Error()
+		m.notifyErr("terminal: " + err.Error())
 		return nil
 	}
 	t.Label = label

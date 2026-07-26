@@ -121,7 +121,7 @@ func (m *Model) mergeAccept(which string) {
 	src := d.ed.Buf.Bytes()
 	bs := conflictBlocks(src, 0, len(src))
 	if len(bs) == 0 {
-		m.lastMsg = "no conflict markers in this file"
+		m.notify("no conflict markers in this file")
 		return
 	}
 	line, _ := d.ed.Cursor()
@@ -148,7 +148,7 @@ func (m *Model) mergeAccept(which string) {
 	if left := len(bs) - 1; left > 0 {
 		m.lastMsg = fmt.Sprintf("kept %s — %d conflict(s) left", which, left)
 	} else {
-		m.lastMsg = "kept " + which + " — all resolved: save, then stage"
+		m.notify("kept " + which + " — all resolved: save, then stage")
 	}
 }
 
@@ -161,7 +161,7 @@ func (m *Model) mergeNext() {
 	src := d.ed.Buf.Bytes()
 	bs := conflictBlocks(src, 0, len(src))
 	if len(bs) == 0 {
-		m.lastMsg = "no conflict markers in this file"
+		m.notify("no conflict markers in this file")
 		return
 	}
 	line, _ := d.ed.Cursor()

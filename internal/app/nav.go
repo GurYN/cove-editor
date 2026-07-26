@@ -40,7 +40,7 @@ func (m *Model) pushJump() {
 
 func (m *Model) navBack() {
 	if m.jumpIdx == 0 {
-		m.lastMsg = "start of jump list"
+		m.notify("start of jump list")
 		return
 	}
 	if m.jumpIdx == len(m.jumps) { // leaving the tip: remember it for forward
@@ -54,7 +54,7 @@ func (m *Model) navBack() {
 
 func (m *Model) navForward() {
 	if m.jumpIdx >= len(m.jumps)-1 {
-		m.lastMsg = "end of jump list"
+		m.notify("end of jump list")
 		return
 	}
 	m.jumpIdx++

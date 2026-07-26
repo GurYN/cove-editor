@@ -272,6 +272,34 @@ func (m Model) renderUpdateToast() string {
 	return style.Render(title + "\n" + m.updateToast)
 }
 
+// notify routes a final action outcome to the toast card. In-progress
+// messages ("searching…") assign lastMsg directly and stay in the footer.
+func (m *Model) notify(s string) { m.lastMsg, m.msgToast, m.msgErr = s, true, false }
+
+// notifyErr is notify with error styling.
+func (m *Model) notifyErr(s string) { m.lastMsg, m.msgToast, m.msgErr = s, true, true }
+
+// renderMsgToast shows the last action outcome, same card as renderToast;
+// dismissed by any key.
+func (m Model) renderMsgToast() string {
+	color, badge := "116", "✓ done" // Cove teal
+	if m.msgErr {
+		color, badge = "203", "● error"
+	}
+	w := min(60, max(24, m.width/3))
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(color)).
+		Padding(0, 1).
+		Width(w)
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(badge)
+	msg := m.lastMsg
+	if len(msg) > 300 {
+		msg = msg[:297] + "…"
+	}
+	return style.Render(title + "\n" + msg)
+}
+
 // renderCfgToast lists startup config problems, same card as renderToast,
 // warning-colored; dismissed by any key.
 func (m Model) renderCfgToast() string {

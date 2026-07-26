@@ -354,7 +354,7 @@ func (m *Model) gitRepo() bool {
 		m.refreshGit()
 	}
 	if len(m.git.repos) == 0 {
-		m.lastMsg = "not a git repository"
+		m.notify("not a git repository")
 		return false
 	}
 	return true
@@ -565,9 +565,9 @@ func (m *Model) gitRestorePrompt() {
 		abs := filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path))
 		if r.fs.Untracked() {
 			if err := os.Remove(abs); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = "deleted " + r.fs.Path
+				m.notify("deleted " + r.fs.Path)
 				for i, d := range m.docs {
 					if same(d.path, abs) {
 						m.active = i
@@ -577,9 +577,9 @@ func (m *Model) gitRestorePrompt() {
 				}
 			}
 		} else if err := git.Restore(r.repo.top, r.fs.Path); err != nil {
-			m.lastMsg = err.Error()
+			m.notifyErr(err.Error())
 		} else {
-			m.lastMsg = "restored " + r.fs.Path
+			m.notify("restored " + r.fs.Path)
 			m.reloadDoc(abs)
 			m.deferred = m.syncLSP()
 		}
@@ -597,10 +597,10 @@ func (m *Model) gitStashFile() tea.Cmd {
 		return nil
 	}
 	if _, err := git.StashFile(r.repo.top, r.fs.Path); err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 		return nil
 	}
-	m.lastMsg = m.repoMsg(r.repo, "stashed "+r.fs.Path+" — pop restores it")
+	m.notify(m.repoMsg(r.repo, "stashed "+r.fs.Path+" — pop restores it"))
 	m.reloadDoc(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
 	m.refreshGit()
 	m.side.Refresh() // an untracked file disappears from the tree
@@ -644,7 +644,7 @@ func (m *Model) gitStageToggle() {
 		err = git.Stage(r.repo.top, r.fs.Path)
 	}
 	if err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 	}
 	m.refreshGit()
 }
@@ -657,7 +657,7 @@ func (m *Model) gitStageToggle() {
 func (m *Model) gitResolveSide(theirs bool) {
 	r, ok := m.git.selected()
 	if !ok || !r.fs.Conflict() {
-		m.lastMsg = "select a conflicted file first"
+		m.notify("select a conflicted file first")
 		return
 	}
 	side, do := "ours", git.ResolveOurs
@@ -665,9 +665,9 @@ func (m *Model) gitResolveSide(theirs bool) {
 		side, do = "theirs", git.ResolveTheirs
 	}
 	if err := do(r.repo.top, r.fs.Path); err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 	} else {
-		m.lastMsg = m.repoMsg(r.repo, "kept "+side+": "+r.fs.Path)
+		m.notify(m.repoMsg(r.repo, "kept "+side+": "+r.fs.Path))
 		m.reloadDoc(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
 	}
 	m.refreshGit()
@@ -717,11 +717,11 @@ func (m *Model) gitOpenDiff(r gitRow) {
 		text, err = git.Diff(r.repo.top, r.fs.Path, r.staged)
 	}
 	if err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 		return
 	}
 	if strings.TrimSpace(text) == "" {
-		m.lastMsg = "no changes to show"
+		m.notify("no changes to show")
 		return
 	}
 	title := r.fs.Path + " (diff)"
@@ -773,7 +773,7 @@ func (m *Model) gitCommitPrompt() tea.Cmd {
 		// Mid-merge, committing is allowed with nothing staged: a resolution
 		// identical to HEAD leaves no changes, yet the merge needs the commit.
 		if !gitHasStaged(r) && !r.snap.Merging {
-			m.lastMsg = m.repoMsg(r, "nothing staged — stage files first (space in the git panel)")
+			m.notify(m.repoMsg(r, "nothing staged — stage files first (space in the git panel)"))
 			return nil
 		}
 		label := "Commit message:"
@@ -791,9 +791,9 @@ func (m *Model) gitCommitPrompt() tea.Cmd {
 			}
 			out, err := git.Commit(r.top, msg)
 			if err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = m.repoMsg(r, firstLine(out))
+				m.notify(m.repoMsg(r, firstLine(out)))
 			}
 			m.refreshGit()
 		})
@@ -807,7 +807,7 @@ func (m *Model) gitUndoCommitPrompt() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
 		head, err := git.HeadSummary(r.top)
 		if err != nil {
-			m.lastMsg = m.repoMsg(r, "nothing to undo — no commits yet")
+			m.notify(m.repoMsg(r, "nothing to undo — no commits yet"))
 			return nil
 		}
 		*m = m.prompt(fmt.Sprintf("Undo commit %q? Changes stay staged — y/n:", head), "", func(m *Model, text string) {
@@ -815,9 +815,9 @@ func (m *Model) gitUndoCommitPrompt() tea.Cmd {
 				return
 			}
 			if err := git.UndoCommit(r.top); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = m.repoMsg(r, "commit undone — changes are staged")
+				m.notify(m.repoMsg(r, "commit undone — changes are staged"))
 			}
 			m.refreshGit()
 		})
@@ -851,7 +851,7 @@ func (m *Model) gitFetchThen(r *repoState, do func(*Model)) tea.Cmd {
 func (m *Model) gitAmendPrompt() tea.Cmd {
 	return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
 		if _, err := git.HeadSummary(r.top); err != nil {
-			m.lastMsg = m.repoMsg(r, "nothing to amend — no commits yet")
+			m.notify(m.repoMsg(r, "nothing to amend — no commits yet"))
 			return nil
 		}
 		full := git.LastCommitMsg(r.top)
@@ -872,9 +872,9 @@ func (m *Model) gitAmendPrompt() tea.Cmd {
 				out, err = git.Amend(r.top, msg)
 			}
 			if err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = m.repoMsg(r, "amended: "+firstLine(out))
+				m.notify(m.repoMsg(r, "amended: "+firstLine(out)))
 			}
 			m.refreshGit()
 		})
@@ -902,9 +902,9 @@ func (m *Model) gitCreateBranch(r *repoState, name string) {
 	for _, b := range bs {
 		if _, tail, _ := strings.Cut(b.Name, "/"); b.Remote && tail == name {
 			if local, err := git.CheckoutRemote(r.top, b.Name); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = m.repoMsg(r, "branch existed on remote — switched to "+local+" (tracking "+b.Name+")")
+				m.notify(m.repoMsg(r, "branch existed on remote — switched to "+local+" (tracking "+b.Name+")"))
 			}
 			m.refreshGit()
 			m.side.Refresh() // checkout swaps working-tree files
@@ -913,9 +913,9 @@ func (m *Model) gitCreateBranch(r *repoState, name string) {
 		}
 	}
 	if err := git.CreateBranch(r.top, name); err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 	} else {
-		m.lastMsg = m.repoMsg(r, "on new branch "+name)
+		m.notify(m.repoMsg(r, "on new branch "+name))
 	}
 	m.refreshGit()
 }
@@ -925,11 +925,11 @@ func (m *Model) gitCreateBranch(r *repoState, name string) {
 func (m *Model) openBranchPicker(r *repoState) {
 	branches, err := git.Branches(r.top)
 	if err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 		return
 	}
 	if len(branches) == 0 {
-		m.lastMsg = m.repoMsg(r, "no branches yet — commit first")
+		m.notify(m.repoMsg(r, "no branches yet — commit first"))
 		return
 	}
 	m.ovKind = overlayBranches
@@ -960,7 +960,7 @@ func (m *Model) openBranchPicker(r *repoState) {
 func (m *Model) openSyncPicker(r *repoState) {
 	branches, err := git.Branches(r.top)
 	if err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 		return
 	}
 	var targets []git.Branch
@@ -971,7 +971,7 @@ func (m *Model) openSyncPicker(r *repoState) {
 		targets = append(targets, b)
 	}
 	if len(targets) == 0 {
-		m.lastMsg = m.repoMsg(r, "no other branch to sync with")
+		m.notify(m.repoMsg(r, "no other branch to sync with"))
 		return
 	}
 	m.ovKind = overlaySync
@@ -998,11 +998,11 @@ func (m *Model) openSyncPicker(r *repoState) {
 func (m *Model) openHistoryPicker(r *repoState) {
 	commits, err := git.Log(r.top, 200)
 	if err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 		return
 	}
 	if len(commits) == 0 {
-		m.lastMsg = m.repoMsg(r, "no commits yet")
+		m.notify(m.repoMsg(r, "no commits yet"))
 		return
 	}
 	m.ovKind = overlayHistory
@@ -1037,11 +1037,11 @@ func (m *Model) gitOpenGraph() tea.Cmd {
 		// itself is uncapped — each tip in the window costs 2 columns.
 		cs, err := git.GraphLog(r.top, 500)
 		if err != nil {
-			m.lastMsg = err.Error()
+			m.notifyErr(err.Error())
 			return nil
 		}
 		if len(cs) == 0 {
-			m.lastMsg = m.repoMsg(r, "no commits yet")
+			m.notify(m.repoMsg(r, "no commits yet"))
 			return nil
 		}
 		text := renderGraph(cs)
@@ -1077,7 +1077,7 @@ func (m *Model) gitOpenCommitAtCursor(d *doc) {
 	}
 	text, err := git.ShowCommit(r.top, sha)
 	if err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 		return
 	}
 	m.openVirtual(sha+" (commit)", text)
@@ -1151,19 +1151,19 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 			// A conflicted rebase parks mid-flight; finishing it is a
 			// terminal job (edit, stage, rebase --continue / --abort).
 			if strings.Contains(e, "CONFLICT") || strings.Contains(e, "could not apply") {
-				m.lastMsg = m.repoMsg(msg.repo, "rebase conflict — resolve in terminal, then git rebase --continue (or --abort)")
+				m.notify(m.repoMsg(msg.repo, "rebase conflict — resolve in terminal, then git rebase --continue (or --abort)"))
 			} else {
-				m.lastMsg = e
+				m.notifyErr(e)
 			}
 		case msg.op == "stash pop" && strings.Contains(e, "No stash entries"):
-			m.lastMsg = m.repoMsg(msg.repo, "no stash to pop")
+			m.notify(m.repoMsg(msg.repo, "no stash to pop"))
 		case msg.op == "stash pop" && strings.Contains(e, "CONFLICT"):
 			// Pop keeps the stash entry when it conflicts.
-			m.lastMsg = m.repoMsg(msg.repo, "stash pop conflict — resolve, then git stash drop")
+			m.notify(m.repoMsg(msg.repo, "stash pop conflict — resolve, then git stash drop"))
 		case strings.Contains(e, "MERGE_HEAD exists"):
-			m.lastMsg = m.repoMsg(msg.repo, "merge in progress — commit (c in git panel) to conclude it")
+			m.notify(m.repoMsg(msg.repo, "merge in progress — commit (c in git panel) to conclude it"))
 		case strings.Contains(e, "stale info") || strings.Contains(e, "--force-with-lease"):
-			m.lastMsg = m.repoMsg(msg.repo, "force push refused — remote moved since last fetch: fetch, check what landed, retry")
+			m.notify(m.repoMsg(msg.repo, "force push refused — remote moved since last fetch: fetch, check what landed, retry"))
 		case strings.Contains(e, "[rejected]") || strings.Contains(e, "non-fast-forward") || strings.Contains(e, "fetch first"):
 			// Diverged (ahead AND behind upstream) means the local history was
 			// rewritten — rebase/amend. Pulling would re-merge the old commits;
@@ -1179,9 +1179,9 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 						}), nil
 				}
 			}
-			m.lastMsg = m.repoMsg(msg.repo, "push rejected — remote has new commits: pull, resolve, then push")
+			m.notify(m.repoMsg(msg.repo, "push rejected — remote has new commits: pull, resolve, then push"))
 		default:
-			m.lastMsg = e
+			m.notifyErr(e)
 		}
 	} else {
 		// git's raw chatter ("remote:", progress lines) makes a poor status
@@ -1213,7 +1213,7 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 		default:
 			s = "pulled " + branch
 		}
-		m.lastMsg = m.repoMsg(msg.repo, s)
+		m.notify(m.repoMsg(msg.repo, s))
 	}
 	m.refreshGit()
 	if msg.op != "push" && msg.op != "fetch" {
@@ -1236,7 +1236,7 @@ func (m Model) handleGitOp(msg gitOpMsg) (Model, tea.Cmd) {
 				}
 			}
 			if n > 0 {
-				m.lastMsg = m.repoMsg(r, fmt.Sprintf("merge conflict in %d file(s) — o: keep ours, t: keep theirs, or edit + stage", n))
+				m.notify(m.repoMsg(r, fmt.Sprintf("merge conflict in %d file(s) — o: keep ours, t: keep theirs, or edit + stage", n)))
 			}
 		}
 	}
