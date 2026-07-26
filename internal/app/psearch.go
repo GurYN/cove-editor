@@ -108,7 +108,7 @@ func (m *Model) projectSearchCmd(query string) tea.Cmd {
 // plumbing: pick → jump (recording a jump-list entry).
 func (m Model) openProjectSearch(msg psearchMsg) Model {
 	if len(msg.hits) == 0 {
-		m.lastMsg = fmt.Sprintf("no matches for %q", msg.query)
+		m.notify(fmt.Sprintf("no matches for %q", msg.query))
 		return m
 	}
 	m.ovKind = overlayDiags
@@ -123,7 +123,7 @@ func (m Model) openProjectSearch(msg psearchMsg) Model {
 	}
 	m.ov = overlay.New(fmt.Sprintf("%d hits:", len(msg.hits)), items, m.width)
 	if msg.truncated {
-		m.lastMsg = fmt.Sprintf("showing first %d hits — narrow the search", maxSearchHits)
+		m.notify(fmt.Sprintf("showing first %d hits — narrow the search", maxSearchHits))
 	}
 	return m
 }
@@ -145,7 +145,7 @@ func (m *Model) replaceProjectPrompt() tea.Cmd {
 		*m = m.prompt(fmt.Sprintf("Replace %q with:", query), "", func(m *Model, repl string) {
 			count, files := m.countProject(query)
 			if count == 0 {
-				m.lastMsg = fmt.Sprintf("no matches for %q", query)
+				m.notify(fmt.Sprintf("no matches for %q", query))
 				return
 			}
 			*m = m.prompt(fmt.Sprintf("Replace %d occurrence(s) in %d file(s)? y/n:", count, files), "",
@@ -154,7 +154,7 @@ func (m *Model) replaceProjectPrompt() tea.Cmd {
 						return
 					}
 					count, files := m.applyProjectReplace(query, repl)
-					m.lastMsg = fmt.Sprintf("replaced %d occurrence(s) in %d file(s)", count, files)
+					m.notify(fmt.Sprintf("replaced %d occurrence(s) in %d file(s)", count, files))
 					m.refreshGit()
 				})
 		})
@@ -220,7 +220,7 @@ func (m *Model) applyProjectReplace(query, repl string) (count, files int) {
 			}
 			d.ed.ApplyEdits(edits)
 			if s := d.save(); s != "saved" {
-				m.lastMsg = filepath.Base(d.path) + ": " + s
+				m.notifyErr(filepath.Base(d.path) + ": " + s)
 			}
 			m.lspm.Change(d.path, d.ed.Rev, d.ed.Buf.Bytes())
 			d.sentRev = d.ed.Rev
@@ -232,7 +232,7 @@ func (m *Model) applyProjectReplace(query, repl string) (count, files int) {
 			mode = fi.Mode()
 		}
 		if err := os.WriteFile(abs, bytes.ReplaceAll(content, q, r), mode); err != nil {
-			m.lastMsg = err.Error()
+			m.notifyErr(err.Error())
 		}
 	})
 	return count, files

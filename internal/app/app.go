@@ -177,6 +177,9 @@ type Model struct {
 
 	width, height int
 	lastMsg       string
+	msgToast      bool                 // lastMsg is a final outcome: toast card, not the footer slot
+	msgErr        bool                 // error styling for the message toast
+	msgAt         time.Time            // when the toast was set; expires on the watch tick
 	cfgWarns      []string             // startup config problems, shown as a toast until any key
 	updateToast   string               // new-release notice, shown as a toast until any key
 	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
@@ -333,6 +336,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	case watchTickMsg:
+		if m.msgToast && time.Since(m.msgAt) > 5*time.Second {
+			m.lastMsg, m.msgToast = "", false
+		}
 		m.checkDiskChanges()
 		return m, tea.Batch(watchTick(), m.syncLSP())
 	case updateCheckMsg:
@@ -349,11 +355,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case blameMsg:
 		return m.handleBlame(msg)
 	case lspErrMsg:
-		m.lastMsg = msg.err.Error()
+		m.notifyErr(msg.err.Error())
 		return m, nil
 	case defMsg:
 		if len(msg.locs) == 0 {
-			m.lastMsg = "no definition found"
+			m.notify("no definition found")
 		} else {
 			m.jumpTo(msg.locs[0])
 			m.layout()
@@ -369,13 +375,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.openCodeActions(msg), nil
 	case hoverMsg:
 		if msg.text == "" {
-			m.lastMsg = "no documentation"
+			m.notify("no documentation")
 		}
 		m.hoverText = msg.text
 		return m, nil
 	case wsEditMsg:
 		files, stale := m.applyWorkspaceEdit(msg.edit, msg.revs)
-		m.lastMsg = fmt.Sprintf("renamed in %d file(s)", files)
+		m.notify(fmt.Sprintf("renamed in %d file(s)", files))
 		if stale > 0 {
 			m.lastMsg += fmt.Sprintf(", %d skipped (buffer changed — rename again)", stale)
 		}
@@ -383,10 +389,10 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case fmtMsg:
 		if d := m.docByPath(msg.path); d != nil && len(msg.edits) > 0 {
 			if d.ed.Rev != msg.rev {
-				m.lastMsg = "buffer changed — format skipped"
+				m.notify("buffer changed — format skipped")
 			} else {
 				d.ed.ApplyEdits(toEditorEdits(d.ed.Buf, msg.edits))
-				m.lastMsg = "formatted"
+				m.notify("formatted")
 			}
 		}
 		return m, m.syncLSP()
@@ -413,6 +419,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastMsg = ""
+		m.msgToast = false
 		m.cfgWarns = nil   // any key dismisses the config toast
 		m.updateToast = "" // and the new-release toast
 		m.hoverText = ""   // any key dismisses the hover card
@@ -795,14 +802,14 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		b := m.ovBranches[chosen]
 		if b.Remote {
 			if local, err := git.CheckoutRemote(m.ovRepo.top, b.Name); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = m.repoMsg(m.ovRepo, "switched to "+local+" (tracking "+b.Name+")")
+				m.notify(m.repoMsg(m.ovRepo, "switched to "+local+" (tracking "+b.Name+")"))
 			}
 		} else if err := git.Checkout(m.ovRepo.top, b.Name); err != nil {
-			m.lastMsg = err.Error()
+			m.notifyErr(err.Error())
 		} else {
-			m.lastMsg = m.repoMsg(m.ovRepo, "switched to "+b.Name)
+			m.notify(m.repoMsg(m.ovRepo, "switched to "+b.Name))
 		}
 		m.refreshGit()
 		m.side.Refresh() // checkout swaps working-tree files
@@ -813,7 +820,7 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		c := m.ovCommits[chosen]
 		text, err := git.ShowCommit(m.ovRepo.top, c.SHA)
 		if err != nil {
-			m.lastMsg = err.Error()
+			m.notifyErr(err.Error())
 			return m, nil
 		}
 		m.openVirtual(c.SHA+" (commit)", text)
@@ -832,7 +839,7 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		a := m.ovActs[chosen]
 		if a.Edit != nil {
 			if d := m.doc(); d != nil && d.ed.Rev != m.ovActsRev {
-				m.lastMsg = "buffer changed — run quick fix again"
+				m.notify("buffer changed — run quick fix again")
 				return m, nil
 			}
 			revs := make(map[string]int, len(m.docs))
@@ -840,10 +847,10 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 				revs[d.path] = d.ed.Rev
 			}
 			files, _ := m.applyWorkspaceEdit(a.Edit, revs)
-			m.lastMsg = fmt.Sprintf("%s (%d file(s))", a.Title, files)
+			m.notify(fmt.Sprintf("%s (%d file(s))", a.Title, files))
 			return m, m.syncLSP()
 		}
-		m.lastMsg = a.Title
+		m.notify(a.Title)
 		return m, cmdExecuteCommand(&m, a)
 	case overlayDiags:
 		ref := m.ovDiags[chosen]
@@ -866,7 +873,7 @@ func (m Model) openSymbols(syms []lsp.DocumentSymbol) Model {
 		return m
 	}
 	if len(syms) == 0 {
-		m.lastMsg = "no symbols in this file"
+		m.notify("no symbols in this file")
 		return m
 	}
 	m.ovKind = overlayDiags
@@ -926,7 +933,7 @@ func (m Model) openProblems() Model {
 		}
 	}
 	if len(rows) == 0 {
-		m.lastMsg = "no problems in open tabs"
+		m.notify("no problems in open tabs")
 		return m
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -1048,14 +1055,14 @@ func (m *Model) openFile(path string) {
 	}
 	d, err := loadDoc(path)
 	if err != nil {
-		m.lastMsg = err.Error()
+		m.notifyErr(err.Error())
 		return
 	}
 	m.docs = append(m.docs, d)
 	m.active = len(m.docs) - 1
 	m.focus = paneEditor
 	if d.warn != "" {
-		m.lastMsg = d.warn
+		m.notify(d.warn)
 	}
 	m.layout()
 	if !d.virtual { // asset previews: no LSP, no git baseline
@@ -1513,7 +1520,7 @@ func (m Model) updateMinibar(k tea.KeyMsg) (Model, tea.Cmd) {
 		if m.mode == modeReplace {
 			if k.Alt {
 				n := d.ed.ReplaceAll(m.repl)
-				m.lastMsg = fmt.Sprintf("replaced %d", n)
+				m.notify(fmt.Sprintf("replaced %d", n))
 				m.mode = modeEdit
 				d.ed.SetSearch("", false)
 			} else {
@@ -1596,6 +1603,12 @@ func (m Model) View() string {
 				middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 			}
 		}
+	}
+	if m.msgToast && m.lastMsg != "" { // action outcome, over the diag card
+		toast := m.renderMsgToast()
+		h := lipgloss.Height(toast)
+		w := lipgloss.Width(toast)
+		middle = m.composite(middle, toast, max(0, m.height-2-h), max(0, m.width-w))
 	}
 	if m.updateToast != "" && len(m.cfgWarns) == 0 { // config problems outrank release news
 		toast := m.renderUpdateToast()
@@ -1758,8 +1771,12 @@ func (m Model) bottomBar() string {
 	// change and shove the segments to its left around on every keystroke.
 	cost := fmt.Sprintf("%5.2fms", float64(m.lastCost.Microseconds())/1000)
 	right := fmt.Sprintf("%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
-	// The message slot: a transient message wins, else the blame annotation.
-	msg := m.lastMsg
+	// The message slot: an in-progress message wins, else the blame
+	// annotation. Final outcomes render as a toast card instead (notify).
+	msg := ""
+	if !m.msgToast {
+		msg = m.lastMsg
+	}
 	if msg == "" {
 		msg = m.blameSeg(d)
 	}

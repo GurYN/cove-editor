@@ -72,9 +72,9 @@ func (m Model) handleUpdateCheck(msg updateCheckMsg) Model {
 	case newerVersion(Version, msg.tag):
 		m.updateToast = "Cove " + msg.tag + " is available (you have " + Version + ").\nbrew upgrade cove"
 	case msg.manual && msg.tag == "":
-		m.lastMsg = "update check failed"
+		m.notifyErr("update check failed")
 	case msg.manual:
-		m.lastMsg = "up to date — latest release is " + msg.tag
+		m.notify("up to date — latest release is " + msg.tag)
 	}
 	return m
 }

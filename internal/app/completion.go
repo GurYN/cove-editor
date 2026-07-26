@@ -2,6 +2,7 @@ package app
 
 import (
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -270,6 +271,40 @@ func (m Model) renderUpdateToast() string {
 		Width(w)
 	title := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render("↑ update")
 	return style.Render(title + "\n" + m.updateToast)
+}
+
+// notify routes a final action outcome to the toast card, dismissed by any
+// key or after ~5s (watch tick). In-progress messages ("searching…") assign
+// lastMsg directly and stay in the footer.
+func (m *Model) notify(s string) {
+	m.lastMsg, m.msgToast, m.msgErr, m.msgAt = s, true, false, time.Now()
+}
+
+// notifyErr is notify with error styling.
+func (m *Model) notifyErr(s string) {
+	m.lastMsg, m.msgToast, m.msgErr, m.msgAt = s, true, true, time.Now()
+}
+
+// renderMsgToast shows the last action outcome, same card as renderToast
+// but sized to its text; dismissed by any key or the 5s expiry.
+func (m Model) renderMsgToast() string {
+	color, badge := "116", "✓ done" // Cove teal
+	if m.msgErr {
+		color, badge = "203", "● error"
+	}
+	// Width includes the 1-col padding on each side: +2 or the text wraps.
+	w := max(12, min(min(60, max(24, m.width/3)), lipgloss.Width(m.lastMsg)+2))
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(color)).
+		Padding(0, 1).
+		Width(w)
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(badge)
+	msg := m.lastMsg
+	if len(msg) > 300 {
+		msg = msg[:297] + "…"
+	}
+	return style.Render(title + "\n" + msg)
 }
 
 // renderCfgToast lists startup config problems, same card as renderToast,

@@ -124,7 +124,11 @@ func newRegistry() *action.Registry {
 	reg("file.open", "Go to File…", "ctrl+o", action.Global, func(m *Model) tea.Cmd { *m = m.openFinder(); return nil })
 	reg("file.save", "File: Save", "ctrl+s", action.Global, func(m *Model) tea.Cmd {
 		if d := m.doc(); d != nil {
-			m.lastMsg = d.save()
+			if s := d.save(); s == "saved" {
+				m.notify(s)
+			} else {
+				m.notifyErr(s)
+			}
 			m.lspm.Save(d.path)
 			if len(m.git.repos) > 0 {
 				m.refreshGit() // keep the panel/branch segment honest
@@ -145,9 +149,9 @@ func newRegistry() *action.Registry {
 			m.lspm.Save(d.path)
 			n++
 		}
-		m.lastMsg = fmt.Sprintf("saved %d file(s)", n)
+		m.notify(fmt.Sprintf("saved %d file(s)", n))
 		if fail != "" {
-			m.lastMsg = fail
+			m.notifyErr(fail)
 		}
 		if n > 0 && len(m.git.repos) > 0 {
 			m.refreshGit()
@@ -267,7 +271,7 @@ func newRegistry() *action.Registry {
 		// No "blame on" message: lastMsg and the blame annotation share the
 		// status-bar slot, so it would mask the annotation it announces.
 		if !m.git.blameOn {
-			m.lastMsg = "blame off"
+			m.notify("blame off")
 		}
 		return nil // the fetch is scheduled by the Update choke point
 	})
@@ -276,9 +280,9 @@ func newRegistry() *action.Registry {
 	reg("git.stageAll", "Git: Stage All", "a", action.Git, func(m *Model) tea.Cmd {
 		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
 			if err := git.StageAll(r.top); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = m.repoMsg(r, "staged all changes")
+				m.notify(m.repoMsg(r, "staged all changes"))
 			}
 			m.refreshGit()
 			return nil
@@ -287,9 +291,9 @@ func newRegistry() *action.Registry {
 	reg("git.unstageAll", "Git: Unstage All", "u", action.Git, func(m *Model) tea.Cmd {
 		return m.withRepo(func(m *Model, r *repoState) tea.Cmd {
 			if err := git.UnstageAll(r.top); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			} else {
-				m.lastMsg = m.repoMsg(r, "unstaged all")
+				m.notify(m.repoMsg(r, "unstaged all"))
 			}
 			m.refreshGit()
 			return nil
@@ -519,7 +523,7 @@ func newRegistry() *action.Registry {
 			}
 			path := filepath.Join(dir, name)
 			if err := os.WriteFile(path, nil, 0o644); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 				return
 			}
 			m.side.Refresh()
@@ -534,7 +538,7 @@ func newRegistry() *action.Registry {
 				return
 			}
 			if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 			}
 			m.side.Refresh()
 		})
@@ -551,7 +555,7 @@ func newRegistry() *action.Registry {
 			}
 			newPath := filepath.Join(filepath.Dir(path), name)
 			if err := os.Rename(path, newPath); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 				return
 			}
 			for _, d := range m.docs {
@@ -577,7 +581,7 @@ func newRegistry() *action.Registry {
 				return
 			}
 			if err := os.RemoveAll(path); err != nil {
-				m.lastMsg = err.Error()
+				m.notifyErr(err.Error())
 				return
 			}
 			for i, d := range slices.Backward(m.docs) {
