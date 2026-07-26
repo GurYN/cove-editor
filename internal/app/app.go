@@ -179,6 +179,7 @@ type Model struct {
 	lastMsg       string
 	msgToast      bool                 // lastMsg is a final outcome: toast card, not the footer slot
 	msgErr        bool                 // error styling for the message toast
+	msgAt         time.Time            // when the toast was set; expires on the watch tick
 	cfgWarns      []string             // startup config problems, shown as a toast until any key
 	updateToast   string               // new-release notice, shown as a toast until any key
 	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
@@ -335,6 +336,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	case watchTickMsg:
+		if m.msgToast && time.Since(m.msgAt) > 5*time.Second {
+			m.lastMsg, m.msgToast = "", false
+		}
 		m.checkDiskChanges()
 		return m, tea.Batch(watchTick(), m.syncLSP())
 	case updateCheckMsg:
