@@ -3,11 +3,8 @@ package app
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -105,25 +102,17 @@ func TestUpdateToastRendered(t *testing.T) {
 	}
 }
 
-func TestMaybeCheckUpdateStamp(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("COVE_CONFIG", filepath.Join(dir, "config.toml"))
+func TestMaybeCheckUpdate(t *testing.T) {
 	oldV := Version
 	Version = "v0.1.0"
 	defer func() { Version = oldV }()
 
 	m := Model{updateCheck: true}
 	if m.maybeCheckUpdate() == nil {
-		t.Fatal("first launch: expected a check cmd")
+		t.Fatal("launch: expected a check cmd")
 	}
-	if m.maybeCheckUpdate() != nil {
-		t.Fatal("second launch same day: expected no check")
-	}
-	// stamp older than a day → checks again
-	stale := time.Now().Add(-25 * time.Hour)
-	os.Chtimes(updateStampPath(), stale, stale)
 	if m.maybeCheckUpdate() == nil {
-		t.Fatal("stale stamp: expected a check cmd")
+		t.Fatal("every launch checks — no throttle")
 	}
 
 	if (Model{updateCheck: false}).maybeCheckUpdate() != nil {
