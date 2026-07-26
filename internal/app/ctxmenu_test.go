@@ -76,3 +76,99 @@ func TestTreeContextMenu(t *testing.T) {
 		t.Fatalf("menu Rename did not prompt: mode=%v text=%q", m.mode, m.promptText)
 	}
 }
+
+func TestContextMenuMouseSelect(t *testing.T) {
+	m, _ := gitSetup(t)
+	m = rightClick(m, 10, 3) // git file row → menu with "Open Diff", "Open File", "Stage", ...
+	// Find "Stage" (item index 2) in the rendered frame and left-click it.
+	v := frame(m)
+	var y int
+	for i, line := range strings.Split(v, "\n") {
+		if strings.Contains(line, "Stash File") {
+			y = i - 1 // "Stage" sits one row above
+		}
+	}
+	if y == 0 {
+		t.Fatalf("menu not rendered:\n%s", v)
+	}
+	x := m.width / 2
+	m, _ = m.update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.ovKind != overlayNone {
+		t.Fatal("click on a menu item did not close the menu")
+	}
+	if v := frame(m); !strings.Contains(v, "Staged (1)") {
+		t.Fatalf("click on Stage did not stage:\n%s", v)
+	}
+
+	// A click on the box border/title keeps the menu open; outside closes it.
+	m = rightClick(m, 10, 3)
+	m, _ = m.update(tea.MouseMsg{X: x, Y: y - 3, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}) // title row
+	if m.ovKind == overlayNone {
+		t.Fatal("click on the menu title closed the menu")
+	}
+	m, _ = m.update(tea.MouseMsg{X: x, Y: m.height - 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.ovKind != overlayNone {
+		t.Fatal("click outside the menu did not close it")
+	}
+}
+
+func TestContextMenuMouseHover(t *testing.T) {
+	m, _ := gitSetup(t)
+	m = rightClick(m, 10, 3)
+	if m.ov.Selected() != 0 {
+		t.Fatal("menu should open with the first item selected")
+	}
+	var y int
+	for i, line := range strings.Split(frame(m), "\n") {
+		if strings.Contains(line, "Stage") && !strings.Contains(line, "Unstage") {
+			y = i
+		}
+	}
+	m, _ = m.update(tea.MouseMsg{X: m.width / 2, Y: y, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if m.ovKind == overlayNone {
+		t.Fatal("hover closed the menu")
+	}
+	if m.ov.Selected() != 2 {
+		t.Fatalf("hover over Stage selected item %d, want 2", m.ov.Selected())
+	}
+}
+
+func TestOverlayMouseWheel(t *testing.T) {
+	m, _ := gitSetup(t)
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyCtrlP}) // palette: more items than fit
+	before := frame(m)
+	wheel := func(b tea.MouseButton) {
+		m, _ = m.update(tea.MouseMsg{X: m.width / 2, Y: 5, Action: tea.MouseActionPress, Button: b})
+	}
+	// The first visible list row: two lines under the "Command:" title.
+	topRow := func(v string) string {
+		lines := strings.Split(v, "\n")
+		for i, l := range lines {
+			if strings.Contains(l, "Command:") {
+				return lines[i+1]
+			}
+		}
+		return ""
+	}
+	wheel(tea.MouseButtonWheelDown)
+	if m.ovKind == overlayNone {
+		t.Fatal("wheel closed the palette")
+	}
+	down := frame(m)
+	if topRow(down) == topRow(before) {
+		t.Fatal("wheel down did not scroll the list")
+	}
+	wheel(tea.MouseButtonWheelUp)
+	if topRow(frame(m)) != topRow(before) {
+		t.Fatal("wheel up did not scroll back")
+	}
+	if m.ov.Selected() < 0 {
+		t.Fatal("wheel lost the selection")
+	}
+	// Fast trackpad scrolling floods horizontal wheel events: never a close.
+	wheel(tea.MouseButtonWheelLeft)
+	wheel(tea.MouseButtonWheelRight)
+	if m.ovKind == overlayNone {
+		t.Fatal("horizontal wheel closed the palette")
+	}
+}

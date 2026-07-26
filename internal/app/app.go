@@ -403,11 +403,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		if isMouseJunk(msg) {
 			return m, nil
 		}
-		// A split mouse report's ESC fuses with its '[' into an alt+[ chord;
-		// mid-scroll that is never real typing — drop it before the unfuse
-		// below turns it into Esc + a literal '[' insert.
-		if msg.Alt && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 &&
-			msg.Runes[0] == '[' && time.Since(m.lastMouse) < 500*time.Millisecond {
+		// A split mouse report's ESC fuses with its printable tail into an
+		// alt-chord — "alt+[", or "alt+[<66;5" when the flood cuts a report
+		// mid-number. Mid-scroll none of that is real typing: drop anything
+		// mouse-report-shaped near a mouse event, before the unfuse below
+		// turns it into Esc (closing an overlay) + literal junk.
+		if msg.Type == tea.KeyRunes && !msg.Paste && (msg.Alt || len(msg.Runes) > 1) &&
+			mouseFragRunes(msg.Runes) && time.Since(m.lastMouse) < 500*time.Millisecond {
 			return m, nil
 		}
 		m.lastMsg = ""
@@ -444,9 +446,21 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 // mouseFrag matches the printable remainder of an SGR mouse report
 // ("ESC[<btn;x;yM") whose ESC got lost when a fast wheel flood split the
 // report across stdin reads — bubbletea v1 then delivers it as typed runes.
-// ponytail: fragments cut mid-number ("66;57") still leak one short burst;
-// upstream fix is bubbletea v2's rewritten input parser.
+// ponytail: fragments cut mid-number ("66;57") are caught by the timed
+// mouseFragRunes guard in update instead; upstream fix is bubbletea v2's
+// rewritten input parser.
 var mouseFrag = regexp.MustCompile(`\[<[0-9;]+[Mm]|^[<0-9;]+[Mm]$`)
+
+// mouseFragRunes reports whether every rune could belong to an SGR mouse
+// report ("[<66;57;12M") — the shape of a report fragment cut anywhere.
+func mouseFragRunes(rs []rune) bool {
+	for _, r := range rs {
+		if !strings.ContainsRune("[<;Mm0123456789", r) {
+			return false
+		}
+	}
+	return len(rs) > 0
+}
 
 // isMouseJunk reports whether a key message is a broken mouse report that
 // must never reach the buffer. Single runes and bracketed pastes are real
@@ -1184,9 +1198,9 @@ func (m Model) renderTabBar() string {
 
 // ---- mouse ----
 
-// setPointer switches the terminal pointer shape ("default", "ew-resize",
-// "ns-resize") via OSC 22 (kitty, foot, WezTerm, xterm ≥ 367). Terminals
-// without support ignore the sequence.
+// setPointer switches the terminal pointer shape ("default", "pointer",
+// "ew-resize", "ns-resize") via OSC 22 (kitty, foot, WezTerm, xterm ≥ 367).
+// Terminals without support ignore the sequence.
 func setPointer(shape string) {
 	os.Stdout.WriteString("\x1b]22;" + shape + "\x1b\\")
 }
@@ -1197,6 +1211,25 @@ func copyOSC52(s string) {
 	os.Stdout.WriteString("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\")
 }
 
+// ovHit maps a screen click to an overlay list row (0 = the row under the
+// title), mirroring exactly where View composites the box: top row 1 of the
+// middle block (clamped on-screen), centered, under the tab bar.
+func (m Model) ovHit(x, y int) (row int, inside bool) {
+	view := m.ov.View()
+	h := lipgloss.Height(view)
+	w := lipgloss.Width(view)
+	left := clampInt((m.width-w)/2, 0, max(0, m.width-w))
+	top := 1
+	if top+h > m.height-2 {
+		top = max(0, m.height-2-h)
+	}
+	top++ // the tab bar sits above the composited middle block
+	if x < left || x >= left+w || y < top || y >= top+h {
+		return 0, false
+	}
+	return y - top - 2, true // minus the border and title rows
+}
+
 func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	// Buttonless motion = hover: only used to swap the pointer shape over
 	// the two dividers. Must never reach the drag paths below.
@@ -1204,6 +1237,12 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		shape := "default"
 		switch {
 		case m.ovKind != overlayNone:
+			// Hover highlights the item under the pointer; ClickRow never
+			// scrolls, so the list stays put while the pointer moves. A
+			// clickable row also gets the hand cursor.
+			if row, inside := m.ovHit(msg.X, msg.Y); inside && m.ov.ClickRow(row) {
+				shape = "pointer"
+			}
 		case m.sidebarOpen && msg.Y > 0 && msg.X == m.side.Width:
 			shape = "ew-resize"
 		case m.split && len(m.docs) > 0 && msg.Y > 0 && msg.Y <= m.contentRows() && msg.X == m.splitX():
@@ -1218,8 +1257,32 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.ovKind != overlayNone || m.aboutOpen { // overlays are keyboard-driven; click closes
-		if msg.Action == tea.MouseActionPress {
+	if m.ovKind != overlayNone || m.aboutOpen { // click an overlay item to run it; anywhere else closes
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		if m.ovKind != overlayNone {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.ov.Wheel(-3)
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				m.ov.Wheel(3)
+				return m, nil
+			}
+		}
+		if m.ovKind != overlayNone && msg.Button == tea.MouseButtonLeft {
+			if row, inside := m.ovHit(msg.X, msg.Y); inside {
+				if m.ov.ClickRow(row) {
+					return m.updateOverlay(tea.KeyMsg{Type: tea.KeyEnter})
+				}
+				return m, nil // box chrome: keep the overlay open
+			}
+		}
+		// Only a deliberate click closes. Fast trackpad scrolling floods
+		// wheel-left/right (and other non-button) events — never a close.
+		switch msg.Button {
+		case tea.MouseButtonLeft, tea.MouseButtonRight, tea.MouseButtonMiddle:
 			m.ovKind = overlayNone
 			m.aboutOpen = false
 		}
