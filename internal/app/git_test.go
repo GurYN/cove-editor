@@ -132,7 +132,8 @@ func TestGitCommitFlow(t *testing.T) {
 	for _, r := range "a very long commit message that would previously wrap the footer onto a second row and break the layout" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m2.update(cmd()) // commit is async: run it, deliver its done msg
 	v := frame(m)
 	// The long `git commit` output in lastMsg must not wrap the footer.
 	if lines := strings.Split(v, "\n"); len(lines) != 24 {
@@ -173,7 +174,8 @@ func TestGitGutterSigns(t *testing.T) {
 	for _, r := range "wip" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m2.update(cmd()) // commit is async
 	for _, s := range m.doc().ed.Signs {
 		if s != 0 {
 			t.Fatalf("signs after commit = %q, want none", m.doc().ed.Signs)
@@ -232,7 +234,8 @@ func TestGitBranchPicker(t *testing.T) {
 	for _, r := range "main" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m2.update(cmd()) // checkout is async
 	if !strings.Contains(frame(m), "⎇ main") {
 		t.Fatalf("checkout failed:\n%s", frame(m))
 	}
@@ -659,7 +662,8 @@ func TestGitAmend(t *testing.T) {
 	m.refreshGit()
 
 	m.reg.ByID("git.amend").Do(&m) // prompt pre-filled with "subject"
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m2.update(cmd()) // amend is async
 	if got := gOut("rev-list", "--count", "HEAD"); got != "2" {
 		t.Fatalf("commit count = %s, want 2 (amend must not add one)", got)
 	}
@@ -669,7 +673,8 @@ func TestGitAmend(t *testing.T) {
 	// Reword: type a new message over the pre-fill.
 	m.reg.ByID("git.amend").Do(&m)
 	m.promptText = "new subject"
-	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m2.update(cmd()) // amend is async
 	if got := gOut("log", "-1", "--format=%s"); got != "new subject" {
 		t.Fatalf("reword failed: %q", got)
 	}

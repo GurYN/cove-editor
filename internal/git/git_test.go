@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // initRepo makes a repo with one committed file and returns its top.
@@ -442,5 +443,28 @@ func TestGraphLog(t *testing.T) {
 	}
 	if len(cs[1].Parents) != 0 {
 		t.Fatalf("root has parents: %+v", cs[1])
+	}
+}
+
+// A fetch whose transport stops to prompt (ssh passphrase, cert password)
+// must fail fast, never hang: noPrompt detaches the controlling terminal so
+// the /dev/tty read errors out. Regression for the frozen branch switcher.
+func TestFetchNeverPrompts(t *testing.T) {
+	top := initRepo(t)
+	ssh := filepath.Join(t.TempDir(), "prompting-ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\nread pw < /dev/tty\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(top, "remote", "add", "origin", "fake:repo.git")
+	run(top, "config", "core.sshCommand", ssh)
+	done := make(chan error, 1)
+	go func() { _, err := Fetch(top); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("fetch against a prompting transport succeeded?")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("fetch hung on a transport prompt")
 	}
 }
