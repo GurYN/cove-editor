@@ -183,6 +183,7 @@ type Model struct {
 	cfgWarns      []string             // startup config problems, shown as a toast until any key
 	updateToast   string               // new-release notice, shown as a toast until any key
 	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
+	termDirty     bool                 // terminal output since last tick: an agent/shell may have touched files
 	lastCost      time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
@@ -340,6 +341,12 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.lastMsg, m.msgToast = "", false
 		}
 		m.checkDiskChanges()
+		if m.termDirty { // in-app terminal activity: same resync as focus regain
+			m.termDirty = false
+			m.side.Refresh()
+			m.refreshGit()
+			m.syncWatched()
+		}
 		return m, tea.Batch(watchTick(), m.syncLSP())
 	case updateCheckMsg:
 		return m.handleUpdateCheck(msg), nil

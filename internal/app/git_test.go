@@ -811,3 +811,26 @@ func TestGitClickKeepsPanelFocus(t *testing.T) {
 		t.Fatalf("'a' after click did not stage:\n%s", v)
 	}
 }
+
+// Terminal output marks the workspace dirty; the next watchTick resyncs the
+// tree/git panel — an agent working in the in-app terminal must show up
+// without a focus change (there is no fs watcher).
+func TestTermActivityTriggersResync(t *testing.T) {
+	m, top := gitSetup(t)
+	os.WriteFile(filepath.Join(top, "agent.txt"), []byte("hi\n"), 0o644)
+	if strings.Contains(frame(m), "agent.txt") {
+		t.Fatal("file visible before any resync trigger")
+	}
+	m, _ = m.update(watchTickMsg{}) // tick without terminal output: no sweep
+	if strings.Contains(frame(m), "agent.txt") {
+		t.Fatal("tick swept without terminal activity")
+	}
+	m, _ = m.update(termMsg{alive: true})
+	m, _ = m.update(watchTickMsg{})
+	if !strings.Contains(frame(m), "agent.txt") {
+		t.Fatalf("new file not picked up after terminal activity + tick:\n%s", frame(m))
+	}
+	if m.termDirty {
+		t.Fatal("termDirty not reset by the sweep")
+	}
+}

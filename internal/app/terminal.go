@@ -101,6 +101,10 @@ func (m *Model) toggleTerm() tea.Cmd {
 
 func (m Model) handleTermMsg(msg termMsg) (Model, tea.Cmd) {
 	if msg.alive {
+		// A shell/agent producing output may be writing files; the next
+		// watchTick sweeps the tree/git/LSP state (no fs watcher — the
+		// focus-regain resync never fires while the action is in-app).
+		m.termDirty = true
 		return m, listenTerm(msg.t)
 	}
 	// Shell exited: drop that instance; drop the panel when none remain.
