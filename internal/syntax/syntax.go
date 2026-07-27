@@ -241,6 +241,18 @@ func classFor(capture string) int {
 	}
 }
 
+// foldWrappers lists, per language, the bare body-container node kinds
+// whose header line is a plain statement (Go's statement_list, Python's
+// block, HCL's body) — grammar artifacts, not constructs; the enclosing
+// declaration provides the real fold. Kind names collide across grammars
+// ("block" is Go's artifact but HCL's actual construct), so the set must
+// be per-language. Extend when a grammar produces junk folds.
+var foldWrappers = map[string]map[string]bool{
+	"go":     {"statement_list": true, "block": true},
+	"python": {"block": true},
+	"hcl":    {"body": true},
+}
+
 // Highlighter implements editor.Syntax for one buffer.
 type Highlighter struct {
 	parser  *ts.Parser
@@ -248,6 +260,8 @@ type Highlighter struct {
 	classes []int // capture index -> style class
 	tree    *ts.Tree
 	stale   bool
+
+	foldSkip map[string]bool // node kinds Folds ignores (see foldWrappers)
 
 	inj        []injection       // injection specs for this language (usually nil)
 	children   map[string]*child // injected language name -> its parser/tree
@@ -293,7 +307,7 @@ func New(path string, src []byte) *Highlighter {
 	if !ok {
 		return nil
 	}
-	h := &Highlighter{parser: p, query: q, classes: classes, inj: d.inj}
+	h := &Highlighter{parser: p, query: q, classes: classes, inj: d.inj, foldSkip: foldWrappers[name]}
 	h.tree = p.Parse(src, nil)
 	if len(h.inj) > 0 {
 		h.children = map[string]*child{}
@@ -469,14 +483,9 @@ func (h *Highlighter) Folds(src []byte, startOff, endOff int) [][2]int {
 			if int(n.EndPosition().Column) == 0 {
 				er-- // node ends exactly on a newline: fold to its last content line
 			}
-			// ponytail: "block"/"statement_list" are bare body containers (Go
-			// statement_list, Python block) whose header line is a plain
-			// statement — grammar artifacts, not constructs; the enclosing
-			// declaration already provides the fold. Extend the pair if
-			// another grammar's wrapper kind produces junk folds. Kind() is
-			// checked last: it's a CGo call and most nodes fail the row test.
-			if er > sr && (len(out) == 0 || out[len(out)-1][0] != sr) &&
-				n.Kind() != "block" && n.Kind() != "statement_list" {
+			// Kind() is checked last: it's a CGo call and most nodes fail
+			// the row test. See foldWrappers for why kinds are skipped.
+			if er > sr && (len(out) == 0 || out[len(out)-1][0] != sr) && !h.foldSkip[n.Kind()] {
 				out = append(out, [2]int{sr, er})
 			}
 		}
