@@ -10,10 +10,12 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 
 - **Fast on big files**: rope buffer + virtualized viewport; keystroke-to-render under one frame on a 50k-line file (enforced by CI perf gates).
 - **Tree-sitter syntax highlighting** for fourteen languages plus the config files around them (`.env`, `.gitignore`, `go.mod`, lockfiles, shell dotfiles, …), with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
-- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), formatting, quick fixes and refactors (`Alt+Enter` — including server commands that create files, like gopls's *add test* and *extract to new file*), a symbol outline (`Ctrl+T`), project-wide symbol search (`F3`), and a problems list (`F8`). Go, Python, TypeScript/JavaScript, Rust, HTML, CSS, and Terraform work out of the box — including TypeScript 7's native language server (both the push and pull diagnostics models are supported).
+- **Code folding**: every foldable region shows a `▾` chevron in the gutter — click it (or `Alt+-`) to fold, click the `▸` to unfold; *Fold: Fold All* / *Unfold All* live in the palette. Fold an unfamiliar file to see its skeleton. Folds follow your edits, and anything that lands the cursor in a hidden line unfolds it.
+- **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), signature help (parameter hints appear as you type `(` and `,`), formatting, quick fixes and refactors (`Alt+Enter` — including server commands that create files, like gopls's *add test* and *extract to new file*), a symbol outline (`Ctrl+T`), project-wide symbol search (`F3`), a problems list (`F8`), and next/previous-diagnostic jumps (`Alt+N`/`Alt+P`). Go, Python, TypeScript/JavaScript, Rust, HTML, CSS, and Terraform work out of the box — including TypeScript 7's native language server (both the push and pull diagnostics models are supported).
 - **Search across the project** (`F7`): .gitignore-aware, smart-case, sees unsaved buffer content, and every hit lands in a filterable picker. *Replace in Project…* (palette) previews the count and applies undoably to open files.
 - **A jump list**: `Alt+Left` walks back through go-to-definition, symbol, and search jumps; `Alt+Right` walks forward. Navigation is never a one-way door.
 - **Sessions restore themselves**: quit and reopen the same directory — tabs, cursors, the split, and sidebar width come back. Opening an explicit file skips it (`cove main.go` means exactly that).
+- **Crash recovery**: unsaved changes are snapshotted in the background every couple of seconds. If Cove (or your machine) dies, reopening the file restores them — undoably, and never over a file that changed on disk in the meantime. Saving or quitting normally leaves nothing behind.
 - **Command palette** (`Ctrl+P`): every action is discoverable and shows its keybinding and rebindable ID.
 - **File tree, tabs, fuzzy file finder** (`Ctrl+O`): the chrome you expect from a GUI editor. The tree shows git status at a glance — new, modified, and conflicted files are tinted, folders containing changes get a dot — and can create, rename, and delete files in place.
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
@@ -108,6 +110,7 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Ctrl+\`        | Split pane                    |
 | `F6` / `Shift+F6` | Next / previous panel       |
 | `Ctrl+E`        | Expand selection to syntax node |
+| `Alt+-`         | Fold / unfold at cursor (or click the gutter chevron) |
 | `Ctrl+D`        | Add next occurrence to selection |
 | `Alt+Up` / `Alt+Down` | Add cursor above / below |
 | `Alt+Shift+Up` / `Alt+Shift+Down` | Move line up / down |
@@ -121,6 +124,7 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Alt+Enter`     | Quick fix / code action       |
 | `F2`            | Rename symbol                 |
 | `F8`            | Problems list                 |
+| `Alt+N` / `Alt+P` | Next / previous diagnostic  |
 | `Alt+Left` / `Alt+Right` | Jump back / forward  |
 | `Ctrl+Q`        | Quit (asks for confirmation; warns about unsaved files) |
 
@@ -203,7 +207,7 @@ Config mistakes don't fail silently: a binding that collides with an existing sh
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, chrome, LSP for four languages, an integrated terminal, git integration (panel, staging, diffs, commit, amend, undo-commit, history & visual graph, push/pull with a safe force-with-lease path, branch sync via rebase, stash, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace, code actions, a jump list, per-workspace session restore, and user-defined TUI app launchers — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, code folding, chrome, LSP for four languages (with signature help and diagnostic navigation), an integrated terminal, git integration (panel, staging, diffs, commit, amend, undo-commit, history & visual graph, push/pull with a safe force-with-lease path, branch sync via rebase, stash, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace, code actions, a jump list, per-workspace session restore, crash recovery, and user-defined TUI app launchers — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
 
 ## Contributing
 
