@@ -56,12 +56,20 @@ func (m Model) aboutView() string {
 		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(aboutFade[i])).Render(l))
 		sb.WriteByte('\n')
 	}
-	sb.WriteString("\n" + welcomeStyle.Render("a GUI-native terminal IDE") + "\n\n")
-	line := aboutVerStyle.Render(Version)
+	sb.WriteByte('\n')
+	sb.WriteString(welcomeStyle.Render("a GUI-native terminal IDE"))
+	sb.WriteString("\n\n")
+	sb.WriteString(aboutVerStyle.Render(Version))
 	if d := buildDate(); d != "" {
-		line += welcomeStyle.Render("  ·  released " + d)
+		sb.WriteString(welcomeStyle.Render("  ·  released " + d))
 	}
-	sb.WriteString(line + "\n\n")
+	sb.WriteString("\n\n")
+	sb.WriteString(welcomeStyle.Render("https://cove-editor.com"))
+	sb.WriteByte('\n')
+	sb.WriteString(welcomeStyle.Render("https://github.com/GurYN/cove-editor"))
+	sb.WriteString("\n\n")
+	sb.WriteString(aboutDimStyle.Render("MIT · © 2026 Vincent Cibelli"))
+	sb.WriteString("\n\n")
 	sb.WriteString(aboutDimStyle.Render("any key to close"))
 	return aboutBoxStyle.Render(sb.String())
 }

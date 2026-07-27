@@ -183,6 +183,7 @@ type Model struct {
 	cfgWarns      []string             // startup config problems, shown as a toast until any key
 	updateToast   string               // new-release notice, shown as a toast until any key
 	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
+	termDirty     bool                 // terminal output since last tick: an agent/shell may have touched files
 	lastCost      time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
@@ -340,6 +341,12 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.lastMsg, m.msgToast = "", false
 		}
 		m.checkDiskChanges()
+		if m.termDirty { // in-app terminal activity: same resync as focus regain
+			m.termDirty = false
+			m.side.Refresh()
+			m.refreshGit()
+			m.syncWatched()
+		}
 		return m, tea.Batch(watchTick(), m.syncLSP())
 	case updateCheckMsg:
 		return m.handleUpdateCheck(msg), nil
@@ -350,8 +357,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case gitFetchDoneMsg:
 		m.git.busy = ""
 		m.refreshGit()
-		msg.do(&m)
-		return m, nil
+		return m, msg.do(&m)
 	case blameMsg:
 		return m.handleBlame(msg)
 	case lspErrMsg:
@@ -780,7 +786,7 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 				return m.prompt(fmt.Sprintf("No branch %q — create from %s? y/n:", name, r.snap.Branch), "",
 					func(m *Model, text string) {
 						if strings.EqualFold(text, "y") {
-							m.deferred = m.gitFetchThen(r, func(m *Model) { m.gitCreateBranch(r, name) })
+							m.deferred = m.gitFetchThen(r, func(m *Model) tea.Cmd { return m.gitCreateBranch(r, name) })
 						}
 					}), nil
 			}
@@ -800,20 +806,24 @@ func (m Model) updateOverlay(k tea.KeyMsg) (Model, tea.Cmd) {
 		m.layout()
 	case overlayBranches:
 		b := m.ovBranches[chosen]
-		if b.Remote {
-			if local, err := git.CheckoutRemote(m.ovRepo.top, b.Name); err != nil {
-				m.notifyErr(err.Error())
-			} else {
-				m.notify(m.repoMsg(m.ovRepo, "switched to "+local+" (tracking "+b.Name+")"))
+		r := m.ovRepo
+		// Async: post-checkout hooks and big working-tree swaps are slow.
+		return m, m.gitDo("checkout", func() (string, error) {
+			if b.Remote {
+				return git.CheckoutRemote(r.top, b.Name)
 			}
-		} else if err := git.Checkout(m.ovRepo.top, b.Name); err != nil {
-			m.notifyErr(err.Error())
-		} else {
-			m.notify(m.repoMsg(m.ovRepo, "switched to "+b.Name))
-		}
-		m.refreshGit()
-		m.side.Refresh() // checkout swaps working-tree files
-		m.syncWatched()
+			return b.Name, git.Checkout(r.top, b.Name)
+		}, func(m *Model, local string, err error) {
+			if err != nil {
+				m.notifyErr(err.Error())
+			} else if b.Remote {
+				m.notify(m.repoMsg(r, "switched to "+local+" (tracking "+b.Name+")"))
+			} else {
+				m.notify(m.repoMsg(r, "switched to "+local))
+			}
+			m.side.Refresh() // checkout swaps working-tree files
+			m.syncWatched()
+		})
 	case overlaySync:
 		return m, m.gitSyncRepo(m.ovRepo, m.ovBranches[chosen].Name)
 	case overlayHistory:

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -38,12 +39,25 @@ type Snapshot struct {
 	Files         []FileStatus
 }
 
+// noPrompt makes a git call unable to stop and ask the user anything.
+// GIT_TERMINAL_PROMPT=0 only covers git's own credential prompts; ssh key
+// passphrases, client-cert passwords, and gpg pinentry open /dev/tty
+// directly, which in a raw-mode TUI is an invisible prompt that hangs
+// forever. Setsid detaches the controlling terminal so those fail fast
+// with an error instead. WaitDelay unsticks Wait when a grandchild (ssh)
+// outlives git holding the output pipe.
+func noPrompt(cmd *exec.Cmd) {
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.WaitDelay = 5 * time.Second
+}
+
 // run executes git in dir and returns trimmed stdout. Credential prompts are
 // disabled so a background call can never hang waiting for a password.
 func run(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	noPrompt(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
@@ -61,7 +75,10 @@ func runLoose(dir string, args ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	noPrompt(cmd)
+	// On timeout kill the whole session (git + its ssh child), not just git —
+	// a surviving ssh keeps the pipe open and CombinedOutput never returns.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {

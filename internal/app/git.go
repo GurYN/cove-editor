@@ -78,7 +78,7 @@ type gitPanel struct {
 	sel     int
 	top     int
 	err     string // "not a git repository" when nothing was found
-	busy    string // "push"/"pull" while one is in flight
+	busy    string // "push"/"pull"/"commit"/"checkout"… while one is in flight
 	blameOn bool   // inline blame for the cursor line (git.blame toggle)
 	tree    bool   // [git] view = "tree": group files under directory rows
 	// collapsed dirs, keyed repo.top+"\x00"+dir — shared across sections so
@@ -789,13 +789,15 @@ func (m *Model) gitCommitPrompt() tea.Cmd {
 			if strings.TrimSpace(msg) == "" {
 				return
 			}
-			out, err := git.Commit(r.top, msg)
-			if err != nil {
-				m.notifyErr(err.Error())
-			} else {
-				m.notify(m.repoMsg(r, firstLine(out)))
-			}
-			m.refreshGit()
+			// Async: pre-commit hooks can run whole test suites.
+			m.deferred = m.gitDo("commit", func() (string, error) { return git.Commit(r.top, msg) },
+				func(m *Model, out string, err error) {
+					if err != nil {
+						m.notifyErr(err.Error())
+					} else {
+						m.notify(m.repoMsg(r, firstLine(out)))
+					}
+				})
 		})
 		return nil
 	})
@@ -830,11 +832,11 @@ func (m *Model) gitUndoCommitPrompt() tea.Cmd {
 // created-name-exists-on-remote check see the remote's real state, not the
 // last fetch's. A failed fetch (offline) still runs do: local knowledge
 // beats a dead picker. The busy flag doubles as the status-bar indicator.
-type gitFetchDoneMsg struct{ do func(*Model) }
+type gitFetchDoneMsg struct{ do func(*Model) tea.Cmd }
 
-func (m *Model) gitFetchThen(r *repoState, do func(*Model)) tea.Cmd {
+func (m *Model) gitFetchThen(r *repoState, do func(*Model) tea.Cmd) tea.Cmd {
 	if m.git.busy != "" { // another op in flight: act on what we have
-		do(m)
+		m.deferred = do(m)
 		return nil
 	}
 	m.git.busy = "fetch"
@@ -842,6 +844,22 @@ func (m *Model) gitFetchThen(r *repoState, do func(*Model)) tea.Cmd {
 	return func() tea.Msg {
 		git.Fetch(top)
 		return gitFetchDoneMsg{do: do}
+	}
+}
+
+// gitDo runs one git call off the UI thread — commit and checkout run user
+// hooks, which can be arbitrarily slow — then done(m, out, err) back on it,
+// after the panel refresh. Same busy guard as push/pull: one mutation at a
+// time, and the flag doubles as the status-bar indicator.
+func (m *Model) gitDo(label string, fn func() (string, error), done func(m *Model, out string, err error)) tea.Cmd {
+	if m.git.busy != "" {
+		m.lastMsg = "git " + m.git.busy + " already in progress"
+		return nil
+	}
+	m.git.busy = label
+	return func() tea.Msg {
+		out, err := fn()
+		return gitFetchDoneMsg{do: func(m *Model) tea.Cmd { done(m, out, err); return nil }}
 	}
 }
 
@@ -864,19 +882,19 @@ func (m *Model) gitAmendPrompt() tea.Cmd {
 			if strings.TrimSpace(msg) == "" {
 				return
 			}
-			var out string
-			var err error
-			if msg == subject && multi {
-				out, err = git.AmendNoEdit(r.top)
-			} else {
-				out, err = git.Amend(r.top, msg)
-			}
-			if err != nil {
-				m.notifyErr(err.Error())
-			} else {
-				m.notify(m.repoMsg(r, "amended: "+firstLine(out)))
-			}
-			m.refreshGit()
+			noEdit := msg == subject && multi
+			m.deferred = m.gitDo("commit", func() (string, error) {
+				if noEdit {
+					return git.AmendNoEdit(r.top)
+				}
+				return git.Amend(r.top, msg)
+			}, func(m *Model, out string, err error) {
+				if err != nil {
+					m.notifyErr(err.Error())
+				} else {
+					m.notify(m.repoMsg(r, "amended: "+firstLine(out)))
+				}
+			})
 		})
 		return nil
 	})
@@ -886,7 +904,7 @@ func (m *Model) gitBranchPrompt() tea.Cmd {
 	return m.withRepoAsk(func(m *Model, r *repoState) tea.Cmd {
 		*m = m.prompt("New branch name:", "", func(m *Model, name string) {
 			if name = strings.TrimSpace(name); name != "" {
-				m.deferred = m.gitFetchThen(r, func(m *Model) { m.gitCreateBranch(r, name) })
+				m.deferred = m.gitFetchThen(r, func(m *Model) tea.Cmd { return m.gitCreateBranch(r, name) })
 			}
 		})
 		return nil
@@ -897,27 +915,31 @@ func (m *Model) gitBranchPrompt() tea.Cmd {
 // remote is almost certainly the intent — check it out tracking the remote
 // instead of forking an unrelated branch off HEAD (which would collide on
 // the first push). Only remotes already fetched are visible here.
-func (m *Model) gitCreateBranch(r *repoState, name string) {
+func (m *Model) gitCreateBranch(r *repoState, name string) tea.Cmd {
 	bs, _ := git.Branches(r.top)
 	for _, b := range bs {
 		if _, tail, _ := strings.Cut(b.Name, "/"); b.Remote && tail == name {
-			if local, err := git.CheckoutRemote(r.top, b.Name); err != nil {
-				m.notifyErr(err.Error())
-			} else {
-				m.notify(m.repoMsg(r, "branch existed on remote — switched to "+local+" (tracking "+b.Name+")"))
-			}
-			m.refreshGit()
-			m.side.Refresh() // checkout swaps working-tree files
-			m.syncWatched()
-			return
+			remote := b.Name
+			return m.gitDo("checkout", func() (string, error) { return git.CheckoutRemote(r.top, remote) },
+				func(m *Model, local string, err error) {
+					if err != nil {
+						m.notifyErr(err.Error())
+					} else {
+						m.notify(m.repoMsg(r, "branch existed on remote — switched to "+local+" (tracking "+remote+")"))
+					}
+					m.side.Refresh() // checkout swaps working-tree files
+					m.syncWatched()
+				})
 		}
 	}
-	if err := git.CreateBranch(r.top, name); err != nil {
-		m.notifyErr(err.Error())
-	} else {
-		m.notify(m.repoMsg(r, "on new branch "+name))
-	}
-	m.refreshGit()
+	return m.gitDo("checkout", func() (string, error) { return "", git.CreateBranch(r.top, name) },
+		func(m *Model, _ string, err error) {
+			if err != nil {
+				m.notifyErr(err.Error())
+			} else {
+				m.notify(m.repoMsg(r, "on new branch "+name))
+			}
+		})
 }
 
 // openBranchPicker lists the target repo's local branches in the fuzzy
