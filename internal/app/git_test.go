@@ -157,7 +157,7 @@ func TestGitGutterSigns(t *testing.T) {
 	if d.ed.Signs[0] != 0 || d.ed.Signs[1] != 'a' {
 		t.Fatalf("signs = %q, want line 2 added", d.ed.Signs)
 	}
-	if !strings.Contains(frame(m), "▎  2 two") {
+	if !strings.Contains(frame(m), "▎  2   two") { // sign, number, pad+chevron+pad cells
 		t.Fatalf("gutter bar missing:\n%s", frame(m))
 	}
 	// Type on line 1, flush the debounce: line 1 becomes modified.

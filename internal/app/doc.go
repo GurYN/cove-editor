@@ -39,6 +39,9 @@ type doc struct {
 
 	seen time.Time // last disk mtime the watcher warned about (dirty buffers)
 	warn string    // one-shot load warning, surfaced by openFile
+
+	backedUp  bool // a crash-recovery snapshot exists on disk (see backup.go)
+	backupRev int  // editor revision the snapshot was taken at
 }
 
 func newDoc(path string, data []byte) *doc {

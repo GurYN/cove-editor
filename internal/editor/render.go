@@ -137,7 +137,7 @@ func (m Model) gutterW() int {
 		return 0
 	}
 	digits := len(strconv.Itoa(m.Buf.LineCount()))
-	return max(digits, 3) + 2 // " 123 "
+	return max(digits, 3) + 4 // " 123 ▾ " — sign, number, pad, chevron, pad
 }
 
 // textWidth is the width left for buffer content.
@@ -192,32 +192,50 @@ func lineCellsTo(line []byte, maxX int) []cell {
 func (m Model) CursorScreen() (int, int) {
 	line, col := m.Buf.Pos(m.cursors[m.primary].Head)
 	cx := (&m).cursorCellX(line, col)
-	return cx - m.xoff + m.gutterW(), line - m.top
+	y := line - m.top
+	if len(m.folds) > 0 {
+		y = (&m).visibleRows(m.top, line) - 1
+	}
+	return cx - m.xoff + m.gutterW(), y
 }
 
 // View renders only the visible window: O(visible area), never O(file).
+// With folds active the window is the visible lines from top, skipping
+// folded bodies; highlight/search windows follow each contiguous run.
 func (m Model) View() string {
 	if m.Height <= 0 {
 		return ""
 	}
-	last := min(m.top+m.Height, m.Buf.LineCount())
-	startOff := m.Buf.Offset(m.top, 0)
-	endOff := m.Buf.Len()
-	if last < m.Buf.LineCount() {
-		endOff = m.Buf.Offset(last, 0)
+	mm := &m
+	vis := make([]int, 0, m.Height)
+	for i := mm.seekVisible(clamp(m.top, 0, m.Buf.LineCount()-1), +1); i >= 0 && len(vis) < m.Height; i = mm.seekVisible(i+1, +1) {
+		vis = append(vis, i)
 	}
 
 	var spans []HLSpan
-	if m.Syntax != nil {
-		spans = m.Syntax.Spans(m.Buf.Bytes(), startOff, endOff)
+	var matches [][2]int
+	for r := 0; r < len(vis); r++ {
+		s := r
+		for r+1 < len(vis) && vis[r+1] == vis[r]+1 {
+			r++
+		}
+		startOff := m.Buf.Offset(vis[s], 0)
+		endOff := m.Buf.Len()
+		if vis[r]+1 < m.Buf.LineCount() {
+			endOff = m.Buf.Offset(vis[r]+1, 0)
+		}
+		if m.Syntax != nil {
+			spans = append(spans, m.Syntax.Spans(m.Buf.Bytes(), startOff, endOff)...)
+		}
+		matches = append(matches, mm.visibleMatches(startOff, endOff)...)
 	}
-	matches := m.visibleMatches(startOff, endOff)
 
 	curLine, _ := m.Buf.Pos(m.cursors[m.primary].Head)
+	chevrons := mm.foldMarkers(vis)
 	gw := m.gutterW()
 	var sb strings.Builder
-	for i := m.top; i < last; i++ {
-		if i > m.top {
+	for k, i := range vis {
+		if k > 0 {
 			sb.WriteByte('\n')
 		}
 		if gw > 0 {
@@ -234,17 +252,28 @@ func (m Model) View() string {
 				}
 			}
 			sb.WriteString(bar)
-			num := fmt.Sprintf("%*d ", gw-2, i+1)
+			num := fmt.Sprintf("%*d", gw-4, i+1)
 			if i == curLine {
 				sb.WriteString(gutterCurStyle.Render(num))
 			} else {
 				sb.WriteString(gutterStyle.Render(num))
 			}
+			// Fold chevron (▸ folded, ▾ foldable), padded on both sides.
+			sb.WriteByte(' ')
+			switch {
+			case mm.FoldedAt(i):
+				sb.WriteString(gutterCurStyle.Render("▸"))
+			case chevrons[i] != [2]int{}:
+				sb.WriteString(gutterStyle.Render("▾"))
+			default:
+				sb.WriteByte(' ')
+			}
+			sb.WriteByte(' ')
 		}
 		m.renderLine(&sb, i, spans, matches)
 	}
-	for i := last; i < m.top+m.Height; i++ {
-		if i > m.top {
+	for k := len(vis); k < m.Height; k++ {
+		if k > 0 {
 			sb.WriteByte('\n')
 		}
 	}

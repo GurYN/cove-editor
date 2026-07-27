@@ -27,6 +27,7 @@ type changeTickMsg struct{}
 type defMsg struct{ locs []lsp.Location }
 type refsMsg struct{ locs []lsp.Location }
 type hoverMsg struct{ text string }
+type sigMsg struct{ help *lsp.SignatureHelp }
 type complMsg struct {
 	items []lsp.CompletionItem
 	rev   int // editor revision at request time
@@ -206,6 +207,28 @@ func cmdHover(m *Model) tea.Cmd {
 		}
 		return hoverMsg{text}
 	})
+}
+
+// cmdSignatureHelp asks for parameter hints; errors are dropped — the card
+// is ambient help, not a command whose failure the user must hear about.
+func cmdSignatureHelp(m *Model) tea.Cmd {
+	uri, pos, ok := m.cursorPosition()
+	if !ok {
+		return nil
+	}
+	c := m.lspm.Client(m.doc().path)
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := lsp.Ctx()
+		defer cancel()
+		sh, err := c.SignatureHelp(ctx, uri, pos)
+		if err != nil {
+			return nil
+		}
+		return sigMsg{help: sh}
+	}
 }
 
 func cmdCompletion(m *Model) tea.Cmd {
@@ -436,6 +459,49 @@ func (m *Model) docByPath(path string) *doc {
 		}
 	}
 	return nil
+}
+
+// cycleDiag jumps to the next (dir>0) or previous diagnostic in the active
+// buffer, wrapping; the diag-under-cursor card surfaces the message.
+func (m *Model) cycleDiag(dir int) {
+	d := m.doc()
+	if d == nil || len(d.ed.Diags) == 0 {
+		m.notify("no diagnostics in this file")
+		return
+	}
+	starts := make([]int, 0, len(d.ed.Diags))
+	for _, sp := range d.ed.Diags {
+		starts = append(starts, min(sp.Start, d.ed.Buf.Len()))
+	}
+	sort.Ints(starts)
+	line, col := d.ed.Cursor()
+	cur := d.ed.Buf.Offset(line, col)
+	target := -1
+	if dir > 0 {
+		for _, s := range starts {
+			if s > cur {
+				target = s
+				break
+			}
+		}
+		if target < 0 {
+			target = starts[0]
+		}
+	} else {
+		for i := len(starts) - 1; i >= 0; i-- {
+			if starts[i] < cur {
+				target = starts[i]
+				break
+			}
+		}
+		if target < 0 {
+			target = starts[len(starts)-1]
+		}
+	}
+	m.pushJump()
+	l, c := d.ed.Buf.Pos(target)
+	d.ed.Go(l, c)
+	d.ed.Center()
 }
 
 // ---- references overlay ----

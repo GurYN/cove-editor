@@ -83,7 +83,13 @@ func (c *Client) start() {
 				"publishDiagnostics": map[string]any{},
 				"diagnostic":         map[string]any{}, // pull model (TS7 native, future servers)
 				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
-				"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
+				"signatureHelp": map[string]any{
+					"signatureInformation": map[string]any{
+						"documentationFormat":  []string{"plaintext"},
+						"parameterInformation": map[string]any{"labelOffsetSupport": true},
+					},
+				},
+				"documentSymbol": map[string]any{"hierarchicalDocumentSymbolSupport": true},
 				"completion": map[string]any{
 					"completionItem": map[string]any{"snippetSupport": false},
 				},
@@ -110,8 +116,8 @@ func (c *Client) start() {
 				// No dynamic registration: Cove sends didChangeWatchedFiles
 				// on its own schedule (focus-regain mtime sweep).
 				"didChangeWatchedFiles": map[string]any{"dynamicRegistration": false},
-				"executeCommand": map[string]any{},
-				"symbol":         map[string]any{},
+				"executeCommand":        map[string]any{},
+				"symbol":                map[string]any{},
 			},
 		},
 	}
@@ -439,6 +445,23 @@ func hoverText(raw json.RawMessage) string {
 		return out
 	}
 	return ""
+}
+
+// SignatureHelp asks for parameter hints at pos; nil when the server has
+// none (null result).
+func (c *Client) SignatureHelp(ctx context.Context, uri string, pos Position) (*SignatureHelp, error) {
+	conn, err := c.readyConn()
+	if err != nil {
+		return nil, err
+	}
+	var sh *SignatureHelp
+	if err := conn.Call(ctx, "textDocument/signatureHelp", docPos(uri, pos), &sh); err != nil {
+		return nil, err
+	}
+	if sh != nil && len(sh.Signatures) == 0 {
+		sh = nil
+	}
+	return sh, nil
 }
 
 func (c *Client) Definition(ctx context.Context, uri string, pos Position) ([]Location, error) {

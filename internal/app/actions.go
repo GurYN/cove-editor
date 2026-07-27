@@ -87,6 +87,7 @@ func newRegistry() *action.Registry {
 	// ---- global ----
 	quit := func(m *Model) tea.Cmd {
 		m.saveSession()
+		m.clearBackups() // quitting past the dirty-files prompt is a discard
 		m.lspm.Shutdown()
 		for _, t := range m.terms {
 			t.Close()
@@ -397,6 +398,11 @@ func newRegistry() *action.Registry {
 	reg("cursor.addBelow", "Cursor: Add Below", "alt+down", action.Editor, ed(func(e *editor.Model) { e.AddCursor(+1) }))
 	reg("edit.collapse", "Selection: Collapse to Single Cursor", "esc", action.Editor, ed(func(e *editor.Model) { e.Collapse() }))
 
+	// ---- folding ----
+	reg("fold.toggle", "Fold: Toggle at Cursor", "alt+-", action.Editor, ed(func(e *editor.Model) { e.ToggleFold() }))
+	reg("fold.all", "Fold: Fold All", "", action.Editor, ed(func(e *editor.Model) { e.FoldAll() }))
+	reg("fold.unfoldAll", "Fold: Unfold All", "", action.Editor, ed(func(e *editor.Model) { e.UnfoldAll() }))
+
 	// ---- editor: movement (hidden from palette, still rebindable) ----
 	type mv struct {
 		id, key string
@@ -466,6 +472,7 @@ func newRegistry() *action.Registry {
 	reg("lsp.hover", "Show Documentation (Hover)", "ctrl+k", action.Editor, func(m *Model) tea.Cmd { return cmdHover(m) })
 	reg("lsp.complete", "Trigger Completion", "ctrl+@", action.Editor, func(m *Model) tea.Cmd { return cmdCompletion(m) })
 	reg("lsp.format", "Format Document", "", action.Editor, func(m *Model) tea.Cmd { return cmdFormat(m) })
+	reg("lsp.signature", "Show Parameter Hints (Signature Help)", "", action.Editor, func(m *Model) tea.Cmd { return cmdSignatureHelp(m) })
 	reg("lsp.symbols", "Go to Symbol in File (Outline)", "ctrl+t", action.Editor, func(m *Model) tea.Cmd { return cmdSymbols(m) })
 	reg("lsp.workspaceSymbols", "Go to Symbol in Project…", "f3", action.Editor, func(m *Model) tea.Cmd {
 		if m.doc() == nil {
@@ -480,6 +487,8 @@ func newRegistry() *action.Registry {
 	})
 	reg("lsp.codeAction", "Quick Fix / Code Action", "alt+enter", action.Editor, func(m *Model) tea.Cmd { return cmdCodeActions(m) })
 	reg("lsp.problems", "Problems: List Errors and Warnings", "f8", action.Global, func(m *Model) tea.Cmd { *m = m.openProblems(); return nil })
+	reg("lsp.nextDiag", "Problems: Next Diagnostic", "alt+n", action.Editor, func(m *Model) tea.Cmd { m.cycleDiag(+1); return nil })
+	reg("lsp.prevDiag", "Problems: Previous Diagnostic", "alt+p", action.Editor, func(m *Model) tea.Cmd { m.cycleDiag(-1); return nil })
 	reg("lsp.rename", "Rename Symbol", "f2", action.Editor, func(m *Model) tea.Cmd {
 		d := m.doc()
 		if d == nil {
