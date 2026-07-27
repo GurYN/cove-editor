@@ -36,6 +36,21 @@ func TestShellRoundTrip(t *testing.T) {
 	}
 	defer tm.Close()
 
+	// Wait for the prompt before typing. Keys sent while the shell is still
+	// starting get echoed by the tty ahead of the prompt, and the output then
+	// lands glued to it ("$ covedone") — no clean output row to match.
+	ready := time.After(5 * time.Second)
+	for !strings.Contains(tm.View(false), "$") {
+		select {
+		case _, ok := <-tm.Notify():
+			if !ok {
+				t.Fatal("shell exited before printing a prompt")
+			}
+		case <-ready:
+			t.Fatalf("no shell prompt; screen:\n%s", tm.View(false))
+		}
+	}
+
 	for _, r := range "echo covedone" {
 		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
