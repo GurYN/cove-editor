@@ -95,6 +95,14 @@ func (c conflictSyntax) Expand(src []byte, lo, hi int) (int, int, bool) {
 	return 0, 0, false
 }
 
+// Folds forwards to the language syntax when it can fold (editor.Folder).
+func (c conflictSyntax) Folds(src []byte, startOff, endOff int) [][2]int {
+	if f, ok := c.inner.(editor.Folder); ok {
+		return f.Folds(src, startOff, endOff)
+	}
+	return nil
+}
+
 func (c conflictSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 	var spans []editor.HLSpan
 	if c.inner != nil {

@@ -27,6 +27,9 @@ func hasOutputLine(screen, want string) bool {
 
 // TestShellRoundTrip proves the pipeline: keys → PTY → shell → emulator → View.
 func TestShellRoundTrip(t *testing.T) {
+	// Pin a bare shell: a user zsh with ZLE plugins can swallow keys typed
+	// during its init, and this test is about the pipeline, not their rc.
+	t.Setenv("SHELL", "/bin/sh")
 	tm, err := New(t.TempDir(), nil, 40, 6)
 	if err != nil {
 		t.Fatal(err)

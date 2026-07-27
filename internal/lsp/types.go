@@ -50,6 +50,59 @@ type CompletionItem struct {
 	SortText         string    `json:"sortText,omitempty"`
 }
 
+// SignatureHelp is a textDocument/signatureHelp response.
+type SignatureHelp struct {
+	Signatures      []SignatureInfo `json:"signatures"`
+	ActiveSignature int             `json:"activeSignature"`
+	ActiveParameter int             `json:"activeParameter"`
+}
+
+type SignatureInfo struct {
+	Label      string      `json:"label"`
+	Parameters []ParamInfo `json:"parameters"`
+	// Per-signature override of the top-level activeParameter (LSP 3.16).
+	ActiveParameter *int `json:"activeParameter,omitempty"`
+}
+
+// ParamInfo's label is either a substring of the signature label or a
+// [start, end) offset pair into it.
+type ParamInfo struct {
+	Label json.RawMessage `json:"label"`
+}
+
+// Active returns the active signature's label, how many signatures there
+// are, and the [lo, hi) byte range of the active parameter within the label
+// (lo == hi when there is none).
+// ponytail: offset-pair labels are UTF-16 per spec; treated as bytes —
+// signature labels are ASCII in practice.
+func (sh *SignatureHelp) Active() (label string, count, lo, hi int) {
+	if len(sh.Signatures) == 0 {
+		return "", 0, 0, 0
+	}
+	si := sh.Signatures[min(max(sh.ActiveSignature, 0), len(sh.Signatures)-1)]
+	ap := sh.ActiveParameter
+	if si.ActiveParameter != nil {
+		ap = *si.ActiveParameter
+	}
+	label = si.Label
+	if ap < 0 || ap >= len(si.Parameters) {
+		return label, len(sh.Signatures), 0, 0
+	}
+	raw := si.Parameters[ap].Label
+	var s string
+	if json.Unmarshal(raw, &s) == nil && s != "" {
+		if i := strings.Index(label, s); i >= 0 {
+			return label, len(sh.Signatures), i, i + len(s)
+		}
+		return label, len(sh.Signatures), 0, 0
+	}
+	var pair [2]int
+	if json.Unmarshal(raw, &pair) == nil && pair[0] >= 0 && pair[1] >= pair[0] && pair[1] <= len(label) {
+		return label, len(sh.Signatures), pair[0], pair[1]
+	}
+	return label, len(sh.Signatures), 0, 0
+}
+
 // DocumentSymbol is one node of a textDocument/documentSymbol response.
 // Kind values are the LSP SymbolKind enum (5 class, 12 function, …).
 type DocumentSymbol struct {

@@ -447,6 +447,68 @@ func (h *Highlighter) Expand(src []byte, lo, hi int) (int, int, bool) {
 	return 0, 0, false
 }
 
+// Folds implements editor.Folder: fold regions (startLine, endLine) for the
+// outermost multi-line named nodes starting within [startOff, endOff),
+// sorted by start line. "Outermost" per start line: DFS visits parents
+// first, so the first node claiming a line wins.
+func (h *Highlighter) Folds(src []byte, startOff, endOff int) [][2]int {
+	h.refresh(src)
+	var out [][2]int
+	c := h.tree.Walk()
+	defer c.Close()
+	depth := 0
+	for ok := true; ok; {
+		n := c.Node()
+		startB := int(n.StartByte())
+		if startB > endOff {
+			break // preorder is start-byte-ordered: nothing later is in the window
+		}
+		inWin := int(n.EndByte()) >= startOff
+		if inWin && depth > 0 && n.IsNamed() && startB >= startOff {
+			sr, er := int(n.StartPosition().Row), int(n.EndPosition().Row)
+			if int(n.EndPosition().Column) == 0 {
+				er-- // node ends exactly on a newline: fold to its last content line
+			}
+			// ponytail: "block"/"statement_list" are bare body containers (Go
+			// statement_list, Python block) whose header line is a plain
+			// statement — grammar artifacts, not constructs; the enclosing
+			// declaration already provides the fold. Extend the pair if
+			// another grammar's wrapper kind produces junk folds. Kind() is
+			// checked last: it's a CGo call and most nodes fail the row test.
+			if er > sr && (len(out) == 0 || out[len(out)-1][0] != sr) &&
+				n.Kind() != "block" && n.Kind() != "statement_list" {
+				out = append(out, [2]int{sr, er})
+			}
+		}
+		if inWin {
+			if startB < startOff {
+				// Straddles the window start (the root, an enclosing decl):
+				// byte-seek to the first child reaching the window, skipping
+				// every earlier sibling — this keeps mid-file viewports
+				// O(window), not O(preceding top-level declarations).
+				if c.GotoFirstChildForByte(uint32(startOff)) != nil {
+					depth++
+					continue
+				}
+			} else if c.GotoFirstChild() {
+				depth++
+				continue
+			}
+		}
+		for {
+			if c.GotoNextSibling() {
+				break
+			}
+			if !c.GotoParent() {
+				ok = false
+				break
+			}
+			depth--
+		}
+	}
+	return out
+}
+
 func (h *Highlighter) refresh(src []byte) {
 	if h.stale {
 		newTree := h.parser.Parse(src, h.tree)

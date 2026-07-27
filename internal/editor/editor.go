@@ -71,10 +71,13 @@ type Model struct {
 	Diags    []DiagSpan // set by the app; offsets clamped at render time
 	Signs    []byte     // git gutter sign per line ('a'/'m'/'d', 0 none); set by the app
 
-	cursors  []Cursor // sorted by sel start, non-overlapping, len >= 1
-	primary  int      // index into cursors; scroll follows this one
-	top      int      // first visible line
-	xoff     int      // horizontal scroll, in screen cells
+	cursors  []Cursor   // sorted by sel start, non-overlapping, len >= 1
+	primary  int        // index into cursors; scroll follows this one
+	top      int        // first visible line
+	xoff     int        // horizontal scroll, in screen cells
+	folds    [][2]int   // sorted, disjoint folded regions (see fold.go)
+	foldsGen int        // bumped on every fold change; keys the chevron cache
+	marks    *foldMarks // viewport chevron cache, shared across Model copies
 	hist     history
 	saved    int    // undo depth at last save; -1 once that history is orphaned
 	savedLen int    // content length at last save
@@ -88,7 +91,7 @@ type Model struct {
 }
 
 func New(buf *buffer.Buffer) Model {
-	m := Model{Buf: buf, cursors: []Cursor{{}}}
+	m := Model{Buf: buf, cursors: []Cursor{{}}, marks: &foldMarks{}}
 	m.MarkSaved()
 	return m
 }
@@ -117,6 +120,11 @@ func (m *Model) Center() {
 		return
 	}
 	line, _ := m.Buf.Pos(m.cursors[m.primary].Head)
+	if len(m.folds) > 0 {
+		m.unfoldAt(line)
+		m.top = m.stepVisible(line, -m.Height/2)
+		return
+	}
 	m.top = clamp(line-m.Height/2, 0, max(0, m.Buf.LineCount()-m.Height))
 }
 
@@ -260,7 +268,11 @@ func (m *Model) moveWord(dir int, extend bool) {
 func (m *Model) moveV(delta int, extend bool) {
 	m.eachCursor(func(c *Cursor) {
 		line, _ := m.Buf.Pos(c.Head)
-		line = clamp(line+delta, 0, m.Buf.LineCount()-1)
+		if len(m.folds) == 0 {
+			line = clamp(line+delta, 0, m.Buf.LineCount()-1)
+		} else {
+			line = m.stepVisible(line, delta) // skip folded bodies
+		}
 		c.Head = m.snapRune(m.Buf.Offset(line, c.wantCol))
 		if !extend {
 			c.Anchor = c.Head
@@ -370,11 +382,21 @@ func (m *Model) normalize() {
 
 func (m *Model) scrollToCursor() {
 	line, _ := m.Buf.Pos(m.cursors[m.primary].Head)
+	if len(m.folds) > 0 {
+		m.unfoldAt(line) // the cursor can never sit in a hidden line
+		m.fixTop()
+	}
 	if line < m.top {
 		m.top = line
 	}
-	if m.Height > 0 && line >= m.top+m.Height {
-		m.top = line - m.Height + 1
+	if m.Height > 0 {
+		if len(m.folds) == 0 {
+			if line >= m.top+m.Height {
+				m.top = line - m.Height + 1
+			}
+		} else if m.visibleRows(m.top, line) > m.Height {
+			m.top = m.stepVisible(line, -(m.Height - 1))
+		}
 	}
 	m.keepCursorHVisible()
 }
@@ -600,7 +622,7 @@ func (m *Model) applyEdits(edits []Edit) {
 	for _, e := range slices.Backward(edits) {
 		oldEnd := e.Off + len(e.Old)
 		var sp, oep [2]int
-		if m.Syntax != nil {
+		if m.Syntax != nil || len(m.folds) > 0 {
 			sl, sc := m.Buf.Pos(e.Off)
 			ol, oc := m.Buf.Pos(oldEnd)
 			sp, oep = [2]int{sl, sc}, [2]int{ol, oc}
@@ -611,10 +633,14 @@ func (m *Model) applyEdits(edits []Edit) {
 		if len(e.New) > 0 {
 			m.Buf.Insert(e.Off, e.New)
 		}
+		newEnd := e.Off + len(e.New)
 		if m.Syntax != nil {
-			newEnd := e.Off + len(e.New)
 			nl, nc := m.Buf.Pos(newEnd)
 			m.Syntax.Edit(e.Off, oldEnd, newEnd, sp, oep, [2]int{nl, nc})
+		}
+		if len(m.folds) > 0 {
+			nl, _ := m.Buf.Pos(newEnd)
+			m.adjustFolds(sp[0], oep[0], nl)
 		}
 	}
 }
@@ -1008,9 +1034,17 @@ func (m *Model) maxVisibleCellWidth() int {
 func (m *Model) handleMouse(msg tea.MouseMsg) {
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
+		if len(m.folds) > 0 {
+			m.top = m.stepVisible(m.top, -3)
+			return
+		}
 		m.top = max(0, m.top-3)
 		return
 	case tea.MouseButtonWheelDown:
+		if len(m.folds) > 0 {
+			m.top = min(m.stepVisible(m.top, 3), m.stepVisible(m.Buf.LineCount()-1, -(m.Height-1)))
+			return
+		}
 		m.top = min(max(0, m.Buf.LineCount()-m.Height), m.top+3)
 		return
 	case tea.MouseButtonWheelLeft:
@@ -1022,6 +1056,24 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	}
 	if msg.Button != tea.MouseButtonLeft && msg.Action != tea.MouseActionMotion {
 		return
+	}
+	// A click on the chevron cell (between its two pad columns) toggles the fold.
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft &&
+		m.gutterW() > 0 && msg.X == m.gutterW()-2 {
+		line := m.lineAtRow(msg.Y)
+		if i := m.foldedAt(line); i >= 0 {
+			m.removeFold(i)
+			return
+		}
+		if f, ok := m.foldStartingAt(line); ok {
+			m.addFold(f)
+			// The fold may have swallowed the cursor: park it on the header.
+			if cl, _ := m.Buf.Pos(m.cursors[m.primary].Head); m.foldHiding(cl) >= 0 {
+				m.Go(f[0], 0)
+			}
+			m.fixTop()
+			return
+		}
 	}
 	off := m.hitTest(msg.X, msg.Y)
 	switch msg.Action {
@@ -1054,9 +1106,17 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 	}
 }
 
+// lineAtRow maps a viewport row to its buffer line, skipping folded bodies.
+func (m *Model) lineAtRow(y int) int {
+	if len(m.folds) == 0 {
+		return clamp(m.top+y, 0, m.Buf.LineCount()-1)
+	}
+	return m.stepVisible(m.top, max(0, y))
+}
+
 // hitTest maps a screen cell to a byte offset. x includes the gutter.
 func (m *Model) hitTest(x, y int) int {
-	line := clamp(m.top+y, 0, m.Buf.LineCount()-1)
+	line := m.lineAtRow(y)
 	want := max(0, x-m.gutterW()) + m.xoff
 	start := m.Buf.Offset(line, 0)
 	maxB := min(m.Buf.LineLen(line), (want+1)*4+8)

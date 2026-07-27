@@ -147,6 +147,7 @@ type Model struct {
 	lspStatus     map[string]string
 	changePending bool
 	hoverText     string
+	sigHelp       *lsp.SignatureHelp
 	compl         complState
 
 	mode     mode
@@ -277,7 +278,11 @@ func New(path string, data []byte) Model {
 	m.lspm = lsp.NewManager(m.side.Root)
 	m.lspStatus = map[string]string{}
 	m.syncWatched() // baseline mtime sweep; later sweeps diff against it
+	sweepBackups()  // drop crash snapshots too old to still be a crash story
 	if d := m.doc(); d != nil {
+		if !d.virtual {
+			m.tryRestore(d)
+		}
 		m.lspm.Open(d.path, d.ed.Buf.Bytes(), d.ed.Rev)
 	}
 	if len(m.docs) == 0 { // dir or no argument: bring last session back
@@ -341,6 +346,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.lastMsg, m.msgToast = "", false
 		}
 		m.checkDiskChanges()
+		m.writeBackups() // crash-recovery snapshots ride the same tick
 		if m.termDirty { // in-app terminal activity: same resync as focus regain
 			m.termDirty = false
 			m.side.Refresh()
@@ -384,6 +390,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.notify("no documentation")
 		}
 		m.hoverText = msg.text
+		return m, nil
+	case sigMsg:
+		m.sigHelp = msg.help
 		return m, nil
 	case wsEditMsg:
 		files, stale := m.applyWorkspaceEdit(msg.edit, msg.revs)
@@ -429,6 +438,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.cfgWarns = nil   // any key dismisses the config toast
 		m.updateToast = "" // and the new-release toast
 		m.hoverText = ""   // any key dismisses the hover card
+		m.sigHelp = nil    // signature hints re-trigger on ( and ,
 		// The terminal never delivers a lone Esc: bubbletea's parser buffers
 		// the ESC byte until the next key arrives and fuses them into an
 		// alt-chord. Unfuse: treat as Esc, then the bare key. Deliberate
@@ -440,7 +450,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.focus == paneTerminal && m.activeTerm() != nil
 		codeActionEnter := msg.Type == tea.KeyEnter && m.mode == modeEdit &&
 			m.ovKind == overlayNone && m.focus == paneEditor // alt+enter quick fix
-		if msg.Alt && !termFocus && msg.Type != tea.KeyUp && msg.Type != tea.KeyDown &&
+		// Any alt-chord bound in the focused context is deliberate (alt+n/alt+p
+		// diagnostics, fold keys, user rebinds) — dispatch it, don't unfuse.
+		altBound := m.ovKind == overlayNone && m.mode == modeEdit &&
+			m.reg.Lookup(m.keyCtx(), msg.String()) != nil
+		if msg.Alt && !termFocus && !altBound && msg.Type != tea.KeyUp && msg.Type != tea.KeyDown &&
 			msg.Type != tea.KeyShiftUp && msg.Type != tea.KeyShiftDown && // alt+shift+up/down move-line
 			msg.Type != tea.KeyLeft && msg.Type != tea.KeyRight && // alt+left/right nav back/forward
 			!(msg.Type == tea.KeyEnter && m.mode == modeReplace) && !codeActionEnter {
@@ -526,6 +540,17 @@ func (m *Model) layout() {
 	}
 }
 
+// keyCtx is the registry context for the focused pane.
+func (m *Model) keyCtx() action.Context {
+	switch m.focus {
+	case paneSidebar:
+		return action.Sidebar
+	case paneGit:
+		return action.Git
+	}
+	return action.Editor
+}
+
 func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.aboutOpen {
 		m.aboutOpen = false
@@ -593,14 +618,7 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 	}
-	ctx := action.Editor
-	switch m.focus {
-	case paneSidebar:
-		ctx = action.Sidebar
-	case paneGit:
-		ctx = action.Git
-	}
-	if act := m.reg.Lookup(ctx, msg.String()); act != nil {
+	if act := m.reg.Lookup(m.keyCtx(), msg.String()); act != nil {
 		cmd := act.Do(&m)
 		m.layout() // actions may open/close panes
 		return m, tea.Batch(cmd, m.syncLSP())
@@ -615,10 +633,14 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			d.ed, cmd = d.ed.Update(msg)
-			// Auto-trigger completion after a member access dot.
-			if msg.Type == tea.KeyRunes && !msg.Alt && strings.HasSuffix(string(msg.Runes), ".") &&
-				lsp.LangFor(d.path) != "" && !m.compl.active {
-				return m, tea.Batch(cmd, m.syncLSP(), cmdCompletion(&m))
+			// Auto-trigger completion after a member access dot, and
+			// signature hints after ( or , inside a call.
+			if msg.Type == tea.KeyRunes && !msg.Alt && lsp.LangFor(d.path) != "" {
+				if s := string(msg.Runes); strings.HasSuffix(s, ".") && !m.compl.active {
+					return m, tea.Batch(cmd, m.syncLSP(), cmdCompletion(&m))
+				} else if strings.HasSuffix(s, "(") || strings.HasSuffix(s, ",") {
+					return m, tea.Batch(cmd, m.syncLSP(), cmdSignatureHelp(&m))
+				}
 			}
 			return m, tea.Batch(cmd, m.syncLSP())
 		}
@@ -1076,6 +1098,7 @@ func (m *Model) openFile(path string) {
 	}
 	m.layout()
 	if !d.virtual { // asset previews: no LSP, no git baseline
+		m.tryRestore(d) // before the LSP open, so the server sees restored text
 		m.lspm.Open(path, d.ed.Buf.Bytes(), d.ed.Rev)
 		m.loadGitHead(d)
 	}
@@ -1100,6 +1123,7 @@ func (m Model) closeActive() Model {
 }
 
 func (m *Model) forceClose() {
+	m.dropBackup(m.docs[m.active]) // closing discards; the snapshot must too
 	m.lspm.Close(m.docs[m.active].path)
 	// Free the highlighter's tree-sitter C memory; the editor.Syntax
 	// interface stays CGo-free, so reach Close via assertion.
@@ -1603,6 +1627,8 @@ func (m Model) View() string {
 		switch {
 		case m.compl.active:
 			middle = m.composite(middle, m.renderCompl(), cy+1, left)
+		case m.sigHelp != nil:
+			middle = m.composite(middle, m.renderSig(), cy+1, left)
 		case m.hoverText != "":
 			middle = m.composite(middle, m.renderHover(), cy+1, left)
 		default:

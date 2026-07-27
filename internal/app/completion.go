@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -319,6 +320,24 @@ func (m Model) renderCfgToast() string {
 		Width(w)
 	title := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render("▲ config")
 	return style.Render(title + "\n• " + strings.Join(m.cfgWarns, "\n• "))
+}
+
+// renderSig renders the signature-help card: the active signature with the
+// active parameter highlighted, plus a count when the call is overloaded.
+func (m Model) renderSig() string {
+	label, count, lo, hi := m.sigHelp.Active()
+	if len(label) > 100 {
+		label = label[:100] + "…"
+		lo, hi = min(lo, len(label)), min(hi, len(label))
+	}
+	line := label
+	if lo < hi {
+		line = label[:lo] + complSelStyle.Render(label[lo:hi]) + label[hi:]
+	}
+	if count > 1 {
+		line += complDimStyle.Render(fmt.Sprintf("  (%d overloads)", count))
+	}
+	return hoverStyle.Render(line)
 }
 
 func (m Model) renderHover() string {

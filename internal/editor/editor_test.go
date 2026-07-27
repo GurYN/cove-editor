@@ -340,14 +340,14 @@ func TestLineNumberGutter(t *testing.T) {
 	m := New(buffer.New([]byte("alpha\nbeta\ngamma\n")))
 	m.Width, m.Height = 40, 3
 	frame := m.View()
-	for _, want := range []string{"  1 alpha", "  2 beta", "  3 gamma"} {
+	for _, want := range []string{"  1   alpha", "  2   beta", "  3   gamma"} { // number, pad+chevron+pad cells
 		if !strings.Contains(stripANSI(frame), want) {
 			t.Fatalf("gutter missing %q in %q", want, stripANSI(frame))
 		}
 	}
 	// Click at screen x inside the text must land on the right column:
-	// gutter is 5 wide, so x=7 on row 1 -> "beta" col 2.
-	m, _ = m.Update(tea.MouseMsg{X: 7, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	// gutter is 7 wide (sign, number, pad, chevron, pad), so x=9 on row 1 -> "beta" col 2.
+	m, _ = m.Update(tea.MouseMsg{X: 9, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	if line, col := m.Cursor(); line != 1 || col != 2 {
 		t.Fatalf("click with gutter mapped to %d:%d, want 1:2", line, col)
 	}
