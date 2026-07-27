@@ -19,6 +19,12 @@ func TestAboutBox(t *testing.T) {
 	if !strings.Contains(frame, "terminal IDE") || !strings.Contains(frame, Version) {
 		t.Fatalf("about box missing name/version:\n%.800s", frame)
 	}
+	if !strings.Contains(frame, "cove-editor.com") || !strings.Contains(frame, "github.com/GurYN/cove-editor") {
+		t.Fatalf("about box missing urls:\n%.800s", frame)
+	}
+	if !strings.Contains(frame, "MIT") {
+		t.Fatalf("about box missing license line:\n%.800s", frame)
+	}
 
 	// any key closes
 	var next tea.Model = mm
