@@ -260,6 +260,12 @@ func newRegistry() *action.Registry {
 		}
 		return nil
 	})
+	reg("git.diffSide", "Git: Side-by-side Diff", "d", action.Git, func(m *Model) tea.Cmd {
+		if r, ok := m.git.selected(); ok {
+			m.gitOpenDiffSide(r)
+		}
+		return nil
+	})
 	reg("git.resolveOurs", "Git: Resolve Conflict — Keep Ours (Whole File)", "", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(false); return nil })
 	reg("git.resolveTheirs", "Git: Resolve Conflict — Keep Theirs (Whole File)", "t", action.Git, func(m *Model) tea.Cmd { m.gitResolveSide(true); return nil })
 	// Per-block resolution in the editor, on the conflict under the cursor.

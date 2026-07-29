@@ -211,6 +211,7 @@ func New(path string, data []byte) Model {
 		m.vim = &vimState{}
 	}
 	m.git.tree = cfg.Git.View == "tree"
+	m.git.sideDiff = cfg.Git.Diff == "side"
 	if cfgErr != nil {
 		m.cfgWarns = append(m.cfgWarns, cfgErr.Error())
 	}

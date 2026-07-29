@@ -54,6 +54,14 @@ var themeSlots = map[string]int{
 
 var paintStyles = make([]lipgloss.Style, paintCursor+1)
 
+// lineBGColors backs Model.LineBG: a full-width background band per changed
+// line in diff views, composing under syntax foregrounds.
+var lineBGColors = map[byte]lipgloss.Color{}
+
+var lineBGSlots = map[string]byte{
+	"diff.bg.added": 'a', "diff.bg.deleted": 'd', "diff.bg.modified": 'm',
+}
+
 // Standalone default so the editor styles sensibly without the app's
 // config layer (tests, embedding). The app overrides at startup.
 func init() {
@@ -63,6 +71,7 @@ func init() {
 		"operator": "246", "info": "81", "warning": "214", "error": "203",
 		"match": "58", "selection": "24",
 		"merge.ours": "22", "merge.theirs": "17",
+		"diff.bg.added": "22", "diff.bg.deleted": "52", "diff.bg.modified": "58",
 	})
 }
 
@@ -89,6 +98,13 @@ func ApplyTheme(colors map[string]string) {
 	}
 	s[paintCursor] = lipgloss.NewStyle().Reverse(true)
 	paintStyles = s
+	bgs := map[byte]lipgloss.Color{}
+	for name, b := range lineBGSlots {
+		if c := colors[name]; c != "" {
+			bgs[b] = lipgloss.Color(c)
+		}
+	}
+	lineBGColors = bgs
 	if c := colors["gutter"]; c != "" {
 		gutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(c))
 		gutterCurStyle = gutterStyle.Bold(true)
@@ -118,6 +134,10 @@ func SetTabStop(n int) {
 		tabStop = n
 	}
 }
+
+// TabStop reports the configured tab width — for text generators (side-by-side
+// diff) that pre-expand tabs to keep columns straight.
+func TabStop() int { return tabStop }
 
 var (
 	showLineNumbers = true
@@ -399,6 +419,15 @@ func (m Model) renderLine(sb *strings.Builder, lineIdx int, spans []HLSpan, matc
 			}
 		}
 	}
+	// A LineBG band paints the full text width, under the syntax colors.
+	var bgStyle lipgloss.Style
+	hasBG := false
+	if lineIdx < len(m.LineBG) {
+		if c, ok := lineBGColors[m.LineBG[lineIdx]]; ok {
+			bgStyle, hasBG = lipgloss.NewStyle().Background(c), true
+			visible = max(visible, width)
+		}
+	}
 	// Include a trailing cell if a cursor or selection sits at EOL.
 	for i := visible; i <= width; i++ {
 		if paint[i] != ClassNone {
@@ -412,9 +441,14 @@ func (m Model) renderLine(sb *strings.Builder, lineIdx int, spans []HLSpan, matc
 			end++
 		}
 		chunk := string(runeAt[start:end])
-		if id == ClassNone {
+		switch {
+		case id == ClassNone && hasBG:
+			sb.WriteString(bgStyle.Render(chunk))
+		case id == ClassNone:
 			sb.WriteString(chunk)
-		} else {
+		case hasBG && id < paintMatch: // match/selection/cursor keep their own bg
+			sb.WriteString(paintStyles[id].Inherit(bgStyle).Render(chunk))
+		default:
 			sb.WriteString(paintStyles[id].Render(chunk))
 		}
 		start = end

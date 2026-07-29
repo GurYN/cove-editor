@@ -145,7 +145,8 @@ Inside the panel (all of this is also in the palette):
 | Key       | Action                                    |
 | --------- | ----------------------------------------- |
 | `Space`   | Stage / unstage the selected file          |
-| `Enter`   | Open the file's diff (read-only tab)       |
+| `Enter`   | Open the file's diff (read-only tab; `[git] diff_style = "side"` makes it side-by-side) |
+| `d`       | Open the diff side-by-side (old │ new columns) |
 | `o`       | Open the file itself (on a conflict row: keep ours) |
 | `c`       | Commit staged files                        |
 | `m`       | Amend last commit (Enter keeps the message; typing rewords) |
@@ -188,6 +189,7 @@ hidden = [".DS_Store", "*.pyc"]   # hide from the file tree (git panel still sho
 
 [git]
 view = "flat"                     # or "tree": changed files under collapsible directories (Enter/Space/click folds)
+diff_style = "unified"            # or "side": Enter opens diffs as two aligned columns ('d' always does)
 
 [keys]
 "file.save" = "ctrl+shift+s"   # rebind any action by its ID
@@ -197,6 +199,7 @@ command = ["gopls"]            # override or add language servers
 
 [colors]
 "git.added" = "#98c379"        # override any theme color, incl. git states
+"diff.bg.added" = "#29392b"    # side-by-side diff line bands: also .deleted / .modified
 
 [apps.lazygit]                 # favorite TUI apps: palette entry "App: lazygit",
 command = ["lazygit"]          # runs as a named terminal-panel instance

@@ -28,8 +28,11 @@ type Config struct {
 
 	// Git tunes the git panel: [git] view = "tree" groups changed files
 	// under their directories; anything else (default) is the flat list.
+	// [git] diff_style = "side" makes Enter open diffs side-by-side;
+	// anything else (default) is the unified view.
 	Git struct {
 		View string `toml:"view"`
+		Diff string `toml:"diff_style"`
 	} `toml:"git"`
 
 	// Keys maps action IDs to key overrides: "file.save" = "ctrl+s".
