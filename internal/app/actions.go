@@ -243,6 +243,8 @@ func newRegistry() *action.Registry {
 	})
 	reg("term.toggle", "Terminal: Toggle", "ctrl+j", action.Global, func(m *Model) tea.Cmd { return m.toggleTerm() })
 	reg("term.new", "Terminal: New Instance", "", action.Global, func(m *Model) tea.Cmd { return m.newTerm() })
+	reg("term.next", "Terminal: Next Instance", "ctrl+pgdown", action.Global, func(m *Model) tea.Cmd { m.cycleTerm(+1); return nil })
+	reg("term.prev", "Terminal: Previous Instance", "ctrl+pgup", action.Global, func(m *Model) tea.Cmd { m.cycleTerm(-1); return nil })
 
 	// ---- split panes ----
 	reg("pane.split", "Pane: Split Right", "ctrl+\\", action.Global, func(m *Model) tea.Cmd { m.splitOpen(); return nil })
