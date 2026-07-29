@@ -21,6 +21,7 @@ import (
 const sampleConfig = `# Cove configuration. Changes apply on restart.
 
 # theme = "cove-dark"        # or "cove-light"
+
 # keymap = "default"          # "vim" for the opt-in Vim keymap
 
 # [editor]
@@ -59,6 +60,57 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # [update]
 # check = false             # disable the once-a-day new-release check
 `
+
+// sampleMarker extracts the setting a sampleConfig block documents: a table
+// prefix ("[editor]", "[lsp.") or a top-level key ("theme="). Prose-only
+// blocks yield "".
+func sampleMarker(block string) string {
+	for _, ln := range strings.Split(block, "\n") {
+		s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ln), "#"))
+		if strings.HasPrefix(s, "[") {
+			if i := strings.IndexAny(s, ".]"); i >= 0 {
+				return s[:i+1] // "[lsp." matches any registered server
+			}
+		}
+		if i := strings.Index(s, "="); i > 0 {
+			if key := strings.TrimSpace(s[:i]); key != "" && !strings.ContainsAny(key, " \"") {
+				return key + "="
+			}
+		}
+	}
+	return ""
+}
+
+// upgradeSampleConfig appends sampleConfig blocks for options this build
+// added that an existing config file doesn't mention (commented or not) —
+// so early users discover new settings when they open config.toml.
+func upgradeSampleConfig(p string) {
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	// ponytail: substring match on space-stripped text, not a TOML parse —
+	// a marker inside a string value counts as present, which is harmless.
+	flat := strings.NewReplacer(" ", "", "\t", "").Replace(string(data))
+	var missing []string
+	for _, block := range strings.Split(sampleConfig, "\n\n") {
+		if mk := sampleMarker(block); mk != "" && !strings.Contains(flat, strings.ReplaceAll(mk, " ", "")) {
+			missing = append(missing, block)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	const header = "# Options added by newer Cove builds:"
+	add := "\n" + header + "\n\n" + strings.Join(missing, "\n\n") + "\n"
+	if strings.Contains(string(data), header) {
+		add = "\n" + strings.Join(missing, "\n\n") + "\n"
+	}
+	if !bytes.HasSuffix(data, []byte("\n")) {
+		add = "\n" + add
+	}
+	os.WriteFile(p, append(data, add...), 0o644)
+}
 
 // newRegistry declares every user action: ID, palette title, default key,
 // context. This is the single source of truth the palette, the key

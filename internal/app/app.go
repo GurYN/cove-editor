@@ -1086,6 +1086,9 @@ func (m *Model) openFile(path string) {
 			return
 		}
 	}
+	if cp, _ := filepath.Abs(config.Path()); cp == abs {
+		upgradeSampleConfig(abs) // surface options added since the file was written
+	}
 	d, err := loadDoc(path)
 	if err != nil {
 		m.notifyErr(err.Error())
