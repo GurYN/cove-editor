@@ -70,6 +70,7 @@ type Model struct {
 	Rev      int        // bumped on every buffer mutation; drives LSP sync
 	Diags    []DiagSpan // set by the app; offsets clamped at render time
 	Signs    []byte     // git gutter sign per line ('a'/'m'/'d', 0 none); set by the app
+	LineBG   []byte     // per-line background class ('a'/'m'/'d', 0 none); set by the app (diff views)
 
 	cursors  []Cursor   // sorted by sel start, non-overlapping, len >= 1
 	primary  int        // index into cursors; scroll follows this one

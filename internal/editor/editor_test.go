@@ -507,3 +507,27 @@ func TestInsertCloserAutoDedent(t *testing.T) {
 		t.Fatalf("col 0: %q", got)
 	}
 }
+
+// LineBG paints a full-width background band on the flagged line only,
+// composing under (not replacing) syntax foregrounds.
+func TestLineBGBand(t *testing.T) {
+	m := New(buffer.New([]byte("aa\nbb\n")))
+	m.Width, m.Height = 10, 2
+	m.LineBG = []byte{0, 'a'}
+	lines := strings.Split(m.View(), "\n")
+	// Default ANSI theme: diff.bg.added = 22.
+	if strings.Contains(lines[0], "48;5;22") {
+		t.Fatalf("unchanged line got a band: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "48;5;22") {
+		t.Fatalf("added line missing the band: %q", lines[1])
+	}
+	// The band spans the padding after the text, not just "bb": the flagged
+	// row renders full width, the plain row stops at its text.
+	if w := lipgloss.Width(lines[1]); w != m.Width {
+		t.Fatalf("band width = %d, want %d", w, m.Width)
+	}
+	if w := lipgloss.Width(lines[0]); w >= m.Width {
+		t.Fatalf("plain row padded to full width: %d", w)
+	}
+}

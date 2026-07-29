@@ -7,6 +7,8 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,6 +21,7 @@ import (
 	"github.com/GurYN/cove-editor/internal/git"
 	"github.com/GurYN/cove-editor/internal/overlay"
 	"github.com/GurYN/cove-editor/internal/sidebar"
+	"github.com/GurYN/cove-editor/internal/syntax"
 )
 
 var (
@@ -71,16 +74,17 @@ type gitRow struct {
 // Several repos happen when the opened folder holds multiple checkouts
 // (root docs + per-project repos): each renders as its own section group.
 type gitPanel struct {
-	view    bool // left pane shows the git panel instead of the file tree
-	repos   []*repoState
-	dirTop  map[string]string // file-dir → repo top cache ("" = not in a repo)
-	rows    []gitRow
-	sel     int
-	top     int
-	err     string // "not a git repository" when nothing was found
-	busy    string // "push"/"pull"/"commit"/"checkout"… while one is in flight
-	blameOn bool   // inline blame for the cursor line (git.blame toggle)
-	tree    bool   // [git] view = "tree": group files under directory rows
+	view     bool // left pane shows the git panel instead of the file tree
+	repos    []*repoState
+	dirTop   map[string]string // file-dir → repo top cache ("" = not in a repo)
+	rows     []gitRow
+	sel      int
+	top      int
+	err      string // "not a git repository" when nothing was found
+	busy     string // "push"/"pull"/"commit"/"checkout"… while one is in flight
+	blameOn  bool   // inline blame for the cursor line (git.blame toggle)
+	tree     bool   // [git] view = "tree": group files under directory rows
+	sideDiff bool   // [git] diff_style = "side": Enter opens side-by-side diffs
 	// collapsed dirs, keyed repo.top+"\x00"+dir — shared across sections so
 	// folding vendor/ in Changes folds it in Staged too. Stale keys are inert.
 	collapsed map[string]bool
@@ -702,8 +706,13 @@ func (m *Model) gitOpenFile() {
 	m.openFile(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
 }
 
-// gitOpenDiff shows the file's diff in a read-only tab.
+// gitOpenDiff shows the file's diff in a read-only tab — unified by default,
+// side-by-side when [git] diff_style = "side".
 func (m *Model) gitOpenDiff(r gitRow) {
+	if m.git.sideDiff {
+		m.gitOpenDiffSide(r)
+		return
+	}
 	if r.fs.Conflict() { // markers live in the working file: open it to resolve
 		m.openFile(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
 		m.mergeNext() // land on the first block; the hint names the accept commands
@@ -743,6 +752,10 @@ func (m *Model) openVirtualSyn(title, text string, syn editor.Syntax) {
 	ed.Syntax = syn
 	for i, d := range m.docs {
 		if d.virtual && d.path == title {
+			// The replaced content's syntax may hold CGo trees (sideSyntax).
+			if c, ok := d.ed.Syntax.(interface{ Close() }); ok {
+				c.Close()
+			}
 			d.ed = ed
 			m.active = i
 			m.focus = paneEditor
@@ -1599,4 +1612,303 @@ func (diffSyntax) Spans(src []byte, startOff, endOff int) []editor.HLSpan {
 		}
 	})
 	return spans
+}
+
+// ---- side-by-side diff (two columns, real syntax colors, bg line bands) ----
+
+// gitOpenDiffSide shows the file's changes as two aligned columns (old │ new)
+// in the same virtual tab the unified diff uses, so the two styles replace
+// each other instead of piling up tabs. Each column keeps the language's real
+// syntax colors (one highlighter per side, spans remapped by offset), and
+// changed rows get a full-width background band (editor.LineBG).
+func (m *Model) gitOpenDiffSide(r gitRow) {
+	if r.fs.Conflict() { // markers live in the working file: open it to resolve
+		m.openFile(filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path)))
+		m.mergeNext()
+		return
+	}
+	abs := filepath.Join(r.repo.top, filepath.FromSlash(r.fs.Path))
+	var oldB, newB []byte
+	var err error
+	switch {
+	case r.fs.Untracked():
+		newB, err = os.ReadFile(abs)
+	case r.staged:
+		oldB, _ = git.Show(r.repo.top, r.fs.Path) // no HEAD version for a new file
+		newB, _ = git.ShowIndex(r.repo.top, r.fs.Path)
+	default:
+		oldB, _ = git.ShowIndex(r.repo.top, r.fs.Path)
+		newB, err = os.ReadFile(abs)
+		if os.IsNotExist(err) { // deleted in the worktree: right column empty
+			err = nil
+		}
+	}
+	if err != nil {
+		m.notifyErr(err.Error())
+		return
+	}
+	oldB = bytes.ReplaceAll(oldB, []byte("\r\n"), []byte("\n"))
+	newB = bytes.ReplaceAll(newB, []byte("\r\n"), []byte("\n"))
+	if bytes.Equal(oldB, newB) {
+		m.notify("no changes to show")
+		return
+	}
+	al, bl := diffCells(oldB), diffCells(newB)
+	rows := sideRows(oldB, newB, al, bl)
+	// Column width from the pane this tab opens in, at open time.
+	// ponytail: no reflow on resize — reopening the diff regenerates.
+	w := m.width - m.editorX()
+	if m.split {
+		if m.splitRight {
+			w = m.splitAvail() - m.splitLW() - 1
+		} else {
+			w = m.splitLW()
+		}
+	}
+	if editor.LineNumbersEnabled() {
+		w -= max(len(strconv.Itoa(len(rows))), 3) + 4 // mirrors editor gutterW
+	}
+	text, maps, bgs := sideDiffText(rows, al, bl, max(8, (w-3)/2))
+	syn := &sideSyntax{rows: maps, oldSrc: oldB, newSrc: newB}
+	if len(oldB) > 0 {
+		syn.oldHL = syntax.New(r.fs.Path, oldB)
+	}
+	if len(newB) > 0 {
+		syn.newHL = syntax.New(r.fs.Path, newB)
+	}
+	title := r.fs.Path + " (diff)"
+	if r.staged {
+		title = r.fs.Path + " (staged)"
+	}
+	m.openVirtualSyn(title, text, syn)
+	m.doc().ed.LineBG = bgs
+}
+
+// sideRow is one output line: a line index on each side (-1 = that column is
+// empty) plus a kind — ' ' unchanged, 'm' modified, 'a' added, 'd' deleted.
+type sideRow struct {
+	kind   byte
+	oi, ni int
+}
+
+// sideRows pairs old→new lines from git.Align's signs and line mapping.
+// Modified lines consume old lines in order between matched anchors — the
+// same order Align's Myers pass pairs them; deletions group just before the
+// next matched line.
+func sideRows(oldB, newB []byte, al, bl []string) []sideRow {
+	signs, oldFor := git.Align(oldB, newB)
+	rows := make([]sideRow, 0, len(bl))
+	oi := 0
+	flush := func(to int) {
+		for ; oi < to; oi++ {
+			rows = append(rows, sideRow{kind: 'd', oi: oi, ni: -1})
+		}
+	}
+	for j := range bl {
+		switch {
+		case oldFor[j] >= 0:
+			flush(oldFor[j])
+			rows = append(rows, sideRow{kind: ' ', oi: oi, ni: j})
+			oi++
+		case signs[j] == git.SignMod && oi < len(al):
+			rows = append(rows, sideRow{kind: 'm', oi: oi, ni: j})
+			oi++
+		default:
+			rows = append(rows, sideRow{kind: 'a', oi: -1, ni: j})
+		}
+	}
+	flush(len(al))
+	// Files ending in \n split into a trailing empty line pair — noise, drop it.
+	if n := len(rows); n > 0 && rows[n-1].kind == ' ' && bl[rows[n-1].ni] == "" {
+		rows = rows[:n-1]
+	}
+	return rows
+}
+
+// diffCells splits content the same way git.Align does (nil for empty input),
+// so indexes line up with its signs/oldFor slices.
+func diffCells(b []byte) []string {
+	if len(b) == 0 {
+		return nil
+	}
+	return strings.Split(string(b), "\n")
+}
+
+// cellMap ties one column of one row back to its source: byte offset in the
+// synthetic text, byte offset of the source line, and how many source bytes
+// were kept (truncation). n == 0 means nothing to highlight.
+type cellMap struct {
+	synth, src, n int
+}
+
+type sideRowMap struct {
+	synth       int // row start offset in the synthetic text
+	left, right cellMap
+}
+
+// sideDiffText renders rows into "old │ new" columns of colw cells each.
+// Cells keep the original bytes (the editor expands tabs itself), so syntax
+// spans remap by plain offset shift. Returns the text, the per-row source
+// maps, and one background class per line ('a'/'m'/'d', 0 unchanged).
+func sideDiffText(rows []sideRow, al, bl []string, colw int) (string, []sideRowMap, []byte) {
+	offA, offB := lineOffsets(al), lineOffsets(bl)
+	var sb strings.Builder
+	maps := make([]sideRowMap, len(rows))
+	bgs := make([]byte, len(rows))
+	for i, r := range rows {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		maps[i].synth = sb.Len()
+		pad := colw
+		if r.oi >= 0 {
+			kept, cw := cellCut(al[r.oi], colw, 0)
+			if len(kept) < len(al[r.oi]) { // truncated: make room for the marker
+				kept, cw = cellCut(al[r.oi], colw-1, 0)
+				maps[i].left = cellMap{synth: sb.Len(), src: offA[r.oi], n: len(kept)}
+				kept += "…"
+				cw++
+			} else {
+				maps[i].left = cellMap{synth: sb.Len(), src: offA[r.oi], n: len(kept)}
+			}
+			sb.WriteString(kept)
+			pad = colw - cw
+		}
+		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(" │ ")
+		if r.ni >= 0 {
+			kept, _ := cellCut(bl[r.ni], colw, colw+3)
+			trunc := len(kept) < len(bl[r.ni])
+			if trunc {
+				kept, _ = cellCut(bl[r.ni], colw-1, colw+3)
+			}
+			maps[i].right = cellMap{synth: sb.Len(), src: offB[r.ni], n: len(kept)}
+			sb.WriteString(kept)
+			if trunc {
+				sb.WriteString("…")
+			}
+		}
+		if r.kind != ' ' {
+			bgs[i] = r.kind
+		}
+	}
+	return sb.String(), maps, bgs
+}
+
+// lineOffsets returns each line's byte offset in the joined source.
+func lineOffsets(lines []string) []int {
+	offs := make([]int, len(lines))
+	o := 0
+	for i, l := range lines {
+		offs[i] = o
+		o += len(l) + 1
+	}
+	return offs
+}
+
+// cellCut truncates s to at most w cells starting at screen column x0 (tabs
+// expand at editor tab stops, every other rune is one cell — the editor's
+// own model) and returns the kept bytes plus their cell width.
+func cellCut(s string, w, x0 int) (string, int) {
+	tab := editor.TabStop()
+	x := x0
+	for i, r := range s {
+		rw := 1
+		if r == '\t' {
+			rw = (x/tab+1)*tab - x
+		}
+		if x+rw > x0+w {
+			return s[:i], x - x0
+		}
+		x += rw
+	}
+	return s, x - x0
+}
+
+// sideSyntax serves each column's real language highlighting: one
+// highlighter per side over the original content, spans remapped into the
+// synthetic two-column text. Close frees the CGo trees (forceClose and
+// openVirtualSyn's replace path both call it).
+type sideSyntax struct {
+	rows           []sideRowMap
+	oldSrc, newSrc []byte
+	oldHL, newHL   *syntax.Highlighter // nil when the language has no grammar
+}
+
+func (*sideSyntax) Edit(int, int, int, [2]int, [2]int, [2]int) {}
+func (*sideSyntax) Expand([]byte, int, int) (int, int, bool)   { return 0, 0, false }
+
+func (s *sideSyntax) Close() {
+	if s.oldHL != nil {
+		s.oldHL.Close()
+	}
+	if s.newHL != nil {
+		s.newHL.Close()
+	}
+}
+
+func (s *sideSyntax) Spans(_ []byte, startOff, endOff int) []editor.HLSpan {
+	i0 := sort.Search(len(s.rows), func(i int) bool { return s.rows[i].synth > startOff }) - 1
+	i0 = max(i0, 0)
+	i1 := sort.Search(len(s.rows), func(i int) bool { return s.rows[i].synth >= endOff })
+	if i0 >= i1 {
+		return nil
+	}
+	win := s.rows[i0:i1]
+	lsp := remapSide(s.oldHL, s.oldSrc, win, false)
+	rsp := remapSide(s.newHL, s.newSrc, win, true)
+	out := make([]editor.HLSpan, 0, len(lsp)+len(rsp))
+	for len(lsp) > 0 && len(rsp) > 0 { // merge, keeping Start order
+		if lsp[0].Start <= rsp[0].Start {
+			out, lsp = append(out, lsp[0]), lsp[1:]
+		} else {
+			out, rsp = append(out, rsp[0]), rsp[1:]
+		}
+	}
+	return append(append(out, lsp...), rsp...)
+}
+
+// remapSide queries one side's highlighter over the window's source range and
+// shifts the spans into synthetic-text offsets, clipped per cell.
+func remapSide(hl *syntax.Highlighter, src []byte, win []sideRowMap, right bool) []editor.HLSpan {
+	if hl == nil {
+		return nil
+	}
+	cell := func(r sideRowMap) cellMap {
+		if right {
+			return r.right
+		}
+		return r.left
+	}
+	lo, hi := -1, 0
+	for _, r := range win {
+		if c := cell(r); c.n > 0 {
+			if lo < 0 {
+				lo = c.src
+			}
+			hi = c.src + c.n
+		}
+	}
+	if lo < 0 {
+		return nil
+	}
+	raw := hl.Spans(src, lo, hi)
+	var out []editor.HLSpan
+	p := 0
+	for _, r := range win {
+		c := cell(r)
+		if c.n == 0 {
+			continue
+		}
+		for p < len(raw) && raw[p].End <= c.src {
+			p++
+		}
+		for q := p; q < len(raw) && raw[q].Start < c.src+c.n; q++ {
+			st, en := max(raw[q].Start, c.src), min(raw[q].End, c.src+c.n)
+			if st < en {
+				out = append(out, editor.HLSpan{Start: c.synth + st - c.src, End: c.synth + en - c.src, Class: raw[q].Class})
+			}
+		}
+	}
+	return out
 }

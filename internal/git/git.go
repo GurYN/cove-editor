@@ -293,6 +293,13 @@ func Show(top, path string) ([]byte, error) {
 	return cmd.Output()
 }
 
+// ShowIndex returns a file's content in the index (the staged version).
+func ShowIndex(top, path string) ([]byte, error) {
+	cmd := exec.Command("git", "show", ":"+path)
+	cmd.Dir = top
+	return cmd.Output()
+}
+
 func Commit(top, msg string) (string, error) { return run(top, "commit", "-m", msg) }
 
 // Amend rewrites HEAD with whatever is staged and a new message.

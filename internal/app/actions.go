@@ -21,6 +21,7 @@ import (
 const sampleConfig = `# Cove configuration. Changes apply on restart.
 
 # theme = "cove-dark"        # or "cove-light"
+
 # keymap = "default"          # "vim" for the opt-in Vim keymap
 
 # [editor]
@@ -32,6 +33,13 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # visible in the git panel so they can't sneak into a commit unseen.
 # [files]
 # hidden = [".DS_Store", "*.pyc", "node_modules"]
+
+# Git panel: "tree" view groups changed files under their directories
+# (default: flat); diff_style "side" opens side-by-side diffs on Enter
+# (default: unified).
+# [git]
+# view = "tree"
+# diff_style = "side"
 
 # Rebind any action by its ID — the value is the NEW key, replacing the
 # default. Open the command palette (ctrl+p) and highlight an action: its
@@ -59,6 +67,122 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # [update]
 # check = false             # disable the once-a-day new-release check
 `
+
+// mapTables hold user-defined keys ([keys] rebindings, [lsp.<lang>] servers…):
+// the table's presence counts, the sample's example keys are arbitrary.
+var mapTables = map[string]bool{"keys": true, "colors": true, "lsp": true, "apps": true}
+
+// tomlLine parses one (possibly commented) config line: a table header
+// yields its base name ("[lsp.zig]" → "lsp"), a "key = value" line yields
+// the key. Prose is rejected by the no-spaces-in-key guard — sampleConfig
+// prose must never contain "=".
+func tomlLine(ln string) (table, key string) {
+	s := strings.TrimSpace(ln)
+	for strings.HasPrefix(s, "#") {
+		s = strings.TrimSpace(s[1:])
+	}
+	if strings.HasPrefix(s, "[") {
+		if i := strings.IndexAny(s, ".]"); i > 1 {
+			return s[1:i], ""
+		}
+		return "", ""
+	}
+	if i := strings.Index(s, "="); i > 0 {
+		if k := strings.Trim(strings.TrimSpace(s[:i]), `"`); k != "" && !strings.ContainsAny(k, " \t") {
+			return "", k
+		}
+	}
+	return "", ""
+}
+
+// missingPart returns the lines of a sampleConfig block the config doesn't
+// mention yet: the whole block for an absent map table, prose + header +
+// only the missing keys for fixed tables. "" when nothing is new.
+func missingPart(block string, have map[string]bool) string {
+	table := ""
+	var keep []string
+	found := false
+	for _, ln := range strings.Split(block, "\n") {
+		t, k := tomlLine(ln)
+		if t != "" {
+			if mapTables[t] {
+				if have[t] {
+					return ""
+				}
+				return block
+			}
+			table = t
+		}
+		if k != "" {
+			mk := k
+			if table != "" {
+				mk = table + "." + k
+			}
+			if have[mk] {
+				continue // key the user already has: no commented duplicate
+			}
+			found = true
+		}
+		keep = append(keep, ln)
+	}
+	if !found {
+		return ""
+	}
+	return strings.Join(keep, "\n")
+}
+
+// configMarkers collects every marker an existing config file mentions,
+// commented or not. Keys also register bare — appended top-level samples
+// land after user tables, and must still count as present next launch.
+func configMarkers(data string) map[string]bool {
+	set := map[string]bool{}
+	table := ""
+	for _, ln := range strings.Split(data, "\n") {
+		t, k := tomlLine(ln)
+		if t != "" {
+			table = t
+			set[t] = true
+		}
+		if k != "" {
+			set[k] = true
+			if table != "" {
+				set[table+"."+k] = true
+			}
+		}
+	}
+	return set
+}
+
+// upgradeSampleConfig appends sampleConfig for options this build added
+// that an existing config file doesn't mention (commented or not) — so
+// early users discover new settings when they open config.toml. Fixed
+// tables append per key: only the missing keys, no commented duplicates
+// of settings the user already has.
+func upgradeSampleConfig(p string) {
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	have := configMarkers(string(data))
+	var missing []string
+	for _, block := range strings.Split(sampleConfig, "\n\n") {
+		if part := missingPart(block, have); part != "" {
+			missing = append(missing, part)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	const header = "# Options added by newer Cove builds:"
+	add := "\n" + header + "\n\n" + strings.Join(missing, "\n\n") + "\n"
+	if strings.Contains(string(data), header) {
+		add = "\n" + strings.Join(missing, "\n\n") + "\n"
+	}
+	if !bytes.HasSuffix(data, []byte("\n")) {
+		add = "\n" + add
+	}
+	os.WriteFile(p, append(data, add...), 0o644)
+}
 
 // newRegistry declares every user action: ID, palette title, default key,
 // context. This is the single source of truth the palette, the key
@@ -191,6 +315,8 @@ func newRegistry() *action.Registry {
 	})
 	reg("term.toggle", "Terminal: Toggle", "ctrl+j", action.Global, func(m *Model) tea.Cmd { return m.toggleTerm() })
 	reg("term.new", "Terminal: New Instance", "", action.Global, func(m *Model) tea.Cmd { return m.newTerm() })
+	reg("term.next", "Terminal: Next Instance", "ctrl+pgdown", action.Global, func(m *Model) tea.Cmd { m.cycleTerm(+1); return nil })
+	reg("term.prev", "Terminal: Previous Instance", "ctrl+pgup", action.Global, func(m *Model) tea.Cmd { m.cycleTerm(-1); return nil })
 
 	// ---- split panes ----
 	reg("pane.split", "Pane: Split Right", "ctrl+\\", action.Global, func(m *Model) tea.Cmd { m.splitOpen(); return nil })
@@ -257,6 +383,12 @@ func newRegistry() *action.Registry {
 			m.gitResolveSide(false)
 		} else {
 			m.gitOpenFile()
+		}
+		return nil
+	})
+	reg("git.diffSide", "Git: Side-by-side Diff", "d", action.Git, func(m *Model) tea.Cmd {
+		if r, ok := m.git.selected(); ok {
+			m.gitOpenDiffSide(r)
 		}
 		return nil
 	})

@@ -211,6 +211,7 @@ func New(path string, data []byte) Model {
 		m.vim = &vimState{}
 	}
 	m.git.tree = cfg.Git.View == "tree"
+	m.git.sideDiff = cfg.Git.Diff == "side"
 	if cfgErr != nil {
 		m.cfgWarns = append(m.cfgWarns, cfgErr.Error())
 	}
@@ -567,7 +568,8 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.updatePrompt(msg)
 	}
 	if t := m.activeTerm(); m.focus == paneTerminal && t != nil {
-		// Only scrollback, the panel toggles (terminal/sidebar/git), focus
+		// Only scrollback, instance switching, the panel toggles
+		// (terminal/sidebar/git), focus
 		// cycling, the palette, and quit stay with Cove (respecting rebinds);
 		// every other key goes to the shell. The palette must escape — it's
 		// the discoverability front door — even though ctrl+p costs the
@@ -581,7 +583,8 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		if act := m.reg.Lookup(action.Global, msg.String()); act != nil &&
-			(act.ID == "term.toggle" || act.ID == "app.quit" ||
+			(act.ID == "term.toggle" || act.ID == "term.next" || act.ID == "term.prev" ||
+				act.ID == "app.quit" ||
 				act.ID == "focus.next" || act.ID == "focus.prev" ||
 				act.ID == "app.palette" || act.ID == "app.palette.f1" ||
 				act.ID == "sidebar.toggle" || act.ID == "git.toggle") {
@@ -1084,6 +1087,9 @@ func (m *Model) openFile(path string) {
 			m.focus = paneEditor
 			return
 		}
+	}
+	if cp, _ := filepath.Abs(config.Path()); cp == abs {
+		upgradeSampleConfig(abs) // surface options added since the file was written
 	}
 	d, err := loadDoc(path)
 	if err != nil {

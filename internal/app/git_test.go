@@ -13,6 +13,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+
+	"github.com/GurYN/cove-editor/internal/editor"
+	"github.com/GurYN/cove-editor/internal/syntax"
 )
 
 // gitSetup builds a repo with a committed-then-modified a.txt and returns
@@ -832,5 +835,108 @@ func TestTermActivityTriggersResync(t *testing.T) {
 	}
 	if m.termDirty {
 		t.Fatal("termDirty not reset by the sweep")
+	}
+}
+
+// Side-by-side rows: mods pair in order, deletes group before the next
+// matched line, adds fill the right column, trailing empty pair dropped.
+func TestSideRows(t *testing.T) {
+	oldB, newB := []byte("a\nb\nc\nd\n"), []byte("a\nB\nd\ne\n")
+	al, bl := diffCells(oldB), diffCells(newB)
+	rows := sideRows(oldB, newB, al, bl)
+	want := []sideRow{{' ', 0, 0}, {'m', 1, 1}, {'d', 2, -1}, {' ', 3, 2}, {'a', -1, 3}}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("row %d = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+}
+
+func TestCellCut(t *testing.T) {
+	if kept, cw := cellCut("ab", 4, 0); kept != "ab" || cw != 2 {
+		t.Fatalf("fit: %q %d", kept, cw)
+	}
+	if kept, cw := cellCut("abcdef", 4, 0); kept != "abcd" || cw != 4 {
+		t.Fatalf("truncate: %q %d", kept, cw)
+	}
+	if kept, cw := cellCut("\tx", 6, 0); kept != "\tx" || cw != 5 {
+		t.Fatalf("tab: %q %d", kept, cw)
+	}
+	// x0 shifts the tab stops: at column 3 a tab is 1 cell wide.
+	if kept, cw := cellCut("\tx", 6, 3); kept != "\tx" || cw != 2 {
+		t.Fatalf("tab at x0=3: %q %d", kept, cw)
+	}
+}
+
+// Each column keeps the language's real syntax colors: spans from the
+// per-side highlighters land at the right offsets in the two-column text.
+func TestSideSyntaxRemap(t *testing.T) {
+	oldB := []byte("package a\n\nvar x = 1\n")
+	newB := []byte("package a\n\nvar x = 2\n")
+	al, bl := diffCells(oldB), diffCells(newB)
+	rows := sideRows(oldB, newB, al, bl)
+	text, maps, bgs := sideDiffText(rows, al, bl, 20)
+	syn := &sideSyntax{rows: maps, oldSrc: oldB, newSrc: newB,
+		oldHL: syntax.New("a.go", oldB), newHL: syntax.New("a.go", newB)}
+	defer syn.Close()
+	if syn.oldHL == nil || syn.newHL == nil {
+		t.Fatal("no Go highlighter")
+	}
+	spans := syn.Spans(nil, 0, len(text))
+	if len(spans) == 0 {
+		t.Fatal("no spans")
+	}
+	if spans[0].Start != 0 || spans[0].Class != editor.ClassKeyword {
+		t.Fatalf("first span = %+v, want keyword at 0 (package)", spans[0])
+	}
+	foundRight := false
+	for _, s := range spans {
+		if s.Start == maps[0].right.synth && s.Class == editor.ClassKeyword {
+			foundRight = true
+		}
+		if s.End > len(text) {
+			t.Fatalf("span out of bounds: %+v", s)
+		}
+	}
+	if !foundRight {
+		t.Fatal("no keyword span at the right column's package")
+	}
+	if bgs[0] != 0 || bgs[2] != 'm' {
+		t.Fatalf("bgs = %v, want unchanged row 0 and modified row 2", bgs)
+	}
+}
+
+// 'd' in the git panel opens the two-column view in the diff tab; with
+// [git] diff_style = "side" plain Enter does the same.
+func TestGitSideBySideDiff(t *testing.T) {
+	m, _ := gitSetup(t)
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	d := m.doc()
+	if d == nil || !d.virtual || !strings.HasSuffix(d.path, "(diff)") {
+		t.Fatalf("expected diff tab, got %+v", d)
+	}
+	text := string(d.ed.Buf.Bytes())
+	lines := strings.Split(text, "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "│") {
+		t.Fatalf("unexpected side-by-side text:\n%s", text)
+	}
+	if c := strings.Count(lines[0], "one"); c != 2 { // context: both columns
+		t.Fatalf("context row = %q", lines[0])
+	}
+	if left, _, _ := strings.Cut(lines[1], "│"); strings.Contains(left, "two") {
+		t.Fatalf("add row has text in the old column: %q", lines[1])
+	}
+	if bg := d.ed.LineBG; len(bg) != 2 || bg[0] != 0 || bg[1] != 'a' {
+		t.Fatalf("LineBG = %v, want [0 'a']", bg)
+	}
+	// Config default: Enter routes to the same view.
+	m.git.sideDiff = true
+	m.focus = paneGit
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d = m.doc(); !strings.Contains(string(d.ed.Buf.Bytes()), "│") {
+		t.Fatal("Enter with diff_style=side did not open side-by-side")
 	}
 }

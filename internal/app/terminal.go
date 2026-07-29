@@ -66,6 +66,15 @@ func (m *Model) spawnTerm(argv []string, label string) tea.Cmd {
 	return listenTerm(t)
 }
 
+// cycleTerm moves the active instance by d (wrapping); no-op unless the
+// panel is open with more than one instance.
+func (m *Model) cycleTerm(d int) {
+	if !m.termOpen || len(m.terms) < 2 {
+		return
+	}
+	m.termActive = (m.termActive + d + len(m.terms)) % len(m.terms)
+}
+
 // openApp focuses the named [apps.*] instance if it's already running,
 // otherwise launches it.
 func (m *Model) openApp(name string, argv []string) tea.Cmd {

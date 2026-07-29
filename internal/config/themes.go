@@ -16,6 +16,7 @@ var themes = map[string]map[string]string{
 		"git.added": "#98c379", "git.modified": "#e5c07b",
 		"git.deleted": "#e06c75", "git.conflict": "#c586c0",
 		"merge.ours": "#31432f", "merge.theirs": "#2b3d54",
+		"diff.bg.added": "#29392b", "diff.bg.deleted": "#442b2e", "diff.bg.modified": "#3d3826",
 	},
 	"cove-light": {
 		"keyword": "#af00db", "string": "#0a7a33", "comment": "#8a949e",
@@ -28,6 +29,7 @@ var themes = map[string]map[string]string{
 		"git.added": "#0a7a33", "git.modified": "#9a6a00",
 		"git.deleted": "#c72e2e", "git.conflict": "#af00db",
 		"merge.ours": "#d8efd8", "merge.theirs": "#d6e5f5",
+		"diff.bg.added": "#dcefdc", "diff.bg.deleted": "#f6dadc", "diff.bg.modified": "#f1e8c6",
 	},
 }
 
