@@ -761,6 +761,7 @@ func (m Model) gitCtxMenu(y int) Model {
 		}
 		return m.openCtxMenu(filepath.Base(r.fs.Path)+":", paneGit, []ctxItem{
 			{"Open Diff", "git.open"},
+			{"Open Side-by-side Diff", "git.diffSide"},
 			{"Open File", "git.openFile"},
 			{stage, "git.stage"},
 			{"Stash File", "git.stashFile"},

@@ -102,7 +102,7 @@ func TestContextMenuMouseSelect(t *testing.T) {
 
 	// A click on the box border/title keeps the menu open; outside closes it.
 	m = rightClick(m, 10, 3)
-	m, _ = m.update(tea.MouseMsg{X: x, Y: y - 3, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}) // title row
+	m, _ = m.update(tea.MouseMsg{X: x, Y: y - 4, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}) // title row
 	if m.ovKind == overlayNone {
 		t.Fatal("click on the menu title closed the menu")
 	}
@@ -128,8 +128,8 @@ func TestContextMenuMouseHover(t *testing.T) {
 	if m.ovKind == overlayNone {
 		t.Fatal("hover closed the menu")
 	}
-	if m.ov.Selected() != 2 {
-		t.Fatalf("hover over Stage selected item %d, want 2", m.ov.Selected())
+	if m.ov.Selected() != 3 {
+		t.Fatalf("hover over Stage selected item %d, want 3", m.ov.Selected())
 	}
 }
 
