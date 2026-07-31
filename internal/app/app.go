@@ -1051,49 +1051,9 @@ func (m Model) updatePrompt(k tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// lineEdit applies one key to a single-line input with a rune cursor:
-// arrows/Home/End/^A/^E move, Backspace/Delete edit, runes/space insert.
-// ok=false means the key is not a text-editing key.
-func lineEdit(s string, cur int, k tea.KeyMsg) (out string, ncur int, ok bool) {
-	r := []rune(s)
-	cur = clampInt(cur, 0, len(r))
-	switch k.Type {
-	case tea.KeyLeft:
-		return s, max(0, cur-1), true
-	case tea.KeyRight:
-		return s, min(len(r), cur+1), true
-	case tea.KeyHome, tea.KeyCtrlA:
-		return s, 0, true
-	case tea.KeyEnd, tea.KeyCtrlE:
-		return s, len(r), true
-	case tea.KeyBackspace:
-		if cur > 0 {
-			return string(r[:cur-1]) + string(r[cur:]), cur - 1, true
-		}
-		return s, cur, true
-	case tea.KeyDelete:
-		if cur < len(r) {
-			return string(r[:cur]) + string(r[cur+1:]), cur, true
-		}
-		return s, cur, true
-	case tea.KeySpace:
-		return string(r[:cur]) + " " + string(r[cur:]), cur + 1, true
-	case tea.KeyRunes:
-		if k.Alt {
-			return s, cur, false
-		}
-		ins := string(k.Runes)
-		return string(r[:cur]) + ins + string(r[cur:]), cur + len([]rune(ins)), true
-	}
-	return s, cur, false
-}
-
-// cursorInto renders s with the block cursor at rune position cur.
-func cursorInto(s string, cur int) string {
-	r := []rune(s)
-	cur = clampInt(cur, 0, len(r))
-	return string(r[:cur]) + "█" + string(r[cur:])
-}
+// lineEdit and cursorInto live in the overlay package so the palette and
+// finder share the same single-line editing; aliased for the minibar/prompt.
+var lineEdit, cursorInto = overlay.LineEdit, overlay.CursorInto
 
 // ---- tabs ----
 
