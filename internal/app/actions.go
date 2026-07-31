@@ -461,6 +461,8 @@ func newRegistry() *action.Registry {
 	reg("nav.back", "Go Back (Jump List)", "alt+left", action.Global, func(m *Model) tea.Cmd { m.navBack(); return nil })
 	reg("nav.forward", "Go Forward (Jump List)", "alt+right", action.Global, func(m *Model) tea.Cmd { m.navForward(); return nil })
 
+	reg("markdown.preview", "Markdown: Preview", "", action.Global, func(m *Model) tea.Cmd { m.markdownPreview(); return nil })
+
 	// ---- project-wide search ----
 	reg("search.project", "Search in Project…", "f7", action.Global, func(m *Model) tea.Cmd {
 		initial := ""
