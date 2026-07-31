@@ -1216,7 +1216,38 @@ func (m Model) tabLabel(d *doc) string {
 	if d.ed.Dirty {
 		dirty = "●"
 	}
-	return fmt.Sprintf(" %s %s × ", filepath.Base(d.path), dirty)
+	name := filepath.Base(d.path)
+	var clash []string
+	for _, o := range m.docs {
+		if o != d && filepath.Base(o.path) == name {
+			clash = append(clash, o.path)
+		}
+	}
+	// Shortest trailing-path suffix that separates this tab from its clashes.
+	for depth := 2; len(clash) > 0; depth++ {
+		s := pathSuffix(d.path, depth)
+		unique := true
+		for _, o := range clash {
+			if pathSuffix(o, depth) == s {
+				unique = false
+				break
+			}
+		}
+		if unique || s == pathSuffix(d.path, depth+1) {
+			name = s
+			break
+		}
+	}
+	return fmt.Sprintf(" %s %s × ", name, dirty)
+}
+
+// pathSuffix returns the last n components of p joined back together.
+func pathSuffix(p string, n int) string {
+	parts := strings.Split(p, string(filepath.Separator))
+	if n > len(parts) {
+		n = len(parts)
+	}
+	return filepath.Join(parts[len(parts)-n:]...)
 }
 
 func (m Model) renderTabBar() string {
