@@ -507,7 +507,7 @@ func (m *Model) toggleGit() {
 		m.focus = paneEditor
 		return
 	}
-	m.git.view, m.sidebarOpen = true, true
+	m.git.view, m.search.view, m.sidebarOpen = true, false, true
 	m.focus = paneGit
 	m.refreshGit()
 }
