@@ -539,8 +539,8 @@ func newRegistry() *action.Registry {
 	// ---- editor: editing ----
 	reg("edit.undo", "Edit: Undo", "ctrl+z", action.Editor, ed(func(e *editor.Model) { e.UndoStep() }))
 	reg("edit.redo", "Edit: Redo", "ctrl+y", action.Editor, ed(func(e *editor.Model) { e.RedoStep() }))
-	reg("edit.copy", "Edit: Copy", "ctrl+c", action.Editor, ed(func(e *editor.Model) { e.Copy() }))
-	reg("edit.cut", "Edit: Cut", "ctrl+x", action.Editor, ed(func(e *editor.Model) { e.Cut() }))
+	reg("edit.copy", "Edit: Copy", "ctrl+c", action.Editor, ed(func(e *editor.Model) { e.Copy(); copyOSC52(editor.Clip()) }))
+	reg("edit.cut", "Edit: Cut", "ctrl+x", action.Editor, ed(func(e *editor.Model) { e.Cut(); copyOSC52(editor.Clip()) }))
 	reg("edit.paste", "Edit: Paste", "ctrl+v", action.Editor, ed(func(e *editor.Model) { e.Paste() }))
 	reg("edit.selectAll", "Selection: Select All", "ctrl+a", action.Editor, ed(func(e *editor.Model) { e.SelectAll() }))
 	reg("edit.selectNext", "Selection: Add Next Occurrence", "ctrl+d", action.Editor, ed(func(e *editor.Model) { e.SelectNext() }))

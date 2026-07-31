@@ -561,6 +561,16 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.aboutOpen = false
 		return m, nil
 	}
+	// Ctrl+V into any single-line input (palette, finder, find/replace,
+	// prompts) becomes typed runes — the inputs never learn about the
+	// clipboard. Newlines flatten to spaces: the inputs are one line.
+	if msg.Type == tea.KeyCtrlV && (m.ovKind != overlayNone || m.mode != modeEdit) {
+		if s := strings.ReplaceAll(editor.Clip(), "\n", " "); s != "" {
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		} else {
+			return m, nil
+		}
+	}
 	if m.ovKind != overlayNone {
 		return m.updateOverlay(msg)
 	}
@@ -584,6 +594,10 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, nil
 		case "shift+pgdown":
 			t.Scroll(-m.termRows())
+			return m, nil
+		}
+		if act := m.reg.Lookup(action.Editor, msg.String()); act != nil && act.ID == "edit.paste" {
+			t.Paste(editor.Clip())
 			return m, nil
 		}
 		if act := m.reg.Lookup(action.Global, msg.String()); act != nil &&
@@ -1289,9 +1303,12 @@ func setPointer(shape string) {
 }
 
 // copyOSC52 puts text on the system clipboard via OSC 52; terminals without
-// support ignore the sequence.
+// support ignore the sequence. Written to stderr: it reaches the same
+// terminal, but never contends with bubbletea's renderer on the stdout fd —
+// a raw stdout write from Update can wedge behind a renderer flush that's
+// blocked mid-frame and freeze the whole event loop.
 func copyOSC52(s string) {
-	os.Stdout.WriteString("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\")
+	os.Stderr.WriteString("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\")
 }
 
 // ovHit maps a screen click to an overlay list row (0 = the row under the
@@ -1444,6 +1461,7 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		case msg.Action == tea.MouseActionRelease:
 			if s := t.Release(tx, ty); s != "" {
 				copyOSC52(s)
+				editor.SetClip(s)
 			}
 		}
 	case panePanelDivider:

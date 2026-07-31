@@ -134,6 +134,20 @@ func (t *Term) Send(k tea.KeyMsg) {
 // for mouse reporting get a mouse code; alt-screen apps get arrow keys
 // (xterm's alternate-scroll convention — how less/vim/htop scroll in real
 // terminals); otherwise the view moves through Cove's scrollback.
+// Paste writes s to the child as pasted input. Newlines become CR (what a
+// real terminal sends for Enter).
+// ponytail: no bracketed-paste wrapping — vt10x doesn't track mode 2004 and
+// stays diff-free; wrap here if a child app ever needs it.
+func (t *Term) Paste(s string) {
+	if s == "" {
+		return
+	}
+	t.vt.Lock()
+	t.scroll = 0
+	t.vt.Unlock()
+	t.ptmx.WriteString(strings.ReplaceAll(s, "\n", "\r"))
+}
+
 func (t *Term) Wheel(up bool, x, y int) {
 	t.vt.Lock()
 	seq := wheelSeq(t.vt.ModeSet(vt10x.ModeMouseMask), t.vt.ModeSet(vt10x.ModeMouseSgr),
