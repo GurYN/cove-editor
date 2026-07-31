@@ -84,7 +84,6 @@ type Model struct {
 	savedLen int    // content length at last save
 	savedSum uint64 // content hash at last save
 	search   searchState
-	clip     []byte // internal clipboard; OSC 52 integration is Phase 2
 
 	lastClickAt  time.Time
 	lastClickPos int
@@ -990,6 +989,16 @@ func (m *Model) SelectAllOccurrences() {
 
 // ---- clipboard (internal) ----
 
+// clip is shared by all editors so copy/paste works across files; the app
+// bridges it to the terminal panel and OSC 52 via Clip/SetClip.
+var clip []byte
+
+// Clip returns the shared clipboard text ("" if empty).
+func Clip() string { return string(clip) }
+
+// SetClip replaces the shared clipboard (terminal-selection copy feeds it).
+func SetClip(s string) { clip = []byte(s) }
+
 func (m *Model) copySelection(cut bool) {
 	var parts [][]byte
 	for _, c := range m.cursors {
@@ -1001,17 +1010,17 @@ func (m *Model) copySelection(cut bool) {
 	if len(parts) == 0 {
 		return
 	}
-	m.clip = joinBytes(parts, '\n')
+	clip = joinBytes(parts, '\n')
 	if cut {
 		m.deleteAtCursors(0) // selections only; dir irrelevant
 	}
 }
 
 func (m *Model) paste() {
-	if len(m.clip) == 0 {
+	if len(clip) == 0 {
 		return
 	}
-	m.InsertText(string(m.clip))
+	m.InsertText(string(clip))
 	m.hist.seal() // paste is its own undo step; typing after it must not merge
 }
 

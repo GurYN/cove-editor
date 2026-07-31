@@ -87,3 +87,38 @@ func TestTabBarClickMapsToVisibleTabs(t *testing.T) {
 		t.Fatalf("› click: active = %d, want %d", m.active, last+1)
 	}
 }
+
+func TestTabLabelDisambiguatesSameBasename(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Setenv("COVE_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	dir := t.TempDir()
+	for _, d := range []string{"alpha", "beta"} {
+		os.MkdirAll(filepath.Join(dir, d), 0o755)
+		os.WriteFile(filepath.Join(dir, d, "main.go"), []byte("x\n"), 0o644)
+	}
+	os.WriteFile(filepath.Join(dir, "solo.go"), []byte("x\n"), 0o644)
+	m := New(dir, nil)
+	m, _ = m.update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.openFile(filepath.Join(dir, "alpha", "main.go"))
+	m.openFile(filepath.Join(dir, "beta", "main.go"))
+	m.openFile(filepath.Join(dir, "solo.go"))
+	// Parent dirs collide too: one/app/globals.css vs two/app/globals.css.
+	for _, d := range []string{"one", "two"} {
+		os.MkdirAll(filepath.Join(dir, d, "app"), 0o755)
+		os.WriteFile(filepath.Join(dir, d, "app", "globals.css"), []byte("x\n"), 0o644)
+		m.openFile(filepath.Join(dir, d, "app", "globals.css"))
+	}
+	var labels []string
+	for _, d := range m.docs {
+		labels = append(labels, m.tabLabel(d))
+	}
+	all := strings.Join(labels, "|")
+	for _, want := range []string{" alpha/main.go ", " beta/main.go ", " solo.go ", " one/app/globals.css ", " two/app/globals.css "} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("want %q in tab labels:\n%q", want, all)
+		}
+	}
+	if strings.Contains(all, filepath.Base(dir)+"/solo.go") {
+		t.Fatalf("unique basename must stay bare:\n%q", all)
+	}
+}

@@ -59,9 +59,12 @@ func (m *Model) cycleFocus(dir int) tea.Cmd {
 	}
 	var stops []stop
 	if m.sidebarOpen {
-		if m.git.view {
+		switch {
+		case m.git.view:
 			stops = append(stops, stop{p: paneGit})
-		} else {
+		case m.search.view:
+			stops = append(stops, stop{p: paneSearch})
+		default:
 			stops = append(stops, stop{p: paneSidebar})
 		}
 	}
@@ -94,7 +97,7 @@ func (m *Model) cycleFocus(dir int) tea.Cmd {
 // (row 0 = first row under the tab bar).
 func (m Model) flashRect() (x, y, w, h int) {
 	switch m.focus {
-	case paneSidebar, paneGit:
+	case paneSidebar, paneGit, paneSearch:
 		return 0, 0, m.side.Width, m.height - 2
 	case paneTerminal:
 		return m.editorX(), m.contentRows(), m.width - m.editorX(), m.panelRows()

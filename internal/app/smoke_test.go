@@ -471,16 +471,22 @@ func TestSidebarSwitcherClick(t *testing.T) {
 		t.Fatal("expected open sidebar showing the file tree")
 	}
 	y := app.height - 3 // switcher row
-	gitX := app.sideSwitcherRanges()[1].start
+	gitX := app.sideSwitcherRanges()[2].start
 	m, _ = m.Update(tea.MouseMsg{X: gitX, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	app = m.(Model)
 	if !app.git.view || app.focus != paneGit {
 		t.Fatalf("git button: gitView=%v focus=%v, want git panel focused", app.git.view, app.focus)
 	}
+	searchX := app.sideSwitcherRanges()[1].start
+	m, _ = m.Update(tea.MouseMsg{X: searchX, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	app = m.(Model)
+	if app.git.view || !app.search.view || app.focus != paneSearch {
+		t.Fatalf("search button: searchView=%v focus=%v, want search panel focused", app.search.view, app.focus)
+	}
 	filesX := app.sideSwitcherRanges()[0].start
 	m, _ = m.Update(tea.MouseMsg{X: filesX, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	app = m.(Model)
-	if app.git.view || app.focus != paneSidebar {
+	if app.git.view || app.search.view || app.focus != paneSidebar {
 		t.Fatalf("files button: gitView=%v focus=%v, want file tree focused", app.git.view, app.focus)
 	}
 }

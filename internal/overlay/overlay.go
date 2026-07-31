@@ -33,10 +33,55 @@ type Model struct {
 	Title   string
 	items   []Item
 	query   string
+	cur     int           // rune cursor in query
 	matches []fuzzy.Match // filtered view; empty query → all items
 	sel     int
 	first   int // first visible list row; keyboard nav edge-follows, hover never scrolls
 	width   int
+}
+
+// LineEdit applies one key to a single-line input with a rune cursor:
+// arrows/Home/End/^A/^E move, Backspace/Delete edit, runes/space insert.
+// ok=false means the key is not a text-editing key.
+func LineEdit(s string, cur int, k tea.KeyMsg) (out string, ncur int, ok bool) {
+	r := []rune(s)
+	cur = min(max(cur, 0), len(r))
+	switch k.Type {
+	case tea.KeyLeft:
+		return s, max(0, cur-1), true
+	case tea.KeyRight:
+		return s, min(len(r), cur+1), true
+	case tea.KeyHome, tea.KeyCtrlA:
+		return s, 0, true
+	case tea.KeyEnd, tea.KeyCtrlE:
+		return s, len(r), true
+	case tea.KeyBackspace:
+		if cur > 0 {
+			return string(r[:cur-1]) + string(r[cur:]), cur - 1, true
+		}
+		return s, cur, true
+	case tea.KeyDelete:
+		if cur < len(r) {
+			return string(r[:cur]) + string(r[cur+1:]), cur, true
+		}
+		return s, cur, true
+	case tea.KeySpace:
+		return string(r[:cur]) + " " + string(r[cur:]), cur + 1, true
+	case tea.KeyRunes:
+		if k.Alt {
+			return s, cur, false
+		}
+		ins := string(k.Runes)
+		return string(r[:cur]) + ins + string(r[cur:]), cur + len([]rune(ins)), true
+	}
+	return s, cur, false
+}
+
+// CursorInto renders s with the block cursor at rune position cur.
+func CursorInto(s string, cur int) string {
+	r := []rune(s)
+	cur = min(max(cur, 0), len(r))
+	return string(r[:cur]) + "█" + string(r[cur:])
 }
 
 func New(title string, items []Item, width int) Model {
@@ -112,19 +157,13 @@ func (m Model) Update(k tea.KeyMsg) (Model, int, bool) {
 	case tea.KeyPgDown:
 		m.sel = min(len(m.matches)-1, m.sel+maxRows)
 		m.scrollTo()
-	case tea.KeyBackspace:
-		if len(m.query) > 0 {
-			r := []rune(m.query)
-			m.query = string(r[:len(r)-1])
-			m.filter()
-		}
-	case tea.KeySpace:
-		m.query += " "
-		m.filter()
-	case tea.KeyRunes:
-		if !k.Alt {
-			m.query += string(k.Runes)
-			m.filter()
+	default:
+		if s, cur, ok := LineEdit(m.query, m.cur, k); ok {
+			changed := s != m.query
+			m.query, m.cur = s, cur
+			if changed {
+				m.filter()
+			}
 		}
 	}
 	return m, -1, false
@@ -169,8 +208,7 @@ func (m Model) View() string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render(m.Title))
 	sb.WriteString("  ")
-	sb.WriteString(m.query)
-	sb.WriteString("█")
+	sb.WriteString(CursorInto(m.query, m.cur))
 
 	first := m.visibleFirst()
 	last := min(len(m.matches), first+maxRows)

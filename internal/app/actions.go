@@ -297,11 +297,11 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 	reg("sidebar.toggle", "Sidebar: Toggle", "ctrl+b", action.Global, func(m *Model) tea.Cmd {
-		// Same tri-state as git.toggle: closed (or showing git) → show tree
-		// and focus it; open but unfocused → focus; focused → close.
+		// Same tri-state as git.toggle: closed (or showing git/search) → show
+		// tree and focus it; open but unfocused → focus; focused → close.
 		switch {
-		case m.git.view: // ctrl+b always means the file tree
-			m.git.view = false
+		case m.git.view || m.search.view: // ctrl+b always means the file tree
+			m.git.view, m.search.view = false, false
 			m.sidebarOpen = true
 			m.focus = paneSidebar
 		case m.sidebarOpen && m.focus == paneSidebar:
@@ -461,6 +461,8 @@ func newRegistry() *action.Registry {
 	reg("nav.back", "Go Back (Jump List)", "alt+left", action.Global, func(m *Model) tea.Cmd { m.navBack(); return nil })
 	reg("nav.forward", "Go Forward (Jump List)", "alt+right", action.Global, func(m *Model) tea.Cmd { m.navForward(); return nil })
 
+	reg("markdown.preview", "Markdown: Preview", "", action.Global, func(m *Model) tea.Cmd { m.markdownPreview(); return nil })
+
 	// ---- project-wide search ----
 	reg("search.project", "Search in Project…", "f7", action.Global, func(m *Model) tea.Cmd {
 		initial := ""
@@ -479,6 +481,37 @@ func newRegistry() *action.Registry {
 	})
 	reg("search.replaceProject", "Replace in Project…", "", action.Global, func(m *Model) tea.Cmd {
 		return m.replaceProjectPrompt()
+	})
+	reg("search.panel", "Search: Toggle Results Panel", "", action.Global, func(m *Model) tea.Cmd {
+		// Same tri-state as git.toggle: focused → close, else show and focus.
+		if m.search.view && m.sidebarOpen && m.focus == paneSearch {
+			m.sidebarOpen, m.search.view = false, false
+			m.focus = paneEditor
+			return nil
+		}
+		m.showSearchPanel()
+		return nil
+	})
+	// Filter prompts registered in the Search context so the palette shows
+	// the panel's i/x keys; the palette runs Do directly, so they stay
+	// runnable anywhere.
+	reg("search.include", "Search: Include Files…", "i", action.Search, func(m *Model) tea.Cmd {
+		m.searchFilterPrompt("Include files (globs, comma-separated):", false)
+		return nil
+	})
+	reg("search.exclude", "Search: Exclude Files…", "x", action.Search, func(m *Model) tea.Cmd {
+		m.searchFilterPrompt("Exclude files (globs, comma-separated):", true)
+		return nil
+	})
+	phid := func(id, key string, do func(*Model) tea.Cmd) { hid(id, key, action.Search, do) }
+	phid("search.up", "up", func(m *Model) tea.Cmd { m.search.move(-1, m.searchHeight()); return nil })
+	phid("search.down", "down", func(m *Model) tea.Cmd { m.search.move(+1, m.searchHeight()); return nil })
+	phid("search.open", "enter", func(m *Model) tea.Cmd { m.searchOpenSel(true); return nil })
+	phid("search.focusEditor", "esc", func(m *Model) tea.Cmd {
+		if len(m.docs) > 0 {
+			m.focus = paneEditor
+		}
+		return nil
 	})
 
 	// ---- editor: search ----
@@ -506,8 +539,8 @@ func newRegistry() *action.Registry {
 	// ---- editor: editing ----
 	reg("edit.undo", "Edit: Undo", "ctrl+z", action.Editor, ed(func(e *editor.Model) { e.UndoStep() }))
 	reg("edit.redo", "Edit: Redo", "ctrl+y", action.Editor, ed(func(e *editor.Model) { e.RedoStep() }))
-	reg("edit.copy", "Edit: Copy", "ctrl+c", action.Editor, ed(func(e *editor.Model) { e.Copy() }))
-	reg("edit.cut", "Edit: Cut", "ctrl+x", action.Editor, ed(func(e *editor.Model) { e.Cut() }))
+	reg("edit.copy", "Edit: Copy", "ctrl+c", action.Editor, ed(func(e *editor.Model) { e.Copy(); copyOSC52(editor.Clip()) }))
+	reg("edit.cut", "Edit: Cut", "ctrl+x", action.Editor, ed(func(e *editor.Model) { e.Cut(); copyOSC52(editor.Clip()) }))
 	reg("edit.paste", "Edit: Paste", "ctrl+v", action.Editor, ed(func(e *editor.Model) { e.Paste() }))
 	reg("edit.selectAll", "Selection: Select All", "ctrl+a", action.Editor, ed(func(e *editor.Model) { e.SelectAll() }))
 	reg("edit.selectNext", "Selection: Add Next Occurrence", "ctrl+d", action.Editor, ed(func(e *editor.Model) { e.SelectNext() }))

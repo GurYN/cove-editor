@@ -83,6 +83,7 @@ const (
 	paneTerminal
 	panePanelDivider // terminal panel title row: drag to resize
 	paneGit          // git panel occupying the sidebar slot
+	paneSearch       // project-search results panel, same slot
 	paneSplitDivider // border column between split editor panes: drag to resize
 )
 
@@ -163,7 +164,8 @@ type Model struct {
 	promptDo    func(*Model, string)
 	deferred    tea.Cmd // set by prompt callbacks that need a follow-up Cmd
 
-	git gitPanel
+	git    gitPanel
+	search searchPanel
 
 	lastMouse time.Time // last mouse event; gates the broken-report alt+[ drop
 
@@ -548,6 +550,8 @@ func (m *Model) keyCtx() action.Context {
 		return action.Sidebar
 	case paneGit:
 		return action.Git
+	case paneSearch:
+		return action.Search
 	}
 	return action.Editor
 }
@@ -556,6 +560,16 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.aboutOpen {
 		m.aboutOpen = false
 		return m, nil
+	}
+	// Ctrl+V into any single-line input (palette, finder, find/replace,
+	// prompts) becomes typed runes — the inputs never learn about the
+	// clipboard. Newlines flatten to spaces: the inputs are one line.
+	if msg.Type == tea.KeyCtrlV && (m.ovKind != overlayNone || m.mode != modeEdit) {
+		if s := strings.ReplaceAll(editor.Clip(), "\n", " "); s != "" {
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		} else {
+			return m, nil
+		}
 	}
 	if m.ovKind != overlayNone {
 		return m.updateOverlay(msg)
@@ -580,6 +594,10 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, nil
 		case "shift+pgdown":
 			t.Scroll(-m.termRows())
+			return m, nil
+		}
+		if act := m.reg.Lookup(action.Editor, msg.String()); act != nil && act.ID == "edit.paste" {
+			t.Paste(editor.Clip())
 			return m, nil
 		}
 		if act := m.reg.Lookup(action.Global, msg.String()); act != nil &&
@@ -612,7 +630,7 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// Panels bind single letters, but the input reader can coalesce quickly
 	// arriving runes (paste, PTY batching) into one KeyRunes msg. Replay
 	// them one at a time so "c" still means Commit after " c" arrives fused.
-	if (m.focus == paneSidebar || m.focus == paneGit) && msg.Type == tea.KeyRunes && !msg.Alt && len(msg.Runes) > 1 {
+	if (m.focus == paneSidebar || m.focus == paneGit || m.focus == paneSearch) && msg.Type == tea.KeyRunes && !msg.Alt && len(msg.Runes) > 1 {
 		var cmds []tea.Cmd
 		for _, r := range msg.Runes {
 			var cmd tea.Cmd
@@ -1033,49 +1051,9 @@ func (m Model) updatePrompt(k tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// lineEdit applies one key to a single-line input with a rune cursor:
-// arrows/Home/End/^A/^E move, Backspace/Delete edit, runes/space insert.
-// ok=false means the key is not a text-editing key.
-func lineEdit(s string, cur int, k tea.KeyMsg) (out string, ncur int, ok bool) {
-	r := []rune(s)
-	cur = clampInt(cur, 0, len(r))
-	switch k.Type {
-	case tea.KeyLeft:
-		return s, max(0, cur-1), true
-	case tea.KeyRight:
-		return s, min(len(r), cur+1), true
-	case tea.KeyHome, tea.KeyCtrlA:
-		return s, 0, true
-	case tea.KeyEnd, tea.KeyCtrlE:
-		return s, len(r), true
-	case tea.KeyBackspace:
-		if cur > 0 {
-			return string(r[:cur-1]) + string(r[cur:]), cur - 1, true
-		}
-		return s, cur, true
-	case tea.KeyDelete:
-		if cur < len(r) {
-			return string(r[:cur]) + string(r[cur+1:]), cur, true
-		}
-		return s, cur, true
-	case tea.KeySpace:
-		return string(r[:cur]) + " " + string(r[cur:]), cur + 1, true
-	case tea.KeyRunes:
-		if k.Alt {
-			return s, cur, false
-		}
-		ins := string(k.Runes)
-		return string(r[:cur]) + ins + string(r[cur:]), cur + len([]rune(ins)), true
-	}
-	return s, cur, false
-}
-
-// cursorInto renders s with the block cursor at rune position cur.
-func cursorInto(s string, cur int) string {
-	r := []rune(s)
-	cur = clampInt(cur, 0, len(r))
-	return string(r[:cur]) + "█" + string(r[cur:])
-}
+// lineEdit and cursorInto live in the overlay package so the palette and
+// finder share the same single-line editing; aliased for the minibar/prompt.
+var lineEdit, cursorInto = overlay.LineEdit, overlay.CursorInto
 
 // ---- tabs ----
 
@@ -1212,7 +1190,38 @@ func (m Model) tabLabel(d *doc) string {
 	if d.ed.Dirty {
 		dirty = "●"
 	}
-	return fmt.Sprintf(" %s %s × ", filepath.Base(d.path), dirty)
+	name := filepath.Base(d.path)
+	var clash []string
+	for _, o := range m.docs {
+		if o != d && filepath.Base(o.path) == name {
+			clash = append(clash, o.path)
+		}
+	}
+	// Shortest trailing-path suffix that separates this tab from its clashes.
+	for depth := 2; len(clash) > 0; depth++ {
+		s := pathSuffix(d.path, depth)
+		unique := true
+		for _, o := range clash {
+			if pathSuffix(o, depth) == s {
+				unique = false
+				break
+			}
+		}
+		if unique || s == pathSuffix(d.path, depth+1) {
+			name = s
+			break
+		}
+	}
+	return fmt.Sprintf(" %s %s × ", name, dirty)
+}
+
+// pathSuffix returns the last n components of p joined back together.
+func pathSuffix(p string, n int) string {
+	parts := strings.Split(p, string(filepath.Separator))
+	if n > len(parts) {
+		n = len(parts)
+	}
+	return filepath.Join(parts[len(parts)-n:]...)
 }
 
 func (m Model) renderTabBar() string {
@@ -1254,9 +1263,12 @@ func setPointer(shape string) {
 }
 
 // copyOSC52 puts text on the system clipboard via OSC 52; terminals without
-// support ignore the sequence.
+// support ignore the sequence. Written to stderr: it reaches the same
+// terminal, but never contends with bubbletea's renderer on the stdout fd —
+// a raw stdout write from Update can wedge behind a renderer flush that's
+// blocked mid-frame and freeze the whole event loop.
 func copyOSC52(s string) {
-	os.Stdout.WriteString("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\")
+	os.Stderr.WriteString("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\")
 }
 
 // ovHit maps a screen click to an overlay list row (0 = the row under the
@@ -1343,12 +1355,14 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		m.mouseDown = paneSidebar // no drag from a switcher click
 		for i, r := range m.sideSwitcherRanges() {
 			if msg.X >= r.start && msg.X < r.end {
-				if i == 1 {
-					m.git.view = true
+				m.git.view, m.search.view = i == 2, i == 1
+				switch i {
+				case 1:
+					m.focus = paneSearch
+				case 2:
 					m.focus = paneGit
 					m.refreshGit()
-				} else {
-					m.git.view = false
+				default:
 					m.focus = paneSidebar
 				}
 				break
@@ -1366,8 +1380,11 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		target = paneDivider
 	case m.sidebarOpen && msg.X < m.editorX():
 		target = paneSidebar
-		if m.git.view {
+		switch {
+		case m.git.view:
 			target = paneGit
+		case m.search.view:
+			target = paneSearch
 		}
 	case m.split && len(m.docs) > 0 && msg.Y <= m.contentRows() && msg.X == m.splitX():
 		target = paneSplitDivider
@@ -1404,6 +1421,7 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		case msg.Action == tea.MouseActionRelease:
 			if s := t.Release(tx, ty); s != "" {
 				copyOSC52(s)
+				editor.SetClip(s)
 			}
 		}
 	case panePanelDivider:
@@ -1477,6 +1495,22 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			m.focus = paneGit
 		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonRight:
 			m = m.gitCtxMenu(msg.Y - 2)
+		}
+	case paneSearch:
+		off := 2 // tab bar + header
+		if m.search.inc != "" || m.search.exc != "" {
+			off++ // filter line
+		}
+		switch {
+		case msg.Button == tea.MouseButtonWheelUp:
+			m.search.wheel(-3, m.searchHeight())
+		case msg.Button == tea.MouseButtonWheelDown:
+			m.search.wheel(3, m.searchHeight())
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
+			m.focus = paneSearch
+			// A click is a preview (searchOpenSel keeps panel focus), so the
+			// panel's keys stay live — Enter jumps into the editor.
+			m.searchClick(msg.Y - off)
 		}
 	case paneSidebar:
 		switch {
@@ -1613,8 +1647,11 @@ func (m Model) View() string {
 		rows := max(1, m.height-2)
 		border := strings.TrimSuffix(strings.Repeat(borderStyle.Render("│")+"\n", rows), "\n")
 		side := m.side.View(m.focus == paneSidebar)
-		if m.git.view {
+		switch {
+		case m.git.view:
 			side = m.gitPanelView()
+		case m.search.view:
+			side = m.searchPanelView()
 		}
 		// switcher plus a spacer row so the buttons don't sit on the bottom bar
 		side += "\n" + m.sideSwitcher() + "\n" + strings.Repeat(" ", m.side.Width)
@@ -1669,32 +1706,49 @@ func (m Model) View() string {
 }
 
 // sideButtons are the panel-switcher labels at the bottom of the sidebar.
-var sideButtons = [2]string{"Files", "Git"}
+var sideButtons = [3]string{"Files", "Search", "Git"}
+
+// sideActive is the index into sideButtons of the panel showing in the slot.
+func (m Model) sideActive() int {
+	switch {
+	case m.search.view:
+		return 1
+	case m.git.view:
+		return 2
+	}
+	return 0
+}
 
 // sideSwitcherRanges returns each button's [start, end) x-range within the
 // sidebar, matching sideSwitcher exactly so render and hit-test can't drift.
-func (m Model) sideSwitcherRanges() [2]struct{ start, end int } {
-	const margin = 2                          // cells left and right of the control
-	half := max(0, (m.side.Width-2*margin)/2) // tiny windows: zero-width buttons, not negative
-	return [2]struct{ start, end int }{{margin, margin + half}, {margin + half, m.side.Width - margin}}
+func (m Model) sideSwitcherRanges() [len(sideButtons)]struct{ start, end int } {
+	const margin = 2                                        // cells left and right of the control
+	part := max(0, (m.side.Width-2*margin)/len(sideButtons)) // tiny windows: zero-width buttons, not negative
+	var out [len(sideButtons)]struct{ start, end int }
+	for i := range out {
+		out[i] = struct{ start, end int }{margin + i*part, margin + (i+1)*part}
+	}
+	out[len(out)-1].end = m.side.Width - margin
+	return out
 }
 
-// sideSwitcher renders the one-row Files/Git picker under the sidebar: a
-// segmented control spanning the sidebar minus side margins, each button
-// half of it, the active one highlighted — reusing the tab bar's themed
-// styles.
+// sideSwitcher renders the one-row Files/Search/Git picker under the
+// sidebar: a segmented control spanning the sidebar minus side margins,
+// split evenly, the active button highlighted — reusing the tab bar's
+// themed styles.
 func (m Model) sideSwitcher() string {
 	ranges := m.sideSwitcherRanges()
+	active := m.sideActive()
 	var row strings.Builder
 	row.WriteString(strings.Repeat(" ", ranges[0].start))
 	for i, r := range ranges {
 		st := tabStyle.Faint(true)
-		if (i == 1) == m.git.view {
+		if i == active {
 			st = tabActiveStyle
 		}
 		row.WriteString(st.Render(centerCell(sideButtons[i], r.end-r.start)))
 	}
-	row.WriteString(strings.Repeat(" ", max(0, m.side.Width-ranges[1].end)))
+	row.WriteString(strings.Repeat(" ", max(0, m.side.Width-ranges[len(ranges)-1].end)))
 	return row.String()
 }
 
