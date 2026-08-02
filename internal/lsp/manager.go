@@ -72,7 +72,7 @@ func tsMajor(out string) int {
 
 var extLang = map[string]string{
 	".go": "go", ".py": "python", ".rs": "rust",
-	".ts": "typescript", ".tsx": "typescript",
+	".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
 	".js": "typescript", ".jsx": "typescript", ".mjs": "typescript", ".cjs": "typescript",
 	".html": "html", ".htm": "html", ".css": "css",
 	".tf": "terraform", ".tfvars": "terraform",
@@ -137,6 +137,32 @@ func LangFor(path string) string {
 	return extLang[strings.ToLower(filepath.Ext(path))]
 }
 
+// The TS server keys dialects (JSX on/off, JS vs TS) off languageId, not the
+// file extension — sending "typescript" for a .tsx file kills JSX parsing.
+var tsExtLangID = map[string]string{
+	".tsx": "typescriptreact", ".jsx": "javascriptreact",
+	".js": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+}
+
+// langIDFor returns the didOpen languageId for a path. Only the built-in
+// typescript and terraform servers vary by extension; a config-overridden
+// LangID for any other language passes through untouched.
+func langIDFor(path, lang string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch lang {
+	case "typescript":
+		if id := tsExtLangID[ext]; id != "" {
+			return id
+		}
+	case "terraform":
+		// terraform-ls parses .tfvars as config unless told otherwise.
+		if ext == ".tfvars" {
+			return "terraform-vars"
+		}
+	}
+	return defaultServers[lang].LangID
+}
+
 // clientFor returns (spawning if needed) the client for path's language.
 // nil when the language is unsupported, the binary is missing, or the
 // server crashed too many times.
@@ -182,7 +208,7 @@ func (m *Manager) Open(path string, text []byte, version int) bool {
 	if c == nil {
 		return false
 	}
-	c.DidOpen(PathToURI(path), defaultServers[c.lang].LangID, string(text), version)
+	c.DidOpen(PathToURI(path), langIDFor(path, c.lang), string(text), version)
 	return true
 }
 
