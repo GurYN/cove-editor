@@ -20,14 +20,17 @@ func TestTS7PullDiagnostics(t *testing.T) {
 		!strings.HasPrefix(strings.TrimSpace(string(out)), "Version 7") {
 		t.Skipf("tsc without native LSP: %s", out)
 	}
+	// A .ts file, not .js: opened with the correct languageId ("javascript"),
+	// tsc --lsp skips type-checking plain JS in an inferred project (checkJs
+	// off), so a JS fixture would never produce these diagnostics.
 	dir := t.TempDir()
-	appJS := filepath.Join(dir, "app.js")
+	appTS := filepath.Join(dir, "app.ts")
 	src := "const x = 1;\nx = 2;\nconsole.lgo(x);\n"
-	os.WriteFile(appJS, []byte(src), 0o644)
+	os.WriteFile(appTS, []byte(src), 0o644)
 
 	m := NewManager(dir)
 	defer m.Shutdown()
-	if !m.Open(appJS, []byte(src), 1) {
+	if !m.Open(appTS, []byte(src), 1) {
 		t.Fatal("Open returned false")
 	}
 
