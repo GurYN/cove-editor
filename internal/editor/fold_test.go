@@ -150,3 +150,26 @@ func TestFoldDropsWhenEditCrossesBoundary(t *testing.T) {
 		t.Fatalf("boundary-crossing edit must drop the fold, got %v", m.folds)
 	}
 }
+
+func TestFoldTailIndicator(t *testing.T) {
+	// Brace fold: closing "}" joins the marker → "…}".
+	src := "func a() {\n\tx()\n}\nafter"
+	m := New(buffer.New([]byte(src)))
+	m.Width, m.Height = 40, 6
+	m.Syntax = fakeFolds{folds: [][2]int{{0, 2}}}
+	m.ToggleFold()
+	if view := m.View(); !strings.Contains(view, "…}") {
+		t.Fatalf("folded brace header must show …} :\n%s", view)
+	}
+
+	// Delimiter-less fold (Python-style): bare "…", no code from the end line.
+	src = "def a():\n\tx()\n\ty()\nafter"
+	m = New(buffer.New([]byte(src)))
+	m.Width, m.Height = 40, 6
+	m.Syntax = fakeFolds{folds: [][2]int{{0, 2}}}
+	m.ToggleFold()
+	view := m.View()
+	if !strings.Contains(view, "…") || strings.Contains(view, "…y") {
+		t.Fatalf("folded python header must show bare … :\n%s", view)
+	}
+}

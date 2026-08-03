@@ -453,4 +453,27 @@ func (m Model) renderLine(sb *strings.Builder, lineIdx int, spans []HLSpan, matc
 		}
 		start = end
 	}
+	m.renderFoldTail(sb, lineIdx, visible, width)
+}
+
+// renderFoldTail appends the Zed-style fold indicator after a folded header
+// line: "…" plus the closing delimiter from the fold's last line, so
+// `type Config struct {` folds to `type Config struct {…}`. Delimiter-less
+// folds (Python blocks) get a bare "…".
+func (m *Model) renderFoldTail(sb *strings.Builder, lineIdx, visible, width int) {
+	i := m.foldedAt(lineIdx)
+	if i < 0 {
+		return
+	}
+	end := m.folds[i][1]
+	start := m.Buf.Offset(end, 0)
+	tail := strings.TrimSpace(string(m.Buf.Slice(start, start+min(m.Buf.LineLen(end), 16))))
+	if len(tail) > 4 || strings.ContainsFunc(tail, func(r rune) bool {
+		return !strings.ContainsRune("}])>,;", r)
+	}) {
+		tail = "" // closing line is real code, not a delimiter
+	}
+	if marker := "…" + tail; visible+1+len(tail) <= width {
+		sb.WriteString(gutterCurStyle.Render(marker))
+	}
 }
