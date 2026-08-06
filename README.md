@@ -12,6 +12,7 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Tree-sitter syntax highlighting** for fourteen languages plus the config files around them (`.env`, `.gitignore`, `go.mod`, lockfiles, shell dotfiles, …), with structural selection (`Ctrl+E` expands the selection to the enclosing syntax node) and embedded-language support: `<script>`/`<style>` in HTML and fenced code blocks in Markdown highlight as the real thing.
 - **Code folding**: every foldable region shows a `▾` chevron in the gutter — click it (or `Alt+-`) to fold, click the `▸` to unfold; *Fold: Fold All* / *Unfold All* live in the palette. Fold an unfamiliar file to see its skeleton. Folds follow your edits, and anything that lands the cursor in a hidden line unfolds it.
 - **LSP built in**: diagnostics, go-to-definition (`F12`), references (`Shift+F12`), hover docs (`Ctrl+K`), rename (`F2`), completion (`Ctrl+Space`), signature help (parameter hints appear as you type `(` and `,`), formatting, quick fixes and refactors (`Alt+Enter` — including server commands that create files, like gopls's *add test* and *extract to new file*), a symbol outline (`Ctrl+T`), project-wide symbol search (`F3`), a problems list (`F8`), and next/previous-diagnostic jumps (`Alt+N`/`Alt+P`). Go, Python, TypeScript/JavaScript, Rust, HTML, CSS, and Terraform work out of the box — including TypeScript 7's native language server (both the push and pull diagnostics models are supported).
+- **AI inline completion, bring your own model** (opt-in): ghost-text suggestions appear when you pause typing — `Tab` accepts, `Esc` dismisses. Works with any OpenAI-compatible endpoint (Ollama, LM Studio, OpenRouter, Groq, …) or Anthropic's native API; point the `[ai]` config block at your model and keep the API key in an env var. Prefer suggestions only on demand? Set `manual = true` and trigger them with `` Alt+\ ``.
 - **Search across the project** (`F7`): .gitignore-aware, smart-case, sees unsaved buffer content, and results land in a sidebar panel grouped by file — click a hit to preview, Enter to jump. Narrow with include/exclude glob filters (`i`/`x` in the panel). *Replace in Project…* (palette) previews the count and applies undoably to open files.
 - **Markdown preview**: *Markdown: Preview* (palette) renders the current `.md` file into a styled read-only tab — headings, emphasis, links, lists, code blocks. Rerun to refresh after editing.
 - **A jump list**: `Alt+Left` walks back through go-to-definition, symbol, and search jumps; `Alt+Right` walks forward. Navigation is never a one-way door.
@@ -124,6 +125,7 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `F3`            | Go to symbol in project       |
 | `Alt+Enter`     | Quick fix / code action       |
 | `F2`            | Rename symbol                 |
+| `Alt+\`         | Trigger AI suggestion (when `[ai]` is configured) |
 | `F8`            | Problems list                 |
 | `Alt+N` / `Alt+P` | Next / previous diagnostic  |
 | `Alt+Left` / `Alt+Right` | Jump back / forward  |
@@ -205,13 +207,21 @@ command = ["gopls"]            # override or add language servers
 [apps.lazygit]                 # favorite TUI apps: palette entry "App: lazygit",
 command = ["lazygit"]          # runs as a named terminal-panel instance
 key = "ctrl+alt+g"             # optional
+
+[ai]                           # AI inline completion (ghost text; Tab accepts, Esc dismisses)
+enabled = true
+protocol = "openai"            # or "anthropic"
+base_url = "http://localhost:11434/v1"   # Ollama; any OpenAI-compatible host
+model = "qwen2.5-coder:7b"
+api_key_env = "OPENROUTER_API_KEY"       # env var NAME — keys stay out of this file (local runtimes need none)
+manual = false                 # true: suggest only on Alt+\, never on a typing pause
 ```
 
 Config mistakes don't fail silently: a binding that collides with an existing shortcut, a key terminals can't deliver (`ctrl+i` arrives as Tab), or an unknown action ID shows up in a toast at startup.
 
 ## Status
 
-In active development, pre-1.0. The v1 scope is deliberately tight: editing, code folding, chrome, LSP for four languages (with signature help and diagnostic navigation), an integrated terminal, git integration (panel, staging, diffs, commit, amend, undo-commit, history & visual graph, push/pull with a safe force-with-lease path, branch sync via rebase, stash, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace (results panel with include/exclude filters), a Markdown preview, code actions, a jump list, per-workspace session restore, crash recovery, and user-defined TUI app launchers — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
+In active development, pre-1.0. The v1 scope is deliberately tight: editing, code folding, chrome, LSP for four languages (with signature help and diagnostic navigation), an integrated terminal, git integration (panel, staging, diffs, commit, amend, undo-commit, history & visual graph, push/pull with a safe force-with-lease path, branch sync via rebase, stash, remote-aware branch switching, in-editor conflict resolution, restore, gutter signs, inline blame, file-tree markers, multi-repo folders), split panes, project-wide search & replace (results panel with include/exclude filters), a Markdown preview, code actions, a jump list, per-workspace session restore, crash recovery, user-defined TUI app launchers, and provider-agnostic AI inline completion — all built and recently hardened by a full bug-hunt pass (UTF-8-safe cursor movement, LSP process lifecycle, tree-sitter memory management, non-ASCII git filenames). Plugins and debugging are deferred to v2.
 
 ## Contributing
 

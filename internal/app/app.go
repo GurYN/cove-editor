@@ -150,6 +150,7 @@ type Model struct {
 	hoverText     string
 	sigHelp       *lsp.SignatureHelp
 	compl         complState
+	ai            aiState
 
 	mode     mode
 	query    string
@@ -214,6 +215,7 @@ func New(path string, data []byte) Model {
 	}
 	m.git.tree = cfg.Git.View == "tree"
 	m.git.sideDiff = cfg.Git.Diff == "side"
+	m.cfgWarns = append(m.cfgWarns, m.configureAI(&cfg)...)
 	if cfgErr != nil {
 		m.cfgWarns = append(m.cfgWarns, cfgErr.Error())
 	}
@@ -339,6 +341,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, listenLSP(m.lspm)
 	case changeTickMsg:
 		return m, m.flushChange()
+	case aiTickMsg:
+		return m, m.aiRequest(msg.gen, false)
+	case aiComplMsg:
+		m.handleAIResult(msg)
+		return m, nil
 	case flashMsg:
 		if int(msg) == m.flashGen {
 			m.flashOn = false
@@ -620,6 +627,11 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, cmd
 		}
 	}
+	// AI ghost text: Tab accepts, Esc dismisses; checked after the LSP
+	// completion popup (which owns Tab while open) and before vim.
+	if cmd, handled := m.handleGhostKey(msg); handled {
+		return m, cmd
+	}
 	if m.vim != nil && m.focus == paneEditor {
 		mm, cmd, handled := m.handleVim(msg)
 		if handled {
@@ -655,12 +667,16 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			var cmd tea.Cmd
 			d.ed, cmd = d.ed.Update(msg)
 			// Auto-trigger completion after a member access dot, and
-			// signature hints after ( or , inside a call.
+			// signature hints after ( or , inside a call. Flush the pending
+			// didChange first: the request rides the same stdin pipe, and a
+			// server asked about a column past its stale copy of the line
+			// returns an empty list, not an error (gopls does; tsserver
+			// clamps, which masked this).
 			if msg.Type == tea.KeyRunes && !msg.Alt && lsp.LangFor(d.path) != "" {
 				if s := string(msg.Runes); strings.HasSuffix(s, ".") && !m.compl.active {
-					return m, tea.Batch(cmd, m.syncLSP(), cmdCompletion(&m))
+					return m, tea.Batch(cmd, m.flushChange(), cmdCompletion(&m))
 				} else if strings.HasSuffix(s, "(") || strings.HasSuffix(s, ",") {
-					return m, tea.Batch(cmd, m.syncLSP(), cmdSignatureHelp(&m))
+					return m, tea.Batch(cmd, m.flushChange(), cmdSignatureHelp(&m))
 				}
 			}
 			return m, tea.Batch(cmd, m.syncLSP())
@@ -1867,7 +1883,7 @@ func (m Model) bottomBar() string {
 	// Fixed-width cost cell (" 0.89ms"…"99.99ms") so the digit count can't
 	// change and shove the segments to its left around on every keystroke.
 	cost := fmt.Sprintf("%5.2fms", float64(m.lastCost.Microseconds())/1000)
-	right := fmt.Sprintf("%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
+	right := fmt.Sprintf("%s%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.aiSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
 	// The message slot: an in-progress message wins, else the blame
 	// annotation. Final outcomes render as a toast card instead (notify).
 	msg := ""

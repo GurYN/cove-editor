@@ -55,6 +55,26 @@ type Config struct {
 	Update struct {
 		Check bool `toml:"check"`
 	} `toml:"update"`
+
+	// AI configures inline code completion (ghost text). Opt-in:
+	//   [ai]
+	//   enabled  = true
+	//   protocol = "openai"                    # "openai" | "anthropic"
+	//   base_url = "http://localhost:11434/v1" # Ollama; any OpenAI-compatible host
+	//   model    = "qwen2.5-coder:7b"
+	//   api_key_env = "OPENROUTER_API_KEY"     # env var NAME; keys stay out of this file
+	//   manual   = true                        # suggest only on ai.trigger (alt+\), never on pause
+	AI struct {
+		Enabled    bool   `toml:"enabled"`
+		Protocol   string `toml:"protocol"`
+		BaseURL    string `toml:"base_url"`
+		Model      string `toml:"model"`
+		APIKeyEnv  string `toml:"api_key_env"`
+		APIKey     string `toml:"api_key"` // discouraged; api_key_env wins when both set
+		DebounceMS int    `toml:"debounce_ms"`
+		MaxTokens  int    `toml:"max_tokens"`
+		Manual     bool   `toml:"manual"` // true = no auto-suggest on typing pause
+	} `toml:"ai"`
 }
 
 type App struct {

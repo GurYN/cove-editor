@@ -154,8 +154,10 @@ func (m *Model) flushChange() tea.Cmd {
 	}
 	d.sentRev = d.ed.Rev
 	m.lspm.Change(d.path, d.sentRev, d.ed.Buf.Bytes())
-	m.updateSigns(d)   // git gutter rides the same debounce
-	return m.syncLSP() // buffer may already have moved again
+	m.updateSigns(d) // git gutter rides the same debounce
+	// AI completion rides it too: flushChange fires once typing pauses, so
+	// its own debounce stacks on top of the 150ms sync window.
+	return tea.Batch(m.syncLSP(), m.scheduleAI()) // buffer may already have moved again
 }
 
 // ---- feature commands ----

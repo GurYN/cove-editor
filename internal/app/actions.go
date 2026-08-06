@@ -64,6 +64,20 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # command = ["redis-tui"]
 # key = "ctrl+alt+r"        # optional; rebindable via [keys] "app.redis"
 
+# AI inline completion (ghost text; Tab accepts, Esc dismisses). Any
+# OpenAI-compatible endpoint works — Ollama, LM Studio, OpenRouter, Groq —
+# and protocol "anthropic" speaks Anthropic's native API. The key is read
+# from the env var named by api_key_env; local runtimes need none.
+# [ai]
+# enabled = true
+# protocol = "openai"       # or "anthropic"
+# base_url = "http://localhost:11434/v1"
+# model = "qwen2.5-coder:7b"
+# api_key_env = "OPENROUTER_API_KEY"
+# debounce_ms = 250         # idle time before asking for a suggestion
+# max_tokens = 2048              # shared with hidden reasoning tokens on thinking models
+# manual = false            # true: suggest only on demand (alt+\), never on a typing pause
+
 # [update]
 # check = false             # disable the once-a-day new-release check
 `
@@ -669,6 +683,36 @@ func newRegistry() *action.Registry {
 			}
 		})
 		return nil
+	})
+
+	// ---- AI completion ----
+	reg("ai.toggle", "AI: Toggle Completion", "", action.Global, func(m *Model) tea.Cmd {
+		if m.ai.client == nil {
+			m.notifyErr("ai: not configured — add an [ai] section to config.toml")
+			return nil
+		}
+		m.ai.enabled = !m.ai.enabled
+		if m.ai.enabled {
+			m.notify("ai completion on")
+		} else {
+			if d := m.doc(); d != nil {
+				d.ed.SetGhost("", 0)
+			}
+			m.notify("ai completion off")
+		}
+		return nil
+	})
+	reg("ai.trigger", "AI: Suggest Completion", "alt+\\", action.Editor, func(m *Model) tea.Cmd {
+		if m.ai.client == nil {
+			m.notifyErr("ai: not configured — add an [ai] section to config.toml")
+			return nil
+		}
+		if !m.ai.enabled {
+			m.notify("ai completion is off — run AI: Toggle Completion")
+			return nil
+		}
+		m.ai.gen++
+		return m.aiRequest(m.ai.gen, true)
 	})
 
 	// ---- sidebar ----
