@@ -71,6 +71,8 @@ type Model struct {
 	Diags    []DiagSpan // set by the app; offsets clamped at render time
 	Signs    []byte     // git gutter sign per line ('a'/'m'/'d', 0 none); set by the app
 	LineBG   []byte     // per-line background class ('a'/'m'/'d', 0 none); set by the app (diff views)
+	Ghost    string     // AI completion ghost text; rendered dim after the cursor (see SetGhost)
+	GhostOff int        // byte offset the ghost belongs to; a moved cursor hides it
 
 	cursors  []Cursor   // sorted by sel start, non-overlapping, len >= 1
 	primary  int        // index into cursors; scroll follows this one
@@ -586,6 +588,63 @@ func (m *Model) ApplyEdits(edits []Edit) {
 		return
 	}
 	m.apply(Tx{Edits: edits})
+}
+
+// ---- AI ghost text ----
+
+// SetGhost installs (or clears, with "") the AI suggestion anchored at byte
+// offset off. Text is sanitized like typed input — control bytes must never
+// reach the buffer on accept.
+func (m *Model) SetGhost(text string, off int) {
+	m.Ghost = sanitize(text)
+	m.GhostOff = off
+}
+
+// GhostVisible reports whether the ghost currently renders: one cursor, no
+// selection, sitting exactly at the anchor, at end of line. Any edit or
+// cursor move breaks the anchor and hides it.
+func (m *Model) GhostVisible() bool {
+	if m.Ghost == "" || len(m.cursors) != 1 || m.cursors[0].hasSel() ||
+		m.cursors[0].Head != m.GhostOff {
+		return false
+	}
+	line, col := m.Buf.Pos(m.GhostOff)
+	return col == m.Buf.LineLen(line)
+}
+
+// AcceptGhost inserts the visible ghost as its own undo step. Reports
+// whether anything was inserted.
+func (m *Model) AcceptGhost() bool {
+	if !m.GhostVisible() {
+		m.Ghost = ""
+		return false
+	}
+	text := m.Ghost
+	m.Ghost = ""
+	m.InsertText(text)
+	m.hist.seal() // accept is one undo step; typing after it must not merge
+	return true
+}
+
+// ghostRowExtent returns the ghost anchor's viewport row and the number of
+// extra rows its continuation lines occupy; (0, 0) when nothing renders.
+func (m *Model) ghostRowExtent() (int, int) {
+	if !m.GhostVisible() {
+		return 0, 0
+	}
+	extra := strings.Count(m.Ghost, "\n")
+	if extra == 0 {
+		return 0, 0
+	}
+	line, _ := m.Buf.Pos(m.GhostOff)
+	if line < m.top {
+		return 0, 0
+	}
+	row := line - m.top
+	if len(m.folds) > 0 {
+		row = m.visibleRows(m.top, line) - 1
+	}
+	return row, extra
 }
 
 // DiagUnderCursor returns the diagnostic covering the primary cursor.
@@ -1117,7 +1176,12 @@ func (m *Model) handleMouse(msg tea.MouseMsg) {
 }
 
 // lineAtRow maps a viewport row to its buffer line, skipping folded bodies.
+// A multi-line ghost shifts everything below its anchor down; clicks inside
+// the ghost land on the anchor line, clicks below it un-shift.
 func (m *Model) lineAtRow(y int) int {
+	if ar, extra := m.ghostRowExtent(); extra > 0 && y > ar {
+		y = max(ar, y-extra)
+	}
 	if len(m.folds) == 0 {
 		return clamp(m.top+y, 0, m.Buf.LineCount()-1)
 	}

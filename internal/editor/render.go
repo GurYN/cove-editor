@@ -253,9 +253,22 @@ func (m Model) View() string {
 	curLine, _ := m.Buf.Pos(m.cursors[m.primary].Head)
 	chevrons := mm.foldMarkers(vis)
 	gw := m.gutterW()
+	// AI ghost text: the first segment appends inline after the cursor (it
+	// only shows at end-of-line), continuation lines consume viewport rows,
+	// visually pushing the rest of the file down without touching the buffer.
+	ghostLine := -1
+	var ghostSegs []string
+	if mm.GhostVisible() {
+		ghostLine, _ = m.Buf.Pos(m.GhostOff)
+		ghostSegs = strings.Split(m.Ghost, "\n")
+	}
+	rows := 0
 	var sb strings.Builder
-	for k, i := range vis {
-		if k > 0 {
+	for _, i := range vis {
+		if rows >= m.Height {
+			break
+		}
+		if rows > 0 {
 			sb.WriteByte('\n')
 		}
 		if gw > 0 {
@@ -291,13 +304,63 @@ func (m Model) View() string {
 			sb.WriteByte(' ')
 		}
 		m.renderLine(&sb, i, spans, matches)
+		if i == ghostLine {
+			mm.renderGhostInline(&sb, ghostSegs[0])
+			for _, g := range ghostSegs[1:] {
+				if rows+1 >= m.Height {
+					break
+				}
+				rows++
+				sb.WriteByte('\n')
+				for range gw {
+					sb.WriteByte(' ')
+				}
+				mm.renderGhostRow(&sb, g)
+			}
+		}
+		rows++
 	}
-	for k := len(vis); k < m.Height; k++ {
-		if k > 0 {
+	for ; rows < m.Height; rows++ {
+		if rows > 0 {
 			sb.WriteByte('\n')
 		}
 	}
 	return sb.String()
+}
+
+var ghostStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+
+// renderGhostInline appends the ghost's first line right after the cursor
+// cell (the ghost only shows with the cursor at end of line, so the rendered
+// line ends exactly there).
+func (m *Model) renderGhostInline(sb *strings.Builder, g string) {
+	line, col := m.Buf.Pos(m.GhostOff)
+	avail := m.textWidth() - (m.cursorCellX(line, col) + 1 - m.xoff)
+	if s := ghostTrunc(g, avail); s != "" {
+		sb.WriteString(ghostStyle.Render(s))
+	}
+}
+
+// renderGhostRow emits one ghost continuation line under a blank gutter.
+// ponytail: xoff is ignored — ghost lines start at column 0, which is where
+// completions live in practice.
+func (m *Model) renderGhostRow(sb *strings.Builder, g string) {
+	if s := ghostTrunc(g, m.textWidth()); s != "" {
+		sb.WriteString(ghostStyle.Render(s))
+	}
+}
+
+// ghostTrunc expands tabs and clips to n cells (1 cell per rune, same
+// simplification as lineCells).
+func ghostTrunc(g string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	g = strings.ReplaceAll(g, "\t", strings.Repeat(" ", tabStop))
+	if r := []rune(g); len(r) > n {
+		return string(r[:n])
+	}
+	return g
 }
 
 // cursorCellX returns the screen x of the cursor by decoding only the

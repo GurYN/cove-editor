@@ -18,7 +18,7 @@ func TestUpgradeSampleConfig(t *testing.T) {
 	if !strings.HasPrefix(got, old) {
 		t.Fatal("existing content was rewritten")
 	}
-	for _, want := range []string{"# [update]", "# [files]", "# [git]", "# [keys]", "# [colors]", "# [lsp.zig]", "# [apps.redis]", "# keymap ="} {
+	for _, want := range []string{"# [update]", "# [files]", "# [git]", "# [keys]", "# [colors]", "# [lsp.zig]", "# [apps.redis]", "# [ai]", "# keymap ="} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing appended block for %q", want)
 		}
