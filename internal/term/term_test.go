@@ -2,6 +2,8 @@ package term
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -203,6 +205,97 @@ func TestModeTracking(t *testing.T) {
 	if vt.ModeSet(vt10x.ModeAltScreen) || vt.ModeSet(vt10x.ModeMouseMask) || vt.ModeSet(vt10x.ModeMouseSgr) {
 		t.Fatal("modes stuck after DECRST")
 	}
+	vt.Write([]byte("\x1b[?2004h"))
+	if !vt.ModeSet(vt10x.ModeBracketedPaste) {
+		t.Fatal("bracketed paste not tracked after DECSET 2004")
+	}
+	vt.Write([]byte("\x1b[?2004l"))
+	if vt.ModeSet(vt10x.ModeBracketedPaste) {
+		t.Fatal("bracketed paste stuck after DECRST 2004")
+	}
+}
+
+func TestPasteBytes(t *testing.T) {
+	cases := []struct {
+		in        string
+		bracketed bool
+		want      string
+	}{
+		{"a\nb\n", false, "a\rb\r"},
+		{"a\r\nb", false, "a\rb"},
+		{"a\nb", true, "\x1b[200~a\rb\x1b[201~"},
+		{"x\x1b[201~y", true, "\x1b[200~xy\x1b[201~"}, // no bracket escape
+	}
+	for _, c := range cases {
+		if got := string(pasteBytes(c.in, c.bracketed)); got != c.want {
+			t.Errorf("pasteBytes(%q, %v) = %q, want %q", c.in, c.bracketed, got, c.want)
+		}
+	}
+}
+
+// A large paste into an app that enabled bracketed paste must reach it as one
+// wrapped block, newlines as CR. Claude Code inside Cove was seeing 1 KB
+// chunks of typed text and kept only the last one.
+func TestPasteBracketedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out")
+	tm, err := New(dir, []string{"/bin/sh", "-c",
+		"stty raw -echo; printf '\\033[?2004h'; cat > " + out}, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tm.Close()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		tm.vt.Lock()
+		on := tm.vt.ModeSet(vt10x.ModeBracketedPaste)
+		tm.vt.Unlock()
+		if on {
+			break
+		}
+		select {
+		case _, ok := <-tm.Notify():
+			if !ok {
+				t.Fatal("child exited before enabling bracketed paste")
+			}
+		case <-deadline:
+			t.Fatal("child never enabled bracketed paste")
+		}
+	}
+
+	var sb strings.Builder
+	for i := 1; i <= 500; i++ {
+		fmt.Fprintf(&sb, "L%04d %s\n", i, strings.Repeat("x", 76))
+	}
+	text := sb.String()
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text), Paste: true})
+
+	want := "\x1b[200~" + strings.ReplaceAll(text, "\n", "\r") + "\x1b[201~"
+	deadline = time.After(5 * time.Second)
+	for {
+		got, _ := os.ReadFile(out)
+		if string(got) == want {
+			return
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-deadline:
+			i := 0
+			for i < len(got) && i < len(want) && got[i] == want[i] {
+				i++
+			}
+			t.Fatalf("child got %d bytes, want %d; first diff at %d: got %q want %q",
+				len(got), len(want), i, truncate(string(got[i:]), 40), truncate(want[i:], 40))
+		}
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 // Truecolor (38;2/48;2) output must survive the emulator round-trip into the
