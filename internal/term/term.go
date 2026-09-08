@@ -122,6 +122,10 @@ func (t *Term) Resize(cols, rows int) {
 // Send encodes a key press as terminal input bytes and writes it to the PTY.
 // Typing snaps the view back to the live screen.
 func (t *Term) Send(k tea.KeyMsg) {
+	if k.Paste { // host-terminal paste (bubbletea reassembled the bracketed chunks)
+		t.Paste(string(k.Runes))
+		return
+	}
 	if b := encodeKey(k); len(b) > 0 {
 		t.vt.Lock()
 		t.scroll = 0
@@ -134,18 +138,34 @@ func (t *Term) Send(k tea.KeyMsg) {
 // for mouse reporting get a mouse code; alt-screen apps get arrow keys
 // (xterm's alternate-scroll convention — how less/vim/htop scroll in real
 // terminals); otherwise the view moves through Cove's scrollback.
-// Paste writes s to the child as pasted input. Newlines become CR (what a
-// real terminal sends for Enter).
-// ponytail: no bracketed-paste wrapping — vt10x doesn't track mode 2004 and
-// stays diff-free; wrap here if a child app ever needs it.
+// Paste writes s to the child as pasted input, the way a real terminal
+// would: newlines become CR (what Enter sends), and if the child enabled
+// bracketed paste (DECSET 2004) the text is wrapped in ESC[200~ / ESC[201~
+// so the app takes it as one block. Without the wrap, apps that rely on it
+// (Claude Code, readline-based shells) see 1 KB chunks of "typed" text
+// arriving through the PTY queue and mishandle every chunk but the last.
 func (t *Term) Paste(s string) {
 	if s == "" {
 		return
 	}
 	t.vt.Lock()
 	t.scroll = 0
+	bracketed := t.vt.ModeSet(vt10x.ModeBracketedPaste)
 	t.vt.Unlock()
-	t.ptmx.WriteString(strings.ReplaceAll(s, "\n", "\r"))
+	t.ptmx.Write(pasteBytes(s, bracketed))
+}
+
+// pasteBytes encodes pasted text for the child. A stray end marker inside
+// the text is stripped so pasted content can't break out of the bracket
+// (the same guard xterm and kitty apply).
+func pasteBytes(s string, bracketed bool) []byte {
+	s = strings.ReplaceAll(s, "\r\n", "\r")
+	s = strings.ReplaceAll(s, "\n", "\r")
+	if !bracketed {
+		return []byte(s)
+	}
+	s = strings.ReplaceAll(s, "\x1b[201~", "")
+	return []byte("\x1b[200~" + s + "\x1b[201~")
 }
 
 func (t *Term) Wheel(up bool, x, y int) {
