@@ -246,6 +246,23 @@ func (m *Manager) Close(path string) {
 // Client exposes the feature API for a path, nil when unavailable.
 func (m *Manager) Client(path string) *Client { return m.clientFor(path) }
 
+// Running lists the live clients (any language), for cross-language
+// queries like workspace symbols.
+func (m *Manager) Running() []*Client {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*Client
+	for _, c := range m.clients {
+		c.mu.Lock()
+		ready := c.state == "ready"
+		c.mu.Unlock()
+		if ready {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // Shutdown kills every server (on quit).
 func (m *Manager) Shutdown() {
 	m.mu.Lock()

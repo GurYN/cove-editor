@@ -66,6 +66,20 @@ func (m *Model) handleLSPEvent(ev lsp.Event) {
 				d.ed.Diags = toDiagSpans(d.ed.Buf, ev.Diagnostics)
 			}
 		}
+		// Kept per path whether or not the file is open: the MCP bridge
+		// answers closed files from here too (gopls diagnoses whole packages).
+		if len(ev.Diagnostics) == 0 {
+			delete(m.diags, path)
+		} else {
+			m.diags[path] = ev.Diagnostics
+		}
+		for _, ch := range m.diagWait[path] {
+			select {
+			case ch <- ev.Diagnostics:
+			default:
+			}
+		}
+		delete(m.diagWait, path)
 	case "applyEdit":
 		// Edits were computed against the last-synced text; a rev snapshot
 		// taken now always matches, so only that 150ms sync window can skew.

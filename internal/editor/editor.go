@@ -130,6 +130,10 @@ func (m *Model) Center() {
 	m.top = clamp(line-m.Height/2, 0, max(0, m.Buf.LineCount()-m.Height))
 }
 
+// SelectionRange returns the primary cursor's selection as byte offsets
+// (lo == hi when nothing is selected).
+func (m Model) SelectionRange() (lo, hi int) { return m.cursors[m.primary].sel() }
+
 // Selection returns the primary cursor's selected text, nil if none.
 func (m Model) Selection() []byte {
 	lo, hi := m.cursors[m.primary].sel()

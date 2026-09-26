@@ -63,6 +63,18 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 # [apps.redis]
 # command = ["redis-tui"]
 # key = "ctrl+alt+r"        # optional; rebindable via [keys] "app.redis"
+#
+# Flag one app as your coding agent (Claude Code, aider, codex, …) and the
+# "Agent: Send Selection" (alt+a) / "Send File Reference" / "Send Diagnostic"
+# actions paste into it — launching it first if it isn't running.
+# [apps.claude]
+# command = ["claude"]
+# agent = true
+
+# Review the agent's edits hunk by hunk ("Agent: Review Changes", alt+r).
+# [agent]
+# checkpoint_on_launch = true  # snapshot the worktree when the agent starts
+# follow = false               # open whatever the agent just touched, as it works
 
 # AI inline completion (ghost text; Tab accepts, Esc dismisses). Any
 # OpenAI-compatible endpoint works — Ollama, LM Studio, OpenRouter, Groq —
@@ -80,6 +92,12 @@ const sampleConfig = `# Cove configuration. Changes apply on restart.
 
 # [update]
 # check = false             # disable the once-a-day new-release check
+
+# The MCP bridge lets the agent in the terminal panel query the editor:
+# diagnostics, definitions, references, symbols, rename, open files. One-time
+# setup for Claude Code: "Agent: Register Cove's MCP Server" in the palette.
+# [mcp]
+# enabled = false           # turn the bridge off
 `
 
 // mapTables hold user-defined keys ([keys] rebindings, [lsp.<lang>] servers…):
@@ -227,6 +245,7 @@ func newRegistry() *action.Registry {
 		m.saveSession()
 		m.clearBackups() // quitting past the dirty-files prompt is a discard
 		m.lspm.Shutdown()
+		m.bridge.Close() // nil-safe; removes the socket file
 		for _, t := range m.terms {
 			t.Close()
 		}
@@ -314,8 +333,8 @@ func newRegistry() *action.Registry {
 		// Same tri-state as git.toggle: closed (or showing git/search) → show
 		// tree and focus it; open but unfocused → focus; focused → close.
 		switch {
-		case m.git.view || m.search.view: // ctrl+b always means the file tree
-			m.git.view, m.search.view = false, false
+		case m.git.view || m.search.view || m.review.view: // ctrl+b always means the file tree
+			m.git.view, m.search.view, m.review.view = false, false, false
 			m.sidebarOpen = true
 			m.focus = paneSidebar
 		case m.sidebarOpen && m.focus == paneSidebar:
@@ -686,6 +705,56 @@ func newRegistry() *action.Registry {
 	})
 
 	// ---- AI completion ----
+	// ---- agent (see agent.go) ----
+	reg("agent.open", "Agent: Open", "", action.Global, func(m *Model) tea.Cmd { return m.agentOpen() })
+	reg("agent.sendSelection", "Agent: Send Selection (or cursor line)", "alt+a", action.Editor, func(m *Model) tea.Cmd { return m.agentSendSelection() })
+	reg("agent.sendRef", "Agent: Send File Reference", "", action.Editor, func(m *Model) tea.Cmd { return m.agentSendRef() })
+	reg("agent.sendDiag", "Agent: Send Diagnostic Under Cursor", "", action.Editor, func(m *Model) tea.Cmd { return m.agentSendDiag() })
+	reg("agent.installMCP", "Agent: Register Cove's MCP Server with Claude Code", "", action.Global, func(m *Model) tea.Cmd { return m.bridgeInstallCmd() })
+
+	// ---- agent review (see review.go) ----
+	reg("review.toggle", "Agent: Review Changes", "alt+r", action.Global, func(m *Model) tea.Cmd {
+		// Same tri-state as git.toggle: focused → close, else show and focus.
+		if m.review.view && m.sidebarOpen && m.focus == paneReview {
+			m.sidebarOpen, m.review.view = false, false
+			m.focus = paneEditor
+			return nil
+		}
+		return m.showReviewPanel()
+	})
+	reg("review.checkpoint", "Agent: Checkpoint (new review baseline)", "", action.Global, func(m *Model) tea.Cmd {
+		return m.reviewCheckpointCmd()
+	})
+	reg("review.follow", "Agent: Toggle Follow Mode", "f", action.Review, func(m *Model) tea.Cmd {
+		m.review.follow = !m.review.follow
+		if m.review.follow {
+			m.notify("follow mode on: files the agent touches open as you go")
+		} else {
+			m.notify("follow mode off")
+		}
+		return nil
+	})
+	reg("review.revert", "Review: Revert Hunk", "r", action.Review, func(m *Model) tea.Cmd { return m.reviewRevertSel() })
+	reg("review.accept", "Review: Accept Hunk (stage it)", "a", action.Review, func(m *Model) tea.Cmd { m.reviewAcceptSel(); return nil })
+	reg("review.acceptAll", "Review: Accept All (stage everything, new checkpoint)", "A", action.Review, func(m *Model) tea.Cmd { return m.reviewAcceptAll() })
+	reg("review.send", "Review: Ask the Agent About This Hunk", "x", action.Review, func(m *Model) tea.Cmd { return m.reviewSendSel(false) })
+	reg("review.revertSend", "Review: Revert Hunk and Tell the Agent", "X", action.Review, func(m *Model) tea.Cmd { return m.reviewSendSel(true) })
+	reg("review.sideDiff", "Review: Open Side-by-Side Diff", "d", action.Review, func(m *Model) tea.Cmd { m.reviewSideDiff(); return nil })
+	reg("review.refresh", "Review: Refresh", "R", action.Review, func(m *Model) tea.Cmd { return m.reviewRefreshCmd() })
+	rhid := func(id, key string, do func(*Model) tea.Cmd) { hid(id, key, action.Review, do) }
+	rhid("review.up", "up", func(m *Model) tea.Cmd { m.review.move(-1, m.reviewHeight()); return nil })
+	rhid("review.down", "down", func(m *Model) tea.Cmd { m.review.move(+1, m.reviewHeight()); return nil })
+	rhid("review.open", "enter", func(m *Model) tea.Cmd { m.reviewOpenSel(true); return nil })
+	// Space previews: the file opens on the hunk but the panel keeps focus,
+	// so look → r/a → next needs no Alt+R round trip.
+	reg("review.preview", "Review: Preview Hunk (keep panel focus)", " ", action.Review, func(m *Model) tea.Cmd { m.reviewOpenSel(false); return nil })
+	rhid("review.focusEditor", "esc", func(m *Model) tea.Cmd {
+		if len(m.docs) > 0 {
+			m.focus = paneEditor
+		}
+		return nil
+	})
+
 	reg("ai.toggle", "AI: Toggle Completion", "", action.Global, func(m *Model) tea.Cmd {
 		if m.ai.client == nil {
 			m.notifyErr("ai: not configured — add an [ai] section to config.toml")

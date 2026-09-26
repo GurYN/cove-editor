@@ -1,0 +1,239 @@
+package app
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/GurYN/cove-editor/internal/term"
+)
+
+// The agent is the [apps.*] entry flagged agent = true (Claude Code, aider,
+// codex, …): the terminal-panel instance the "Agent: Send …" actions paste
+// into. Cove writes the text and focuses the panel; the user reads it and
+// presses Enter, so nothing runs behind their back. The format is plain
+// path:line text plus a fenced block — every agent understands it and
+// nothing depends on one tool's @-mention syntax.
+
+// agentPasteMsg delivers text to the agent instance after a fresh spawn
+// has had time to come up (see sendToAgent).
+type agentPasteMsg struct {
+	text  string
+	gen   int  // spawn generation: a paste for an instance that died is dropped
+	armed bool // (pending only) the first-output grace tick has been scheduled
+}
+
+// A paste into a just-launched agent waits for the agent to be up: the
+// app hasn't enabled bracketed paste yet, so an early paste's newlines
+// would submit prematurely once it starts reading. The trigger is the
+// agent's first output (its banner) plus agentPasteGrace for it to finish
+// initializing; agentSpawnDelay is the fallback for an agent that prints
+// nothing at startup.
+var (
+	agentPasteGrace = 300 * time.Millisecond
+	agentSpawnDelay = 3 * time.Second
+)
+
+// agentTerm returns the running agent instance, nil if none.
+func (m *Model) agentTerm() *term.Term {
+	if m.agentApp == "" {
+		return nil
+	}
+	for _, t := range m.terms {
+		if t.Label == m.agentApp {
+			return t
+		}
+	}
+	return nil
+}
+
+// sendToAgent pastes text into the agent instance, launching it first when
+// it isn't running, and leaves the panel focused so Enter goes to the agent.
+func (m *Model) sendToAgent(text string) tea.Cmd {
+	if m.agentApp == "" {
+		m.notifyErr("no agent configured: set agent = true on an [apps.*] entry (Open Settings)")
+		return nil
+	}
+	if t := m.agentTerm(); t != nil {
+		for i, tt := range m.terms {
+			if tt == t {
+				m.termActive = i
+			}
+		}
+		m.termOpen = true
+		m.focus = paneTerminal
+		t.Paste(text)
+		m.review.typed = true // the paste is prompt text: the next Enter submits it
+		return nil
+	}
+	cmd := m.openApp(m.agentApp, m.agentArgv) // spawns + checkpoints
+	if cmd == nil {
+		return nil // spawnTerm already toasted the PTY error
+	}
+	gen := m.agentGen
+	m.agentPending = agentPasteMsg{text: text, gen: gen}
+	return tea.Batch(cmd, tea.Tick(agentSpawnDelay, func(time.Time) tea.Msg {
+		return agentPasteMsg{text: text, gen: gen}
+	}))
+}
+
+// agentOutputCmd is called on the agent's first output after a launch: the
+// pending paste goes out after a short grace, ahead of the fallback timer.
+func (m *Model) agentOutputCmd() tea.Cmd {
+	p := m.agentPending
+	if p.text == "" || p.gen != m.agentGen || p.armed {
+		return nil
+	}
+	m.agentPending.armed = true // one grace tick per launch; later output doesn't re-arm
+	return tea.Tick(agentPasteGrace, func(time.Time) tea.Msg { return p })
+}
+
+// agentLaunchCheckpoint takes the review baseline when the agent starts —
+// unless a review with pending hunks is in progress, which a relaunch must
+// not wipe.
+func (m *Model) agentLaunchCheckpoint() tea.Cmd {
+	if !m.agentCheckpoint || (m.review.active() && len(m.review.rows) > 0) {
+		return nil
+	}
+	m.discoverRepos()
+	if len(m.git.repos) == 0 {
+		return nil // not a git workspace: nothing to review against, and no nagging
+	}
+	m.review.turn, m.review.typed = 0, false // a new agent session: turns count from its first prompt
+	return m.reviewCheckpointCmd()
+}
+
+// agentPaste completes a deferred send once the freshly launched agent is up.
+func (m *Model) agentPaste(msg agentPasteMsg) {
+	t := m.agentTerm()
+	// Two ticks race to deliver (first output + grace, or the fallback);
+	// whichever lands first clears the pending paste, the other is dropped.
+	if t == nil || msg.gen != m.agentGen || msg.text != m.agentPending.text || msg.gen != m.agentPending.gen {
+		return
+	}
+	m.agentPending = agentPasteMsg{}
+	t.Paste(msg.text)
+	m.review.typed = true
+}
+
+// agentContext is what the send actions read from the active document.
+type agentContext struct {
+	rel       string // workspace-relative path
+	line, col int    // 0-based cursor
+	selStart  int    // 0-based first selected line
+	selEnd    int    // 0-based last selected line (inclusive)
+	selected  string // selection text; "" = none
+	diag      string // diagnostic message under the cursor; "" = none
+}
+
+func (m *Model) agentContext() (agentContext, bool) {
+	d := m.doc()
+	if d == nil || d.virtual {
+		return agentContext{}, false
+	}
+	c := agentContext{rel: filepath.ToSlash(rel(m.side.Root, d.path))}
+	c.line, c.col = d.ed.Cursor()
+	lo, hi := d.ed.SelectionRange()
+	if lo != hi {
+		c.selected = string(d.ed.Buf.Slice(lo, hi))
+		c.selStart, _ = d.ed.Buf.Pos(lo)
+		// A selection ending at column 0 doesn't include that line.
+		endLine, endCol := d.ed.Buf.Pos(hi)
+		if endCol == 0 && endLine > c.selStart {
+			endLine--
+		}
+		c.selEnd = endLine
+	}
+	if sp, ok := d.ed.DiagUnderCursor(); ok {
+		c.diag = sp.Message
+	}
+	return c, true
+}
+
+// fenceLang is the code-fence info string for a path: the extension, which
+// is what markdown renderers and agents key on.
+func fenceLang(rel string) string {
+	base := filepath.Base(rel)
+	switch base {
+	case "Dockerfile", "Containerfile":
+		return "dockerfile"
+	case "Makefile":
+		return "make"
+	}
+	return strings.TrimPrefix(filepath.Ext(base), ".")
+}
+
+// agentSelectionText formats a selection as a reference line plus a fenced
+// block; with no selection it falls back to a cursor reference.
+func agentSelectionText(c agentContext) string {
+	if c.selected == "" {
+		return agentRefText(c)
+	}
+	ref := fmt.Sprintf("%s:%d", c.rel, c.selStart+1)
+	if c.selEnd > c.selStart {
+		ref += fmt.Sprintf("-%d", c.selEnd+1)
+	}
+	code := strings.TrimSuffix(c.selected, "\n")
+	// Longer fence than any run of backticks inside, so the block can't be
+	// closed early by code that contains ```.
+	fence := "```"
+	for strings.Contains(code, fence) {
+		fence += "`"
+	}
+	return ref + "\n" + fence + fenceLang(c.rel) + "\n" + code + "\n" + fence + "\n"
+}
+
+// agentRefText is the cursor as a path:line reference.
+func agentRefText(c agentContext) string {
+	return fmt.Sprintf("%s:%d ", c.rel, c.line+1)
+}
+
+// agentDiagText is the diagnostic under the cursor as path:line:col: message.
+func agentDiagText(c agentContext) string {
+	return fmt.Sprintf("%s:%d:%d: %s\n", c.rel, c.line+1, c.col+1, firstLine(c.diag))
+}
+
+// ---- actions ----
+
+func (m *Model) agentSendSelection() tea.Cmd {
+	c, ok := m.agentContext()
+	if !ok {
+		m.notify("no file to send from")
+		return nil
+	}
+	return m.sendToAgent(agentSelectionText(c))
+}
+
+func (m *Model) agentSendRef() tea.Cmd {
+	c, ok := m.agentContext()
+	if !ok {
+		m.notify("no file to send from")
+		return nil
+	}
+	return m.sendToAgent(agentRefText(c))
+}
+
+func (m *Model) agentSendDiag() tea.Cmd {
+	c, ok := m.agentContext()
+	if !ok {
+		m.notify("no file to send from")
+		return nil
+	}
+	if c.diag == "" {
+		m.notify("no diagnostic under the cursor (Alt+N jumps to the next one)")
+		return nil
+	}
+	return m.sendToAgent(agentDiagText(c))
+}
+
+// agentOpen focuses the agent, launching it when it isn't running.
+func (m *Model) agentOpen() tea.Cmd {
+	if m.agentApp == "" {
+		m.notifyErr("no agent configured: set agent = true on an [apps.*] entry (Open Settings)")
+		return nil
+	}
+	return m.openApp(m.agentApp, m.agentArgv)
+}

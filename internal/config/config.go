@@ -56,6 +56,22 @@ type Config struct {
 		Check bool `toml:"check"`
 	} `toml:"update"`
 
+	// MCP exposes the editor (diagnostics, definitions, references, rename,
+	// open files) to the agent in the terminal panel over a per-process
+	// socket; `cove mcp` proxies it. [mcp] enabled = false turns it off.
+	MCP struct {
+		Enabled bool `toml:"enabled"`
+	} `toml:"mcp"`
+
+	// Agent tunes the review of the coding agent's edits (see [apps.*]
+	// agent = true): checkpoint_on_launch snapshots the worktree when the
+	// agent starts so its changes show up as reviewable hunks; follow opens
+	// whatever the agent just touched in a reusable tab.
+	Agent struct {
+		CheckpointOnLaunch bool `toml:"checkpoint_on_launch"`
+		Follow             bool `toml:"follow"`
+	} `toml:"agent"`
+
 	// AI configures inline code completion (ghost text). Opt-in:
 	//   [ai]
 	//   enabled  = true
@@ -79,7 +95,8 @@ type Config struct {
 
 type App struct {
 	Command []string `toml:"command"`
-	Key     string   `toml:"key"` // optional keybinding
+	Key     string   `toml:"key"`   // optional keybinding
+	Agent   bool     `toml:"agent"` // the coding agent: target of the "Agent: Send …" actions
 }
 
 type Server struct {
@@ -112,6 +129,8 @@ func Load() (Config, error) {
 	c.Editor.LineNumbers = true // toml.Decode only overrides present keys
 	c.Editor.ConfirmQuit = true
 	c.Update.Check = true
+	c.MCP.Enabled = true
+	c.Agent.CheckpointOnLaunch = true
 	data, err := os.ReadFile(Path())
 	if err != nil {
 		return c, nil // no config file is the normal case

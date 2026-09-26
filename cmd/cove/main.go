@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/GurYN/cove-editor/internal/app"
+	"github.com/GurYN/cove-editor/internal/bridge"
 )
 
 // version is stamped by the release build via -ldflags "-X main.version=…".
@@ -21,6 +22,15 @@ var (
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Println("cove", version)
+		return
+	}
+	// cove mcp: stdio MCP server for the agent, proxied to the editor that
+	// spawned it (COVE_SOCKET). Registered once with `claude mcp add`.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := bridge.Main(os.Stdin, os.Stdout, version); err != nil {
+			fmt.Fprintln(os.Stderr, "cove mcp:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	app.Version, app.Date = version, date
