@@ -23,6 +23,9 @@ Cove is a GUI-native terminal editor written in Go. If you come from VS Code, Ze
 - **Split panes** (`Ctrl+\`): one vertical split with a draggable divider; both panes share the tab list, `F6`/`Shift+F6` cycles through panels.
 - **Mouse support that actually works**: click to place the cursor, click tabs and tree entries, drag to select, drag the split divider and panel heights.
 - **Integrated terminal** (`Ctrl+J`): your shell in a panel under the editor, with scrollback (mouse wheel or `Shift+PgUp`/`PgDn`), multiple instances (the `+` button), and a draggable height. Register your favorite TUI apps (`lazygit`, `redis-tui`, `btop`, …) in the config and they get their own palette entry and optional keybinding, running as a named panel instance — invoking again refocuses the running app instead of starting a second one.
+- **Your coding agent is a first-class panel instance**: flag one app as `agent = true` (Claude Code, aider, codex, opencode, … anything that runs in a terminal) and *Agent: Send Selection* (`Alt+A`) pastes the selection into it as a `path:line-line` reference plus a fenced code block, launching the agent first if it isn't running. *Send File Reference* and *Send Diagnostic Under Cursor* do the same for the cursor position and the error under it. Cove never presses Enter for you: the text lands in the agent's prompt, you read it and send it. The format is plain text every agent understands, not one tool's `@`-mention syntax.
+- **The agent can ask the editor (MCP bridge)**: Cove serves its warm language servers and editor state to the agent over MCP, so Claude Code (or any MCP client) gets `diagnostics`, `definition`, `references`, `hover`, `document_symbols`, `workspace_symbols`, `rename`, and `open_files` straight from gopls, pyright, tsc, rust-analyzer or clangd instead of re-running builds and grepping. One-time setup: *Agent: Register Cove's MCP Server with Claude Code* in the palette (it runs `claude mcp add --scope user cove -- cove mcp`). Every agent started in Cove's terminal panel finds its editor through `COVE_SOCKET`; outside Cove the server simply has no tools. `rename` edits open buffers in place (undoable) and writes closed files; the other tools only read.
+- **Review the agent's edits hunk by hunk** (`Alt+R`): launching the agent takes a checkpoint of the worktree (untracked files included, `.gitignore` honored, your index untouched), and the *Review* panel in the sidebar lists everything that changed since, grouped by file. `Enter` opens the file on the hunk with gutter signs against the checkpoint, `r` reverts the hunk (an undoable edit on an open buffer, a disk write otherwise), `a` accepts it, `A` accepts everything and takes a new checkpoint, `d` shows checkpoint │ now side by side. The list re-diffs whenever the terminal panel produces output. Follow mode (`f`) opens whatever the agent just touched in a single reusable tab, without stealing focus from the terminal.
 - **Git built in** (`Ctrl+G`): a Zed-style panel with staged/unstaged files, per-file diffs in a read-only tab, commit, amend (keeps a multi-line message intact when you only add files), undo last commit (keeps changes staged), push/pull/fetch (a branch with no upstream is published automatically; a push rejected because you rebased or amended offers `--force-with-lease` behind a confirm), stash (everything, or just the selected file — pop brings it back), sync your branch (fetch + rebase onto any branch from a picker, carrying uncommitted work across), and per-file discard/restore. Multi-repo folders just work: open a directory containing several checkouts and the panel shows one section per repo, with every action targeting the repo under the cursor (or the active file's). Commit history opens in a fuzzy picker; Enter on any commit opens its full diff. Gutter signs mark added/modified/deleted lines as you type, inline blame (*Git: Toggle Inline Blame* in the palette) shows who last touched the cursor line, and the current branch and ahead/behind counts live in the status bar.
 - **A commit graph you can actually read**: one row per commit, box-drawing lanes colored per branch, and each branch's name written vertically above its own column — with a line running down to its tip, even when that tip sits deep in history. Enter on a row opens the commit's diff.
 - **Branch switching that knows your remote**: the picker (`b`) fetches first and lists remote branches alongside local ones — selecting `origin/foo` checks it out as a local tracking branch. Creating a branch whose name already exists on the remote checks that one out instead of forking an unrelated copy.
@@ -82,6 +85,8 @@ Language intelligence needs the language's server on your `PATH`:
 
 Still on TypeScript 5? Nothing to configure: Cove probes your `tsc` version once and falls back to `typescript-language-server` (`npm i -g typescript-language-server typescript@5`) when tsc predates the native server. A `[lsp.typescript]` entry in the config file overrides the probe entirely.
 
+Language intelligence also reaches the coding agent in the terminal panel: `cove mcp` is a stdio MCP server that proxies to the running editor, so an agent registered once with `claude mcp add --scope user cove -- cove mcp` (or the palette's *Agent: Register Cove's MCP Server with Claude Code*) queries the same servers Cove runs. Other MCP clients register the same command; they need `COVE_SOCKET` in their environment, which every panel terminal has.
+
 Any other language server speaking stdio registers in the config file:
 
 ```toml
@@ -127,6 +132,8 @@ Everything below is also in the command palette (`Ctrl+P`), which shows the curr
 | `Alt+Enter`     | Quick fix / code action       |
 | `F2`            | Rename symbol                 |
 | `Alt+\`         | Trigger AI suggestion (when `[ai]` is configured) |
+| `Alt+A`         | Send selection (or cursor line) to the agent (when an `[apps.*]` entry has `agent = true`) |
+| `Alt+R`         | Agent review panel: the agent's changes since the checkpoint, hunk by hunk |
 | `F8`            | Problems list                 |
 | `Alt+N` / `Alt+P` | Next / previous diagnostic  |
 | `Alt+Left` / `Alt+Right` | Jump back / forward  |
@@ -141,6 +148,23 @@ When the terminal panel has focus, every key goes to your shell except the ones 
 `Ctrl+B` and `Ctrl+G` are tri-state: they open and focus their panel, refocus it if it's open but unfocused, and close it when it already has focus.
 
 In the file tree: `n` new file, `N` new folder, `r` rename, `x` delete (with confirm). Right-click any row for the same actions as a menu.
+
+### Review panel
+
+Inside the panel (`Alt+R`; also in the palette as *Agent: Review Changes*):
+
+| Key       | Action                                    |
+| --------- | ----------------------------------------- |
+| `Enter`   | Open the file on the hunk (gutter signs diff against the checkpoint) and move into the editor |
+| `Space`   | Preview the hunk: same, but the panel keeps focus, so `r`/`a` still apply |
+| `r`       | Revert the hunk — undoable in an open buffer; a new file asks before deletion |
+| `a` / `A` | Accept the hunk / accept everything (takes a new checkpoint) |
+| `d`       | Side-by-side diff: checkpoint │ now        |
+| `f`       | Toggle follow mode                         |
+| `R`       | Refresh                                    |
+| `Esc`     | Back to the editor                         |
+
+From the editor, `Alt+R` brings focus back to the panel (`F6` cycles panels too). Opening the panel with no checkpoint takes one. *Agent: Checkpoint* (palette) resets the baseline by hand; `[agent] checkpoint_on_launch = false` stops the automatic one when the agent starts.
 
 ### Git panel
 
@@ -208,6 +232,17 @@ command = ["gopls"]            # override or add language servers
 [apps.lazygit]                 # favorite TUI apps: palette entry "App: lazygit",
 command = ["lazygit"]          # runs as a named terminal-panel instance
 key = "ctrl+alt+g"             # optional
+
+[apps.claude]                  # your coding agent: "Agent: Send Selection" (Alt+A),
+command = ["claude"]           # "Send File Reference", "Send Diagnostic" paste into it
+agent = true                   # (one entry only; launched on first send if not running)
+
+[mcp]
+enabled = true                 # serve diagnostics/definitions/references/rename to the agent
+
+[agent]
+checkpoint_on_launch = true    # review baseline when the agent starts
+follow = false                 # open files as the agent touches them
 
 [ai]                           # AI inline completion (ghost text; Tab accepts, Esc dismisses)
 enabled = true

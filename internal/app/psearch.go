@@ -244,7 +244,7 @@ func (m Model) openProjectSearch(msg psearchMsg) Model {
 
 // showSearchPanel swaps the search panel into the sidebar slot and focuses it.
 func (m *Model) showSearchPanel() {
-	m.search.view, m.git.view, m.sidebarOpen = true, false, true
+	m.search.view, m.git.view, m.review.view, m.sidebarOpen = true, false, false, true
 	m.focus = paneSearch
 	m.layout()
 }

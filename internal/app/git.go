@@ -507,7 +507,7 @@ func (m *Model) toggleGit() {
 		m.focus = paneEditor
 		return
 	}
-	m.git.view, m.search.view, m.sidebarOpen = true, false, true
+	m.git.view, m.search.view, m.review.view, m.sidebarOpen = true, false, false, true
 	m.focus = paneGit
 	m.refreshGit()
 }
@@ -1294,6 +1294,11 @@ func (m *Model) loadGitHead(d *doc) {
 			}
 		}
 	}
+	// Under review, files the agent changed diff against the checkpoint:
+	// the gutter shows the agent's edits, not everything since HEAD.
+	if b, ok := m.reviewBase(d.abs()); ok {
+		d.head = b
+	}
 	d.blame = nil // baseline moved: stale, refetched lazily when needed
 	m.updateSigns(d)
 }
@@ -1647,6 +1652,16 @@ func (m *Model) gitOpenDiffSide(r gitRow) {
 		m.notifyErr(err.Error())
 		return
 	}
+	title := r.fs.Path + " (diff)"
+	if r.staged {
+		title = r.fs.Path + " (staged)"
+	}
+	m.openSideDiff(title, r.fs.Path, oldB, newB)
+}
+
+// openSideDiff shows oldB │ newB as an aligned two-column read-only tab;
+// path picks the syntax highlighter for both columns.
+func (m *Model) openSideDiff(title, path string, oldB, newB []byte) {
 	oldB = bytes.ReplaceAll(oldB, []byte("\r\n"), []byte("\n"))
 	newB = bytes.ReplaceAll(newB, []byte("\r\n"), []byte("\n"))
 	if bytes.Equal(oldB, newB) {
@@ -1671,14 +1686,10 @@ func (m *Model) gitOpenDiffSide(r gitRow) {
 	text, maps, bgs := sideDiffText(rows, al, bl, max(8, (w-3)/2))
 	syn := &sideSyntax{rows: maps, oldSrc: oldB, newSrc: newB}
 	if len(oldB) > 0 {
-		syn.oldHL = syntax.New(r.fs.Path, oldB)
+		syn.oldHL = syntax.New(path, oldB)
 	}
 	if len(newB) > 0 {
-		syn.newHL = syntax.New(r.fs.Path, newB)
-	}
-	title := r.fs.Path + " (diff)"
-	if r.staged {
-		title = r.fs.Path + " (staged)"
+		syn.newHL = syntax.New(path, newB)
 	}
 	m.openVirtualSyn(title, text, syn)
 	m.doc().ed.LineBG = bgs
