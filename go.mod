@@ -10,10 +10,12 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/muesli/termenv v0.16.0
 	github.com/sahilm/fuzzy v0.1.3
+	github.com/tree-sitter-grammars/tree-sitter-hcl v1.2.0
 	github.com/tree-sitter-grammars/tree-sitter-toml v0.7.0
 	github.com/tree-sitter-grammars/tree-sitter-yaml v0.7.2
 	github.com/tree-sitter/go-tree-sitter v0.25.0
 	github.com/tree-sitter/tree-sitter-bash v0.25.1
+	github.com/tree-sitter/tree-sitter-cpp v0.23.4
 	github.com/tree-sitter/tree-sitter-css v0.25.0
 	github.com/tree-sitter/tree-sitter-go v0.25.0
 	github.com/tree-sitter/tree-sitter-html v0.23.2
@@ -23,8 +25,6 @@ require (
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	github.com/zyedidia/generic v1.2.1
 )
-
-require github.com/tree-sitter-grammars/tree-sitter-hcl v1.2.0 // indirect
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

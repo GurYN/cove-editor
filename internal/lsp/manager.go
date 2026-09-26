@@ -27,6 +27,9 @@ var defaultServers = map[string]ServerDef{
 	// config.toml [lsp.typescript] override replaces the probe entirely.
 	"typescript": {Resolve: resolveTypescript, LangID: "typescript"},
 	"rust":       {Argv: []string{"rust-analyzer"}, LangID: "rust"},
+	// .ino sketches stay out of extLang: clangd rejects the extension unless
+	// the project's .clangd forces -xc++ (then add it via [lsp.cpp] extensions).
+	"cpp": {Argv: []string{"clangd"}, LangID: "cpp"},
 	// html + css ship together in `npm i -g vscode-langservers-extracted`.
 	"html":      {Argv: []string{"vscode-html-language-server", "--stdio"}, LangID: "html"},
 	"css":       {Argv: []string{"vscode-css-language-server", "--stdio"}, LangID: "css"},
@@ -72,6 +75,8 @@ func tsMajor(out string) int {
 
 var extLang = map[string]string{
 	".go": "go", ".py": "python", ".rs": "rust",
+	".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp", ".hxx": "cpp",
+	".c": "cpp", ".h": "cpp",
 	".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
 	".js": "typescript", ".jsx": "typescript", ".mjs": "typescript", ".cjs": "typescript",
 	".html": "html", ".htm": "html", ".css": "css",
@@ -145,7 +150,7 @@ var tsExtLangID = map[string]string{
 }
 
 // langIDFor returns the didOpen languageId for a path. Only the built-in
-// typescript and terraform servers vary by extension; a config-overridden
+// typescript, terraform and clangd servers vary by extension; a config-overridden
 // LangID for any other language passes through untouched.
 func langIDFor(path, lang string) string {
 	ext := strings.ToLower(filepath.Ext(path))
@@ -153,6 +158,11 @@ func langIDFor(path, lang string) string {
 	case "typescript":
 		if id := tsExtLangID[ext]; id != "" {
 			return id
+		}
+	case "cpp":
+		// One clangd serves both; .h stays "cpp" (clangd resolves headers itself).
+		if ext == ".c" {
+			return "c"
 		}
 	case "terraform":
 		// terraform-ls parses .tfvars as config unless told otherwise.

@@ -16,6 +16,7 @@ import (
 
 	tsmarkdown "github.com/GurYN/cove-editor/internal/syntax/tsmarkdown"
 	tsbash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
+	tscpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
 	tscss "github.com/tree-sitter/tree-sitter-css/bindings/go"
 	tsgo "github.com/tree-sitter/tree-sitter-go/bindings/go"
 	tsgomod "github.com/tree-sitter/tree-sitter-gomod/bindings/go"
@@ -45,6 +46,9 @@ var pythonScm string
 
 //go:embed queries/rust.scm
 var rustScm string
+
+//go:embed queries/cpp.scm
+var cppScm string
 
 //go:embed queries/typescript.scm
 var typescriptScm string
@@ -99,6 +103,9 @@ var langs = map[string]func() langDef{
 	"json":   func() langDef { return langDef{lang: ts.NewLanguage(tsjson.Language()), query: jsonScm} },
 	"python": func() langDef { return langDef{lang: ts.NewLanguage(tspython.Language()), query: pythonScm} },
 	"rust":   func() langDef { return langDef{lang: ts.NewLanguage(tsrust.Language()), query: rustScm} },
+	// ponytail: C rides the C++ grammar (a near-superset) — no separate
+	// tree-sitter-c; C code using C++ keywords as identifiers mis-parses.
+	"cpp": func() langDef { return langDef{lang: ts.NewLanguage(tscpp.Language()), query: cppScm} },
 	"typescript": func() langDef {
 		return langDef{lang: ts.NewLanguage(tstypescript.LanguageTypescript()), query: typescriptScm}
 	},
@@ -133,6 +140,9 @@ var langs = map[string]func() langDef{
 
 var exts = map[string]string{
 	".go": "go", ".json": "json", ".py": "python", ".rs": "rust",
+	".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp", ".hxx": "cpp",
+	// .ino: Arduino / Particle sketches are C++.
+	".c": "cpp", ".h": "cpp", ".ino": "cpp",
 	".ts": "typescript", ".js": "typescript", ".mjs": "typescript", ".cjs": "typescript",
 	".mts": "typescript", ".cts": "typescript",
 	".tsx": "tsx", ".jsx": "tsx",
@@ -205,6 +215,7 @@ var fenceLangs = map[string]string{
 	"jsx": "tsx", "tsx": "tsx",
 	"py": "python", "python": "python",
 	"rs": "rust", "rust": "rust",
+	"c": "cpp", "h": "cpp", "cpp": "cpp", "c++": "cpp", "cc": "cpp", "hpp": "cpp", "ino": "cpp", "arduino": "cpp",
 	"json": "json", "html": "html", "css": "css",
 	"sh": "bash", "bash": "bash", "shell": "bash", "zsh": "bash",
 	"toml": "toml",
