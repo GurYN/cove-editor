@@ -383,6 +383,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	case checkpointMsg:
 		return m, m.handleCheckpoint(msg)
+	case turnMsg:
+		return m, m.handleTurn(msg)
 	case reviewMsg:
 		return m, m.handleReviewMsg(msg)
 	case bridgeStartedMsg:
@@ -663,12 +665,25 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				act.ID == "app.quit" ||
 				act.ID == "focus.next" || act.ID == "focus.prev" ||
 				act.ID == "app.palette" || act.ID == "app.palette.f1" ||
-				act.ID == "sidebar.toggle" || act.ID == "git.toggle") {
+				act.ID == "sidebar.toggle" || act.ID == "git.toggle" || act.ID == "review.toggle") {
 			cmd := act.Do(&m)
 			m.layout()
 			return m, cmd
 		}
 		t.Send(msg)
+		// Prompt detection for the review's turns: an Enter that follows
+		// typed or pasted text submits a prompt. An Enter on its own
+		// answers a menu or a permission dialog and is not a turn;
+		// Alt+Enter is the multi-line newline chord.
+		if t == m.agentTerm() {
+			switch {
+			case msg.Type == tea.KeyRunes || msg.Paste:
+				m.review.typed = true
+			case msg.Type == tea.KeyEnter && !msg.Alt && m.review.typed:
+				m.review.typed = false
+				return m, m.agentTurnCmd()
+			}
+		}
 		return m, nil
 	}
 	if m.compl.active && m.focus == paneEditor {

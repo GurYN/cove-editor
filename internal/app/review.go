@@ -26,10 +26,26 @@ import (
 // just touched in a single reusable tab, without stealing focus.
 
 type reviewFile struct {
-	repo *repoState
-	abs  string
-	rel  string // workspace-relative, slash form
-	diff git.FileDiff
+	repo  *repoState
+	abs   string
+	rel   string // workspace-relative, slash form
+	diff  git.FileDiff
+	turn  int   // for whole-file rows: the turn that made the change; 0 = unknown
+	turns []int // per hunk, parallel to diff.Hunks: the turn that produced it
+}
+
+// sameTurn reports whether every row of the file belongs to one turn, and
+// which; a file edited across turns labels its hunks individually.
+func (f reviewFile) sameTurn() (int, bool) {
+	if f.pseudo() {
+		return f.turn, true
+	}
+	for _, t := range f.turns[1:] {
+		if t != f.turns[0] {
+			return 0, false
+		}
+	}
+	return f.turns[0], true
 }
 
 // pseudo reports whether the file has no hunks to show line by line (new,
@@ -55,11 +71,24 @@ type reviewRow struct {
 	file, hunk int
 }
 
+// turnMark is a snapshot taken when a prompt was submitted while hunks
+// were still pending: it lets the panel say which turn touched a file
+// without moving the review baseline.
+type turnMark struct {
+	sha, tree string
+	n         int
+}
+
 type reviewPanel struct {
 	view     bool
 	follow   bool
-	cps      map[string]string // repo top → checkpoint commit
-	at       time.Time         // when the checkpoint was taken
+	cps      map[string]string       // repo top → checkpoint commit
+	trees    map[string]string       // repo top → checkpoint tree (empty-turn detection)
+	marks    map[string][]turnMark   // repo top → prompts submitted since the checkpoint
+	turn     int                     // prompts submitted since the agent launched (the current turn)
+	typed    bool                    // text typed/pasted into the agent since the last Enter
+	full     map[string]git.FileDiff // rel → unfiltered diff at the last refresh (staging needs accepted hunks too)
+	at       time.Time               // when the checkpoint was taken
 	files    []reviewFile
 	rows     []reviewRow
 	sel, top int
@@ -72,9 +101,19 @@ type reviewPanel struct {
 }
 
 type checkpointMsg struct {
-	cps  map[string]string
-	errs []string
-	gen  int
+	cps   map[string]string
+	trees map[string]string
+	errs  []string
+	gen   int
+}
+
+// turnMsg is the outcome of a prompt submission: per repo, a snapshot of
+// the worktree when something changed since the last one.
+type turnMsg struct {
+	marks map[string]turnMark // repo top → mark; absent when nothing changed
+	gen   int
+	fresh bool // nothing was pending: the marks become the new baseline
+	ended int  // the turn the prompt closed (its work is what the marks hold)
 }
 
 type reviewMsg struct {
@@ -172,7 +211,7 @@ func (m *Model) reviewCheckpointCmd() tea.Cmd {
 	m.review.gen++
 	gen := m.review.gen
 	return func() tea.Msg {
-		msg := checkpointMsg{cps: map[string]string{}, gen: gen}
+		msg := checkpointMsg{cps: map[string]string{}, trees: map[string]string{}, gen: gen}
 		for _, top := range tops {
 			sha, err := git.Checkpoint(top)
 			if err != nil {
@@ -180,9 +219,77 @@ func (m *Model) reviewCheckpointCmd() tea.Cmd {
 				continue
 			}
 			msg.cps[top] = sha
+			msg.trees[top], _ = git.TreeOf(top, sha)
 		}
 		return msg
 	}
+}
+
+// agentTurnCmd runs when a prompt is submitted to the agent: the current
+// turn ends and the next begins, so the counter moves right away and
+// everything the agent writes from here on is labelled with it. Then, off
+// the UI thread: with nothing left to review the baseline moves to this
+// prompt so the review starts clean; with hunks pending a snapshot marks
+// where the closed turn's work ends. No snapshot when nothing changed.
+func (m *Model) agentTurnCmd() tea.Cmd {
+	p := &m.review
+	if !m.agentCheckpoint {
+		return nil
+	}
+	if !p.active() {
+		p.turn = 1
+		return m.agentLaunchCheckpoint() // agent started outside Cove's launcher: baseline at the first prompt
+	}
+	ended := p.turn
+	p.turn++
+	fresh := len(p.rows) == 0 && !p.busy
+	type job struct{ top, prev string }
+	var jobs []job
+	for top, tree := range p.trees {
+		if ms := p.marks[top]; len(ms) > 0 {
+			tree = ms[len(ms)-1].tree
+		}
+		jobs = append(jobs, job{top, tree})
+	}
+	gen := p.gen
+	return func() tea.Msg {
+		msg := turnMsg{marks: map[string]turnMark{}, gen: gen, fresh: fresh, ended: ended}
+		for _, j := range jobs {
+			tree, err := git.WorktreeTree(j.top)
+			if err != nil || tree == j.prev {
+				continue
+			}
+			sha, err := git.Checkpoint(j.top)
+			if err != nil {
+				continue
+			}
+			msg.marks[j.top] = turnMark{sha: sha, tree: tree, n: ended}
+		}
+		return msg
+	}
+}
+
+func (m *Model) handleTurn(msg turnMsg) tea.Cmd {
+	p := &m.review
+	if msg.gen != p.gen || len(msg.marks) == 0 {
+		return nil
+	}
+	if msg.fresh {
+		cp := checkpointMsg{cps: map[string]string{}, trees: map[string]string{}, gen: p.gen}
+		for top, sha := range p.cps { // repos that didn't change keep their checkpoint
+			cp.cps[top], cp.trees[top] = sha, p.trees[top]
+		}
+		for top, mk := range msg.marks {
+			cp.cps[top], cp.trees[top] = mk.sha, mk.tree
+		}
+		m.handleCheckpoint(cp)
+		m.lastMsg = fmt.Sprintf("turn %d: review baseline moved to this prompt", p.turn)
+		return m.reviewRefreshCmd()
+	}
+	for top, mk := range msg.marks {
+		p.marks[top] = append(p.marks[top], mk)
+	}
+	return m.reviewRefreshCmd()
 }
 
 func (m *Model) handleCheckpoint(msg checkpointMsg) tea.Cmd {
@@ -191,7 +298,9 @@ func (m *Model) handleCheckpoint(msg checkpointMsg) tea.Cmd {
 	}
 	p := &m.review
 	old := p.files
-	p.cps, p.at = msg.cps, time.Now()
+	p.cps, p.trees, p.at = msg.cps, msg.trees, time.Now()
+	p.marks = map[string][]turnMark{} // the turn counter is per agent session, not per checkpoint
+	p.full = map[string]git.FileDiff{}
 	p.files, p.rows, p.sel, p.top = nil, p.rows[:0], 0, 0
 	p.accepted, p.seen = map[string]bool{}, map[string]string{}
 	p.busy = false
@@ -218,16 +327,17 @@ func (m *Model) reviewRefreshCmd() tea.Cmd {
 	p.busy = true
 	root := m.side.Root
 	type job struct {
-		repo *repoState
-		sha  string
+		repo  *repoState
+		sha   string
+		marks []turnMark
 	}
 	var jobs []job
 	for _, r := range m.git.repos {
 		if sha, ok := p.cps[r.top]; ok {
-			jobs = append(jobs, job{r, sha})
+			jobs = append(jobs, job{r, sha, append([]turnMark(nil), p.marks[r.top]...)})
 		}
 	}
-	gen := p.gen
+	gen, turn := p.gen, p.turn
 	return func() tea.Msg {
 		var files []reviewFile
 		for _, j := range jobs {
@@ -235,9 +345,43 @@ func (m *Model) reviewRefreshCmd() tea.Cmd {
 			if err != nil {
 				return reviewMsg{err: err, gen: gen}
 			}
+			// Which turn produced each hunk: a mark holds the work of the
+			// turn it closed, so a hunk already present in the earliest
+			// mark's diff belongs to that turn; anything newer is the
+			// prompt in flight. Whole-file rows go by path.
+			hunkTurn := map[string]int{}
+			fileTurn := map[string]int{}
+			for _, mk := range j.marks {
+				diffs, err := git.DiffTrees(j.repo.top, j.sha, mk.sha)
+				if err != nil {
+					continue
+				}
+				for _, d := range diffs {
+					if _, seen := fileTurn[d.Path]; !seen {
+						fileTurn[d.Path] = mk.n
+					}
+					for _, h := range d.Hunks {
+						key := d.Path + "\x00" + h.Signature()
+						if _, seen := hunkTurn[key]; !seen {
+							hunkTurn[key] = mk.n
+						}
+					}
+				}
+			}
 			for _, d := range diffs {
 				abs := filepath.Join(j.repo.top, filepath.FromSlash(d.Path))
-				files = append(files, reviewFile{repo: j.repo, abs: abs, rel: filepath.ToSlash(rel(root, abs)), diff: d})
+				f := reviewFile{repo: j.repo, abs: abs, rel: filepath.ToSlash(rel(root, abs)), diff: d, turn: turn}
+				if t, ok := fileTurn[d.Path]; ok && len(d.Hunks) == 0 {
+					f.turn = t
+				}
+				for _, h := range d.Hunks {
+					t := turn
+					if mt, ok := hunkTurn[d.Path+"\x00"+h.Signature()]; ok {
+						t = mt
+					}
+					f.turns = append(f.turns, t)
+				}
+				files = append(files, f)
 			}
 		}
 		sort.Slice(files, func(i, k int) bool { return files[i].rel < files[k].rel })
@@ -257,6 +401,10 @@ func (m *Model) handleReviewMsg(msg reviewMsg) tea.Cmd {
 	}
 	old := p.files
 	p.files = nil // fresh slice: old must survive for the baseline reload below
+	p.full = map[string]git.FileDiff{}
+	for _, f := range msg.files {
+		p.full[f.rel] = f.diff
+	}
 	for _, f := range msg.files {
 		if f.pseudo() {
 			if !p.accepted[acceptedKey(f, 0)] {
@@ -265,13 +413,15 @@ func (m *Model) handleReviewMsg(msg reviewMsg) tea.Cmd {
 			continue
 		}
 		kept := f.diff.Hunks[:0:0]
+		var turns []int
 		for i, h := range f.diff.Hunks {
 			if !p.accepted[acceptedKey(f, i)] {
 				kept = append(kept, h)
+				turns = append(turns, f.turns[i])
 			}
 		}
 		if len(kept) > 0 {
-			f.diff.Hunks = kept
+			f.diff.Hunks, f.turns = kept, turns
 			p.files = append(p.files, f)
 		}
 	}
@@ -475,28 +625,113 @@ func (m *Model) reviewSideDiff() {
 	m.openSideDiff(f.rel+" (review)", f.diff.Path, oldB, newB)
 }
 
+// reviewAcceptSel stages the selected hunk — like saying yes in
+// `git add -p` — and hides it. The index gets the checkpoint content plus
+// every accepted hunk of the file, so accepting in any order works; the
+// worktree keeps the rest for later.
 func (m *Model) reviewAcceptSel() {
 	f, h, ok := m.review.selected()
 	if !ok {
 		return
 	}
-	m.review.accepted[acceptedKey(f, h)] = true
 	p := &m.review
+	if err := m.reviewStage(f, h); err != nil {
+		m.notifyErr("stage: " + err.Error())
+		return
+	}
+	m.review.accepted[acceptedKey(f, h)] = true
 	if f.pseudo() || len(f.diff.Hunks) == 1 {
 		p.files = append(p.files[:p.rows[p.sel].file], p.files[p.rows[p.sel].file+1:]...)
 	} else {
 		fi := p.rows[p.sel].file
 		p.files[fi].diff.Hunks = append(p.files[fi].diff.Hunks[:h:h], p.files[fi].diff.Hunks[h+1:]...)
+		p.files[fi].turns = append(p.files[fi].turns[:h:h], p.files[fi].turns[h+1:]...)
 	}
 	p.rebuild()
+	m.refreshGit()
 	if len(p.rows) == 0 {
-		m.notify("all reviewed — A takes a new checkpoint")
+		m.notify("all staged — commit from the git panel (Ctrl+G); the next prompt starts a fresh review")
+	} else {
+		m.notify("staged " + f.rel)
 	}
 }
 
-// reviewAcceptAll takes a new checkpoint: everything so far is the new baseline.
+// reviewStage writes the accepted state of f into the index: the whole
+// worktree file for new/deleted/binary files, else checkpoint content plus
+// the accepted hunks (including the one being accepted now).
+func (m *Model) reviewStage(f reviewFile, h int) error {
+	if f.pseudo() {
+		return git.StagePath(f.repo.top, f.diff.Path)
+	}
+	full, ok := m.review.full[f.rel]
+	if !ok {
+		return fmt.Errorf("no diff for %s — refresh (R) and retry", f.rel)
+	}
+	this := f.diff.Hunks[h].Signature()
+	var keep []git.Hunk
+	for _, hk := range full.Hunks {
+		sig := hk.Signature()
+		if sig == this || m.review.accepted[f.rel+"\x00"+sig] {
+			keep = append(keep, hk)
+		}
+	}
+	base, err := git.ShowAt(f.repo.top, m.review.cps[f.repo.top], f.diff.Path)
+	if err != nil {
+		return err
+	}
+	return git.StageContent(f.repo.top, f.diff.Path, git.ApplyHunks(base, keep))
+}
+
+// reviewAcceptAll stages every pending change as it is in the worktree
+// and takes a new checkpoint: everything so far is the new baseline.
 func (m *Model) reviewAcceptAll() tea.Cmd {
+	for _, f := range m.review.files {
+		if err := git.StagePath(f.repo.top, f.diff.Path); err != nil {
+			m.notifyErr("stage " + f.rel + ": " + err.Error())
+			return nil
+		}
+	}
+	m.refreshGit()
 	return m.reviewCheckpointCmd()
+}
+
+// reviewSendSel pastes the selected hunk into the agent's prompt as a
+// diff, optionally reverting it first, and leaves the cursor for the
+// user's reason. One keystroke closes the loop: see, revert, tell.
+func (m *Model) reviewSendSel(revert bool) tea.Cmd {
+	f, h, ok := m.review.selected()
+	if !ok {
+		return nil
+	}
+	var text string
+	switch {
+	case f.pseudo() && f.diff.Status == 'A':
+		text = "About the file you created, " + f.rel + ": "
+	case f.pseudo() && f.diff.Status == 'D':
+		text = "About deleting " + f.rel + ": "
+	case f.pseudo():
+		text = "About your change to " + f.rel + ": "
+	default:
+		hk := f.diff.Hunks[h]
+		lines := strings.Split(strings.TrimSuffix(hk.Text, "\n"), "\n")
+		if len(lines) > 200 {
+			lines = append(lines[:200], "… (truncated)")
+		}
+		text = fmt.Sprintf("About your change in %s:%d:\n```diff\n%s\n```\n", f.rel, hk.FirstChange(), strings.Join(lines, "\n"))
+	}
+	var revertCmd tea.Cmd
+	if revert {
+		if f.pseudo() && f.diff.Status == 'A' {
+			m.notify("a new file is deleted with r (it asks first); sending without reverting")
+		} else {
+			revertCmd = m.reviewRevertSel()
+			if revertCmd == nil {
+				return nil // the revert failed and toasted why
+			}
+			text = "I reverted this. " + text
+		}
+	}
+	return tea.Batch(revertCmd, m.sendToAgent(text))
 }
 
 // reviewRevertSel undoes the selected hunk (or whole-file change) on disk
@@ -649,7 +884,7 @@ func statusGlyph(f reviewFile) string {
 	}
 }
 
-func hunkLabel(f reviewFile, h int) string {
+func hunkLabel(f reviewFile, h int, showTurn bool) string {
 	if f.pseudo() {
 		switch {
 		case f.diff.Binary:
@@ -663,6 +898,9 @@ func hunkLabel(f reviewFile, h int) string {
 	}
 	hk := f.diff.Hunks[h]
 	s := fmt.Sprintf("  %d: +%d −%d", hk.FirstChange(), hk.Added, hk.Removed)
+	if showTurn {
+		s = fmt.Sprintf("  t%d %d: +%d −%d", f.turns[h], hk.FirstChange(), hk.Added, hk.Removed)
+	}
 	if hk.Header != "" {
 		s += "  " + hk.Header
 	}
@@ -678,14 +916,17 @@ func (m Model) reviewPanelView() string {
 	head := " Review"
 	if p.active() {
 		head = fmt.Sprintf(" Review · %d file(s) · %d hunk(s)", len(p.files), p.hunkCount())
+		if p.turn > 0 {
+			head = fmt.Sprintf(" Review · turn %d · %d hunk(s)", p.turn, p.hunkCount())
+		}
 		if p.busy {
 			head += " …"
 		}
 	}
 	sb.WriteString(gitHeadStyle.Render(sidebar.Pad(head, w)))
-	hint := " space peek · r revert · a/A accept"
+	hint := " space peek · r revert · a stage · x ask"
 	if p.follow {
-		hint = " f follow:on · r revert · a/A accept"
+		hint = " f follow:on · r revert · a stage · x ask"
 	}
 	sb.WriteByte('\n')
 	sb.WriteString(gitSectionStyle.Render(sidebar.Pad(hint, w)))
@@ -708,11 +949,16 @@ func (m Model) reviewPanelView() string {
 		}
 		r := p.rows[i]
 		f := p.files[r.file]
+		turn, uniform := f.sameTurn()
 		if r.hunk < 0 {
-			sb.WriteString(gitSectionStyle.Render(sidebar.Pad(" "+statusGlyph(f)+" "+f.rel, w)))
+			label := " " + statusGlyph(f) + " " + f.rel
+			if p.turn > 0 && uniform {
+				label += fmt.Sprintf(" · turn %d", turn)
+			}
+			sb.WriteString(gitSectionStyle.Render(sidebar.Pad(label, w)))
 			continue
 		}
-		plain := sidebar.Pad(hunkLabel(f, r.hunk), w)
+		plain := sidebar.Pad(hunkLabel(f, r.hunk, p.turn > 0 && !uniform), w)
 		switch {
 		case i == p.sel && m.focus == paneReview:
 			sb.WriteString(gitSelStyle.Render(plain))

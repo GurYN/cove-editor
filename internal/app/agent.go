@@ -61,6 +61,7 @@ func (m *Model) sendToAgent(text string) tea.Cmd {
 		m.termOpen = true
 		m.focus = paneTerminal
 		t.Paste(text)
+		m.review.typed = true // the paste is prompt text: the next Enter submits it
 		return nil
 	}
 	cmd := m.openApp(m.agentApp, m.agentArgv) // spawns + checkpoints
@@ -84,6 +85,7 @@ func (m *Model) agentLaunchCheckpoint() tea.Cmd {
 	if len(m.git.repos) == 0 {
 		return nil // not a git workspace: nothing to review against, and no nagging
 	}
+	m.review.turn, m.review.typed = 0, false // a new agent session: turns count from its first prompt
 	return m.reviewCheckpointCmd()
 }
 
@@ -94,6 +96,7 @@ func (m *Model) agentPaste(msg agentPasteMsg) {
 		return // the agent exited before the paste landed: nothing to send to
 	}
 	t.Paste(msg.text)
+	m.review.typed = true
 }
 
 // agentContext is what the send actions read from the active document.

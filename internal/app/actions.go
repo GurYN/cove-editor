@@ -735,8 +735,10 @@ func newRegistry() *action.Registry {
 		return nil
 	})
 	reg("review.revert", "Review: Revert Hunk", "r", action.Review, func(m *Model) tea.Cmd { return m.reviewRevertSel() })
-	reg("review.accept", "Review: Accept Hunk", "a", action.Review, func(m *Model) tea.Cmd { m.reviewAcceptSel(); return nil })
-	reg("review.acceptAll", "Review: Accept All (new checkpoint)", "A", action.Review, func(m *Model) tea.Cmd { return m.reviewAcceptAll() })
+	reg("review.accept", "Review: Accept Hunk (stage it)", "a", action.Review, func(m *Model) tea.Cmd { m.reviewAcceptSel(); return nil })
+	reg("review.acceptAll", "Review: Accept All (stage everything, new checkpoint)", "A", action.Review, func(m *Model) tea.Cmd { return m.reviewAcceptAll() })
+	reg("review.send", "Review: Ask the Agent About This Hunk", "x", action.Review, func(m *Model) tea.Cmd { return m.reviewSendSel(false) })
+	reg("review.revertSend", "Review: Revert Hunk and Tell the Agent", "X", action.Review, func(m *Model) tea.Cmd { return m.reviewSendSel(true) })
 	reg("review.sideDiff", "Review: Open Side-by-Side Diff", "d", action.Review, func(m *Model) tea.Cmd { m.reviewSideDiff(); return nil })
 	reg("review.refresh", "Review: Refresh", "R", action.Review, func(m *Model) tea.Cmd { return m.reviewRefreshCmd() })
 	rhid := func(id, key string, do func(*Model) tea.Cmd) { hid(id, key, action.Review, do) }

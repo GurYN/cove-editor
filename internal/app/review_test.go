@@ -349,3 +349,210 @@ func TestReviewPreviewKeepsFocus(t *testing.T) {
 		t.Fatalf("revert after preview: %q", m.lastMsg)
 	}
 }
+
+// agentEnter types a prompt into the agent terminal and submits it with
+// Enter through the real key path, then runs the turn command scheduled.
+func agentEnter(t *testing.T, m *Model) {
+	t.Helper()
+	m.focus = paneTerminal
+	next, _ := m.dispatchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("go")})
+	*m = next
+	next, cmd := m.dispatchKey(tea.KeyMsg{Type: tea.KeyEnter})
+	*m = next
+	if cmd == nil {
+		t.Fatal("Enter after typed text scheduled no turn command")
+	}
+	if msg, ok := cmd().(turnMsg); ok {
+		if c := m.handleTurn(msg); c != nil {
+			if rm, ok := c().(reviewMsg); ok {
+				m.handleReviewMsg(rm)
+			}
+		}
+	}
+}
+
+// TestReviewTurns: a prompt submitted with nothing pending moves the
+// baseline (turn 1), so the next refresh shows only what that prompt did;
+// a prompt submitted while hunks are pending records a mark instead and
+// later files carry their turn number; an empty turn leaves no trace.
+func TestReviewTurns(t *testing.T) {
+	m, root := reviewRepo(t, "[apps.claude]\ncommand = [\"cat\"]\nagent = true\n")
+	if cmd := m.reg.ByID("app.claude").Do(&m); cmd == nil {
+		t.Skip("PTY unavailable")
+	}
+	defer m.terms[0].Close()
+	checkpointNow(t, &m)
+	base := m.review.cps[root]
+
+	// A bare Enter (answering a menu) is not a prompt.
+	m.focus = paneTerminal
+	if next, cmd := m.dispatchKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil || next.review.turn != 0 {
+		t.Fatal("bare Enter counted as a prompt")
+	}
+
+	// Prompt 1 on a clean tree: the counter moves, no snapshot needed.
+	agentEnter(t, &m)
+	if m.review.turn != 1 || m.review.cps[root] != base || len(m.review.marks[root]) != 0 {
+		t.Fatalf("prompt 1: turn=%d moved=%v marks=%d", m.review.turn, m.review.cps[root] != base, len(m.review.marks[root]))
+	}
+	// The agent's work during turn 1 is labelled turn 1 while in flight.
+	os.WriteFile(filepath.Join(root, "a.go"), []byte(strings.Replace(aOrig, "func A() {}", "func A() { println(1) }", 1)), 0o644)
+	refreshNow(t, &m)
+	if len(m.review.files) != 1 || m.review.files[0].turn != 1 {
+		t.Fatalf("in-flight label: %+v", m.review.files)
+	}
+	if view := m.reviewPanelView(); !strings.Contains(view, "Review · turn 1") || !strings.Contains(view, "a.go · turn 1") {
+		t.Fatalf("view:\n%s", view)
+	}
+
+	// Prompt 2 while a.go is pending: a mark closes turn 1, the baseline stays.
+	agentEnter(t, &m)
+	if m.review.turn != 2 || m.review.cps[root] != base || len(m.review.marks[root]) != 1 {
+		t.Fatalf("prompt 2: turn=%d moved=%v marks=%d", m.review.turn, m.review.cps[root] != base, len(m.review.marks[root]))
+	}
+	// Turn 2 creates a file and edits a.go again, far from the turn-1 hunk:
+	// the old hunk keeps turn 1, the new one is turn 2, per hunk.
+	os.WriteFile(filepath.Join(root, "new.go"), []byte("package a\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "a.go"), []byte(strings.Replace(aOrig, "func A() {}", "func A() { println(1) }", 1)+"\nfunc C() {}\n"), 0o644)
+	refreshNow(t, &m)
+	var a, n reviewFile
+	for _, f := range m.review.files {
+		switch f.rel {
+		case "a.go":
+			a = f
+		case "new.go":
+			n = f
+		}
+	}
+	if len(a.turns) != 2 || a.turns[0] != 1 || a.turns[1] != 2 || n.turn != 2 {
+		t.Fatalf("turns: a=%v new=%d", a.turns, n.turn)
+	}
+	view := m.reviewPanelView()
+	if !strings.Contains(view, "Review · turn 2") || !strings.Contains(view, "new.go · turn 2") || strings.Contains(view, "a.go · turn") {
+		t.Fatalf("view:\n%s", view)
+	}
+	if !strings.Contains(view, "t1 3:") || !strings.Contains(view, "t2 14:") {
+		t.Fatalf("hunk rows not labelled per turn:\n%s", view)
+	}
+
+	// Everything staged, then prompt 3: the baseline moves to the prompt,
+	// the counter keeps going, the review starts clean.
+	if cmd := m.reviewAcceptAll(); cmd != nil {
+		m.handleCheckpoint(cmd().(checkpointMsg))
+	}
+	os.WriteFile(filepath.Join(root, "b.go"), []byte("package a\n\nvar X = 2\n"), 0o644) // user edit before the prompt
+	agentEnter(t, &m)
+	if m.review.turn != 3 || m.review.cps[root] == base || len(m.review.files) != 0 {
+		t.Fatalf("prompt 3: turn=%d moved=%v files=%d", m.review.turn, m.review.cps[root] != base, len(m.review.files))
+	}
+}
+
+// TestReviewAcceptStages: accepting a hunk stages checkpoint content plus
+// that hunk; the worktree keeps the other; accept-all stages the rest and
+// starts a fresh review with the git panel ready to commit.
+func TestReviewAcceptStages(t *testing.T) {
+	m, root := reviewRepo(t, "")
+	checkpointNow(t, &m)
+	aEdited := strings.Replace(aOrig, "func A() {}", "func A() { println(1) }", 1) + "\nfunc C() {}\n"
+	os.WriteFile(filepath.Join(root, "a.go"), []byte(aEdited), 0o644)
+	os.WriteFile(filepath.Join(root, "new.go"), []byte("package a\n"), 0o644)
+	refreshNow(t, &m)
+	if len(m.review.files[0].diff.Hunks) != 2 {
+		t.Fatalf("setup: %+v", m.review.files[0].diff)
+	}
+	// Accept the second hunk (func C) first: order must not matter, and
+	// nothing else may be staged — not new.go, not a.go's other hunk.
+	m.review.sel = 2
+	m.reviewAcceptSel()
+	idx, err := git.ShowIndex(root, "a.go")
+	if err != nil || string(idx) != aOrig+"\nfunc C() {}\n" {
+		t.Fatalf("index after first accept:\n%s (%v)", idx, err)
+	}
+	snap0, _ := git.Status(root)
+	for _, f := range snap0.Files {
+		if f.Path == "new.go" && f.Staged() {
+			t.Fatalf("accepting one hunk staged another file: %+v", snap0.Files)
+		}
+	}
+	disk, _ := os.ReadFile(filepath.Join(root, "a.go"))
+	if string(disk) != aEdited {
+		t.Fatal("worktree changed by staging")
+	}
+	if m.review.hunkCount() != 2 {
+		t.Fatalf("rows after accept: %+v", m.review.rows)
+	}
+	// Accept the remaining hunk of a.go: index == worktree for a.go.
+	m.review.sel = 1
+	m.reviewAcceptSel()
+	if idx, _ := git.ShowIndex(root, "a.go"); string(idx) != aEdited {
+		t.Fatalf("index after second accept:\n%s", idx)
+	}
+	// Accept all: new.go staged, fresh checkpoint.
+	cmd := m.reviewAcceptAll()
+	if cmd == nil {
+		t.Fatalf("accept all: %q", m.lastMsg)
+	}
+	m.handleCheckpoint(cmd().(checkpointMsg))
+	snap, _ := git.Status(root)
+	staged := map[string]bool{}
+	for _, f := range snap.Files {
+		if f.Staged() {
+			staged[f.Path] = true
+		}
+	}
+	if !staged["a.go"] || !staged["new.go"] {
+		t.Fatalf("staged = %v (files %+v)", staged, snap.Files)
+	}
+	refreshNow(t, &m)
+	if len(m.review.files) != 0 {
+		t.Fatalf("review not fresh after accept-all: %+v", m.review.files)
+	}
+}
+
+// TestReviewSendToAgent: x pastes the hunk as a diff into the agent's
+// prompt; X reverts first and says so.
+func TestReviewSendToAgent(t *testing.T) {
+	m, root := reviewRepo(t, "[apps.claude]\ncommand = [\"cat\"]\nagent = true\n")
+	if cmd := m.reg.ByID("app.claude").Do(&m); cmd == nil {
+		t.Skip("PTY unavailable")
+	}
+	defer m.terms[0].Close()
+	m.termH = 30 // the pasted diff must fit on the visible screen for waitScreen
+	m.terms[0].Resize(100, 30)
+	checkpointNow(t, &m)
+	os.WriteFile(filepath.Join(root, "a.go"), []byte(strings.Replace(aOrig, "func A() {}", "func A() { println(1) }", 1)), 0o644)
+	refreshNow(t, &m)
+	m.focus = paneReview
+	if cmd := m.reg.ByID("review.send").Do(&m); cmd != nil {
+		t.Fatal("send to a running agent should be synchronous")
+	}
+	waitScreen(t, &m, "About your change in a.go:3")
+	waitScreen(t, &m, "+func A() { println(1) }")
+	if m.focus != paneTerminal {
+		t.Fatalf("focus = %d, want terminal so the user can type the reason", m.focus)
+	}
+	m.focus = paneReview
+	cmd := m.reg.ByID("review.revertSend").Do(&m)
+	if cmd == nil {
+		t.Fatalf("revert+send: %q", m.lastMsg)
+	}
+	waitScreen(t, &m, "I reverted this.")
+	if disk, _ := os.ReadFile(filepath.Join(root, "a.go")); string(disk) != aOrig {
+		t.Fatalf("not reverted:\n%s", disk)
+	}
+}
+
+// TestReviewToggleFromTerminal: Alt+R reaches Cove while the terminal has
+// focus, like the other panel toggles, instead of going to the shell.
+func TestReviewToggleFromTerminal(t *testing.T) {
+	m, _ := reviewRepo(t, "")
+	if cmd := m.spawnTerm([]string{"sleep", "30"}, ""); cmd == nil {
+		t.Skip("PTY unavailable")
+	}
+	defer m.terms[0].Close()
+	m.focus = paneTerminal
+	m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r"), Alt: true})
+	if !m.review.view || m.focus != paneReview {
+		t.Fatalf("alt+r from terminal: view=%v focus=%d", m.review.view, m.focus)
+	}
+}

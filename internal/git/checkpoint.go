@@ -53,6 +53,14 @@ func worktreeTree(top string) (string, error) {
 	}
 	if data, err := os.ReadFile(idx); err == nil {
 		os.WriteFile(tmpPath, data, 0o600)
+		// Keep the original index mtime on the copy. Git treats entries
+		// whose file mtime is not older than the index as "racily clean"
+		// and rehashes them; a fresh copy timestamp would make every
+		// same-second, same-size rewrite look clean and snapshot the old
+		// blob.
+		if fi, err := os.Stat(idx); err == nil {
+			os.Chtimes(tmpPath, fi.ModTime(), fi.ModTime())
+		}
 	} else {
 		os.Remove(tmpPath)
 	}
@@ -108,7 +116,8 @@ type Hunk struct {
 	Header             string // text after the @@ … @@ (enclosing function)
 	Old, New           []string
 	Added, Removed     int
-	OldNoNL, NewNoNL   bool // that side's last line has no trailing newline
+	OldNoNL, NewNoNL   bool   // that side's last line has no trailing newline
+	Text               string // the hunk as git printed it (header + prefixed lines)
 }
 
 // FileDiff is one changed file between two trees. Hunks is nil for added,
@@ -131,6 +140,12 @@ func ChangedSince(top, sha string) ([]FileDiff, error) {
 	if err != nil {
 		return nil, err
 	}
+	return DiffTrees(top, sha, tree)
+}
+
+// DiffTrees diffs two tree-ish objects, one FileDiff per changed path.
+func DiffTrees(top, a, b string) ([]FileDiff, error) {
+	sha, tree := a, b
 	out, err := run(top, "diff-tree", "-r", "-z", "--no-renames", "--name-status", sha, tree)
 	if err != nil {
 		return nil, err
@@ -173,6 +188,7 @@ func ParseHunks(patch string) []Hunk {
 				cur = nil
 				continue
 			}
+			h.Text = ln + "\n"
 			hunks = append(hunks, h)
 			cur = &hunks[len(hunks)-1]
 			continue
@@ -180,6 +196,7 @@ func ParseHunks(patch string) []Hunk {
 		if cur == nil || ln == "" {
 			continue
 		}
+		cur.Text += ln + "\n"
 		switch ln[0] {
 		case ' ':
 			cur.Old = append(cur.Old, ln[1:])
@@ -267,4 +284,87 @@ func (h Hunk) FirstChange() int {
 // accepted when an earlier hunk is reverted.
 func (h Hunk) Signature() string {
 	return strings.Join(h.Old, "\n") + "\x00" + strings.Join(h.New, "\n")
+}
+
+// TreeOf returns the tree SHA a commit (or tree) resolves to.
+func TreeOf(top, rev string) (string, error) {
+	return run(top, "rev-parse", rev+"^{tree}")
+}
+
+// WorktreeTree writes the current working tree (untracked included) as a
+// tree object and returns its SHA, without touching the index.
+func WorktreeTree(top string) (string, error) { return worktreeTree(top) }
+
+// ApplyHunks builds the content that results from applying a subset of a
+// file's hunks to its old content — what `git add -p` stages when you say
+// yes to some hunks and no to others. Hunks come from one diff, so they
+// don't overlap and are ordered by OldStart.
+func ApplyHunks(old []byte, hunks []Hunk) []byte {
+	lines := strings.Split(string(old), "\n")
+	noNL := len(old) > 0 && old[len(old)-1] != '\n'
+	if !noNL && len(lines) > 0 {
+		lines = lines[:len(lines)-1] // the split's empty tail after the final newline
+	}
+	// Back to front so earlier hunks' line shifts never move later ones.
+	for i := len(hunks) - 1; i >= 0; i-- {
+		h := hunks[i]
+		start := h.OldStart - 1
+		if h.OldLines == 0 { // pure insertion: after line OldStart
+			start = h.OldStart
+		}
+		end := start + h.OldLines
+		if start < 0 || end > len(lines) {
+			continue
+		}
+		repl := append([]string{}, h.New...)
+		lines = append(lines[:start], append(repl, lines[end:]...)...)
+		if end == len(lines)-len(repl)+h.OldLines { // hunk reached the old EOF: its newline rule wins
+			noNL = h.NewNoNL
+		}
+	}
+	out := strings.Join(lines, "\n")
+	if !noNL && len(lines) > 0 {
+		out += "\n"
+	}
+	return []byte(out)
+}
+
+// StageContent writes content into the index for path (repo-relative,
+// slash form), whatever the index held before. The mode follows the
+// worktree file's executable bit.
+func StageContent(top, path string, content []byte) error {
+	cmd := exec.Command("git", "hash-object", "-w", "--stdin")
+	cmd.Dir = top
+	cmd.Stdin = strings.NewReader(string(content))
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("git hash-object: %w", err)
+	}
+	mode := "100644"
+	if fi, err := os.Stat(filepath.Join(top, filepath.FromSlash(path))); err == nil && fi.Mode()&0o111 != 0 {
+		mode = "100755"
+	}
+	_, err = run(top, "update-index", "--add", "--cacheinfo", mode+","+strings.TrimSpace(string(out))+","+path)
+	return err
+}
+
+// StagePath stages a path's worktree state: its content, or its deletion.
+func StagePath(top, path string) error {
+	_, err := run(top, "add", "-A", "--", path)
+	return err
+}
+
+// ChangedPaths lists the paths that differ between two tree-ish objects.
+func ChangedPaths(top, a, b string) (map[string]bool, error) {
+	out, err := run(top, "diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b)
+	if err != nil {
+		return nil, err
+	}
+	set := map[string]bool{}
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			set[p] = true
+		}
+	}
+	return set, nil
 }

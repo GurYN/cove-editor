@@ -102,3 +102,77 @@ func TestParseHunks(t *testing.T) {
 		t.Fatal("signatures collide")
 	}
 }
+
+// TestApplyHunksAndStage: staging a subset of hunks puts checkpoint
+// content plus those hunks in the index — the worktree keeps the rest —
+// and StagePath stages a whole file or its deletion.
+func TestApplyHunksAndStage(t *testing.T) {
+	top := initRepo(t)
+	nums := []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+		"eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"}
+	orig := strings.Join(nums, "\n") + "\n"
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte(orig), 0o644)
+	if _, err := run(top, "commit", "-qam", "twenty lines"); err != nil {
+		t.Fatal(err)
+	}
+	sha, _ := Checkpoint(top)
+	// Two far-apart edits: line 2 and line 18.
+	edited := strings.Replace(strings.Replace(orig, "two\n", "TWO\n", 1), "eighteen\n", "EIGHTEEN\n", 1)
+	os.WriteFile(filepath.Join(top, "a.txt"), []byte(edited), 0o644)
+	files, _ := ChangedSince(top, sha)
+	if len(files) != 1 || len(files[0].Hunks) != 2 {
+		t.Fatalf("files = %+v", files)
+	}
+	if !strings.HasPrefix(files[0].Hunks[0].Text, "@@ -1,5 +1,5 @@\n one\n-two\n+TWO\n") {
+		t.Fatalf("hunk text = %q", files[0].Hunks[0].Text)
+	}
+	old, _ := ShowAt(top, sha, "a.txt")
+	got := ApplyHunks(old, files[0].Hunks[1:]) // only the second hunk
+	want := strings.Replace(orig, "eighteen\n", "EIGHTEEN\n", 1)
+	if string(got) != want {
+		t.Fatalf("ApplyHunks =\n%s", got)
+	}
+	if string(ApplyHunks(old, files[0].Hunks)) != edited {
+		t.Fatal("ApplyHunks with all hunks != worktree")
+	}
+	if err := StageContent(top, "a.txt", got); err != nil {
+		t.Fatal(err)
+	}
+	if idx, _ := ShowIndex(top, "a.txt"); string(idx) != want {
+		t.Fatalf("index =\n%s", idx)
+	}
+	if st, _ := run(top, "status", "--porcelain"); !strings.HasPrefix(st, "MM a.txt") {
+		t.Fatalf("status = %q (want staged + unstaged)", st)
+	}
+	// Whole-file staging, including a deletion.
+	os.WriteFile(filepath.Join(top, "b.txt"), []byte("b\n"), 0o644)
+	if err := StagePath(top, "b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(top, "a.txt"))
+	if err := StagePath(top, "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := run(top, "status", "--porcelain"); !strings.Contains(st, "D  a.txt") || !strings.Contains(st, "A  b.txt") {
+		t.Fatalf("status = %q", st)
+	}
+	tree, _ := TreeOf(top, sha)
+	if len(tree) != 40 && len(tree) != 64 {
+		t.Fatalf("TreeOf = %q", tree)
+	}
+}
+
+// TestApplyHunksEOF: a hunk that changes the last line without a trailing
+// newline, and a pure insertion after the last line.
+func TestApplyHunksEOF(t *testing.T) {
+	old := []byte("a\nb")
+	h := Hunk{OldStart: 1, OldLines: 2, NewStart: 1, NewLines: 2, Old: []string{"a", "b"}, New: []string{"a", "B"}, OldNoNL: true, NewNoNL: true}
+	if got := ApplyHunks(old, []Hunk{h}); string(got) != "a\nB" {
+		t.Fatalf("eof: %q", got)
+	}
+	old = []byte("a\n")
+	h = Hunk{OldStart: 1, OldLines: 0, NewStart: 2, NewLines: 1, New: []string{"z"}}
+	if got := ApplyHunks(old, []Hunk{h}); string(got) != "a\nz\n" {
+		t.Fatalf("append: %q", got)
+	}
+}
