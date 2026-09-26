@@ -47,6 +47,7 @@ func TestFoldsPerLanguageAnchors(t *testing.T) {
 		{"python", "t.py", "def f():\n    x = 1\n    return x\n", [2]int{0, 2}},
 		{"typescript", "t.ts", "function f() {\n  const x = 1;\n  return x;\n}\n", [2]int{0, 3}},
 		{"rust", "t.rs", "fn f() -> i32 {\n    let x = 1;\n    x\n}\n", [2]int{0, 3}},
+		{"cpp", "t.cpp", "int f() {\n    int x = 1;\n    return x;\n}\n", [2]int{0, 3}},
 	}
 	for _, c := range cases {
 		h := New(c.path, []byte(c.src))

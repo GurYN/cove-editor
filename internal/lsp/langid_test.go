@@ -15,6 +15,9 @@ func TestLangIDFor(t *testing.T) {
 		"a.go":     "go",
 		"a.tf":     "terraform",
 		"a.tfvars": "terraform-vars",
+		"a.cpp":    "cpp",
+		"a.h":      "cpp",
+		"a.c":      "c",
 	}
 	for path, want := range cases {
 		if got := langIDFor(path, LangFor(path)); got != want {
