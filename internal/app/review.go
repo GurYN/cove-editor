@@ -87,6 +87,7 @@ type reviewPanel struct {
 	marks    map[string][]turnMark   // repo top → prompts submitted since the checkpoint
 	turn     int                     // prompts submitted since the agent launched (the current turn)
 	typed    bool                    // text typed/pasted into the agent since the last Enter
+	errBase  map[string]int          // abs path → error count when the current turn began
 	full     map[string]git.FileDiff // rel → unfiltered diff at the last refresh (staging needs accepted hunks too)
 	at       time.Time               // when the checkpoint was taken
 	files    []reviewFile
@@ -242,6 +243,7 @@ func (m *Model) agentTurnCmd() tea.Cmd {
 	}
 	ended := p.turn
 	p.turn++
+	p.errBase = m.errorCounts() // "new errors" means since this prompt
 	fresh := len(p.rows) == 0 && !p.busy
 	type job struct{ top, prev string }
 	var jobs []job
@@ -301,6 +303,7 @@ func (m *Model) handleCheckpoint(msg checkpointMsg) tea.Cmd {
 	p.cps, p.trees, p.at = msg.cps, msg.trees, time.Now()
 	p.marks = map[string][]turnMark{} // the turn counter is per agent session, not per checkpoint
 	p.full = map[string]git.FileDiff{}
+	p.errBase = m.errorCounts()
 	p.files, p.rows, p.sel, p.top = nil, p.rows[:0], 0, 0
 	p.accepted, p.seen = map[string]bool{}, map[string]string{}
 	p.busy = false
@@ -955,6 +958,9 @@ func (m Model) reviewPanelView() string {
 			if p.turn > 0 && uniform {
 				label += fmt.Sprintf(" · turn %d", turn)
 			}
+			if e := m.newErrors(f.abs); e > 0 {
+				label += fmt.Sprintf(" · +%d err", e)
+			}
 			sb.WriteString(gitSectionStyle.Render(sidebar.Pad(label, w)))
 			continue
 		}
@@ -969,4 +975,69 @@ func (m Model) reviewPanelView() string {
 		}
 	}
 	return sb.String()
+}
+
+// errorCounts is the number of error-severity diagnostics per absolute
+// path, from what the language servers published.
+func (m *Model) errorCounts() map[string]int {
+	out := map[string]int{}
+	for path, ds := range m.diags {
+		n := 0
+		for _, d := range ds {
+			if d.Severity == 1 {
+				n++
+			}
+		}
+		if n > 0 {
+			out[path] = n
+		}
+	}
+	return out
+}
+
+// newErrors is how many errors a file gained since the turn began — only
+// known for files a language server has looked at (open in Cove, or in a
+// package gopls diagnoses as a whole).
+func (m Model) newErrors(abs string) int {
+	n := 0
+	for _, d := range m.diags[abs] {
+		if d.Severity == 1 {
+			n++
+		}
+	}
+	if n > m.review.errBase[abs] {
+		return n - m.review.errBase[abs]
+	}
+	return 0
+}
+
+// reviewSeg is the status-bar signal: pending hunks (and the turn) while
+// a review is active, so changes are noticed without opening the panel.
+func (m Model) reviewSeg() string {
+	p := m.review
+	if !p.active() {
+		return ""
+	}
+	n := p.hunkCount()
+	if n == 0 && !p.busy {
+		return ""
+	}
+	s := fmt.Sprintf("agent %d hunk", n)
+	if n != 1 {
+		s += "s"
+	}
+	if p.turn > 0 {
+		s += fmt.Sprintf(" (turn %d)", p.turn)
+	}
+	errs := 0
+	for _, f := range p.files {
+		errs += m.newErrors(f.abs)
+	}
+	if errs > 0 {
+		s += fmt.Sprintf(" +%d err", errs)
+	}
+	if p.busy {
+		s += " …"
+	}
+	return s + "  "
 }

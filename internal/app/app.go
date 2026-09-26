@@ -193,7 +193,8 @@ type Model struct {
 	termDirty     bool                 // terminal output since last tick: an agent/shell may have touched files
 	agentApp      string               // [apps.*] entry flagged agent = true; "" = none (see agent.go)
 	agentArgv     []string
-	agentGen      int // bumped per agent spawn; a deferred paste for an older instance is dropped
+	agentGen      int           // bumped per agent spawn; a deferred paste for an older instance is dropped
+	agentPending  agentPasteMsg // paste waiting for the launched agent's first output
 
 	// MCP bridge (see bridge.go): the agent's window into the editor.
 	mcpEnabled      bool
@@ -1969,7 +1970,7 @@ func (m Model) bottomBar() string {
 	// Fixed-width cost cell (" 0.89ms"…"99.99ms") so the digit count can't
 	// change and shove the segments to its left around on every keystroke.
 	cost := fmt.Sprintf("%5.2fms", float64(m.lastCost.Microseconds())/1000)
-	right := fmt.Sprintf("%s%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.aiSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
+	right := fmt.Sprintf("%s%s%s%s  %dL  %s  ^P commands ", m.reviewSeg(), m.gitSeg(), m.aiSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
 	// The message slot: an in-progress message wins, else the blame
 	// annotation. Final outcomes render as a toast card instead (notify).
 	msg := ""

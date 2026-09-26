@@ -143,6 +143,12 @@ func (h *bridgeHandler) Tools() []bridge.Tool {
 			InputSchema: schema(`"query":{"type":"string"}`, "query")},
 		{Name: "rename", Description: "Rename the symbol at a position everywhere it is used, through the language server. Files open in the editor are edited in place (undoable) and saved; others are written to disk.",
 			InputSchema: schema(posProps+`,"new_name":{"type":"string"}`, "path", "line", "new_name")},
+		{Name: "search", Description: "Search the workspace for a string: .gitignore-aware, smart-case (all-lowercase matches case-insensitively), sees the user's unsaved buffers. Prefer it over grep for project-wide lookups.",
+			InputSchema: schema(`"query":{"type":"string"},"include":{"type":"string","description":"comma-separated globs to search only, e.g. \"*.go,cmd/**\""},"exclude":{"type":"string","description":"comma-separated globs to skip"}`, "query")},
+		{Name: "open_file", Description: "Show the user a file in the editor, optionally at a line: opens (or switches to) its tab without taking focus away from the terminal. Use it to point at what you are talking about.",
+			InputSchema: schema(`"path":{"type":"string"},"line":{"type":"integer","description":"1-based line to scroll to"}`, "path")},
+		{Name: "notify", Description: "Show the user a short message in the editor's status bar (a toast). For a heads-up that must not be missed in the terminal scrollback.",
+			InputSchema: schema(`"message":{"type":"string"}`, "message")},
 	}
 }
 
@@ -153,6 +159,9 @@ func (h *bridgeHandler) Call(ctx context.Context, name string, args json.RawMess
 		Column  int    `json:"column"`
 		Query   string `json:"query"`
 		NewName string `json:"new_name"`
+		Include string `json:"include"`
+		Exclude string `json:"exclude"`
+		Message string `json:"message"`
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &a); err != nil {
@@ -174,8 +183,93 @@ func (h *bridgeHandler) Call(ctx context.Context, name string, args json.RawMess
 		return h.workspaceSymbols(ctx, a.Query)
 	case "rename":
 		return h.rename(ctx, a.Path, a.Line, a.Column, a.NewName)
+	case "search":
+		return h.search(ctx, a.Query, a.Include, a.Exclude)
+	case "open_file":
+		return h.openFile(ctx, a.Path, a.Line)
+	case "notify":
+		return h.notify(ctx, a.Message)
 	}
 	return nil, errors.New("unknown tool: " + name)
+}
+
+// ---- agent → editor ----
+
+func (h *bridgeHandler) search(ctx context.Context, query, include, exclude string) (any, error) {
+	if query == "" {
+		return nil, errors.New("query required")
+	}
+	v, err := h.inLoop(ctx, func(m *Model) any { return m.bufOverrides() })
+	if err != nil {
+		return nil, err
+	}
+	hits, truncated := searchProject(h.root, v.(map[string][]byte), splitGlobs(include), splitGlobs(exclude), query)
+	type row struct {
+		Path string `json:"path"`
+		Line int    `json:"line"`
+		Text string `json:"text"`
+	}
+	const cap = 300
+	rows := make([]row, 0, min(len(hits), cap))
+	for _, hit := range hits {
+		if len(rows) == cap {
+			truncated = true
+			break
+		}
+		rows = append(rows, row{Path: h.rel(hit.ref.path), Line: hit.ref.line + 1, Text: hit.text})
+	}
+	out := map[string]any{"matches": rows, "total": len(hits)}
+	if truncated {
+		out["note"] = "truncated — narrow with include/exclude or a longer query"
+	}
+	return out, nil
+}
+
+// openFile reveals a file for the user. Focus stays where it is (the user
+// is talking to the agent in the terminal), and a dirty buffer is never
+// reloaded — this only opens or switches tabs and scrolls.
+func (h *bridgeHandler) openFile(ctx context.Context, path string, line int) (any, error) {
+	abs, err := h.abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return nil, err
+	}
+	v, err := h.inLoop(ctx, func(m *Model) any {
+		focus := m.focus
+		m.openFile(abs)
+		m.focus = focus
+		d := m.doc()
+		if d == nil || !same(d.path, abs) {
+			return "could not open " + h.rel(abs)
+		}
+		if line > 0 {
+			d.ed.Go(min(line, d.ed.Buf.LineCount())-1, 0)
+			d.ed.Center()
+		}
+		m.layout()
+		return "showing " + h.rel(abs)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func (h *bridgeHandler) notify(ctx context.Context, message string) (any, error) {
+	message = strings.TrimSpace(firstLine(message))
+	if message == "" {
+		return nil, errors.New("message required")
+	}
+	if len(message) > 200 {
+		message = message[:200] + "…"
+	}
+	_, err := h.inLoop(ctx, func(m *Model) any { m.notify("agent: " + message); return nil })
+	if err != nil {
+		return nil, err
+	}
+	return "shown", nil
 }
 
 // ---- paths and positions ----

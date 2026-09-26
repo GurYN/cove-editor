@@ -113,7 +113,7 @@ func TestAgentSendLaunchesAndPastes(t *testing.T) {
 	d.ed.MoveV(1, true) // select the println line
 
 	agentSpawnDelay = 50 * time.Millisecond
-	t.Cleanup(func() { agentSpawnDelay = 1500 * time.Millisecond })
+	t.Cleanup(func() { agentSpawnDelay = 3 * time.Second })
 	cmd := m.reg.ByID("agent.sendSelection").Do(&m)
 	if cmd == nil {
 		t.Skip("PTY unavailable")
@@ -160,6 +160,8 @@ func TestAgentSendLaunchesAndPastes(t *testing.T) {
 	// relaunched in between).
 	m.agentGen++
 	m.agentPaste(agentPasteMsg{text: "STALE", gen: paste.gen})
+	m.agentPending = agentPasteMsg{text: "STALE", gen: paste.gen}
+	m.agentPaste(agentPasteMsg{text: "STALE", gen: paste.gen})
 	time.Sleep(100 * time.Millisecond)
 	if strings.Contains(m.terms[0].View(false), "STALE") {
 		t.Fatal("stale-generation paste was delivered")
@@ -176,4 +178,61 @@ func waitScreen(t *testing.T, m *Model, want string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("%q never appeared on the agent screen:\n%s", want, m.terms[0].View(false))
+}
+
+// TestAgentPasteAfterFirstOutput: an agent that prints a banner gets the
+// paste shortly after that output, not after the long fallback — and the
+// fallback, when it fires later, doesn't paste a second time.
+func TestAgentPasteAfterFirstOutput(t *testing.T) {
+	m, _ := agentSetup(t, "[apps.claude]\ncommand = [\"sh\", \"-c\", \"echo READY; cat\"]\nagent = true\n")
+	m.width, m.height = 100, 30
+	m.layout()
+	agentPasteGrace = 20 * time.Millisecond
+	t.Cleanup(func() { agentPasteGrace = 300 * time.Millisecond })
+	cmd := m.reg.ByID("agent.sendRef").Do(&m)
+	if cmd == nil {
+		t.Skip("PTY unavailable")
+	}
+	defer m.terms[0].Close()
+	fallback := m.agentPending // what the fallback timer will deliver
+	waitScreen(t, &m, "READY")
+	// The first output arrives as a termMsg: it arms the grace tick.
+	next, c := m.handleTermMsg(termMsg{t: m.terms[0], alive: true})
+	m = next
+	if c == nil || !m.agentPending.armed {
+		t.Fatal("first output did not arm the paste")
+	}
+	var got agentPasteMsg
+	deadline := time.After(2 * time.Second)
+	msgs := make(chan tea.Msg, 4)
+	for _, cc := range c().(tea.BatchMsg) {
+		if cc != nil {
+			go func() { msgs <- cc() }()
+		}
+	}
+	for got.text == "" {
+		select {
+		case msg := <-msgs:
+			if p, ok := msg.(agentPasteMsg); ok {
+				got = p
+			}
+		case <-deadline:
+			t.Fatal("grace tick never delivered the paste")
+		}
+	}
+	m.agentPaste(got)
+	waitScreen(t, &m, "main.go:1")
+	if m.agentPending.text != "" {
+		t.Fatal("pending paste not cleared after delivery")
+	}
+	// The fallback fires later with the same text: nothing is pasted twice.
+	m.agentPaste(agentPasteMsg{text: fallback.text, gen: fallback.gen})
+	time.Sleep(100 * time.Millisecond)
+	if n := strings.Count(m.terms[0].View(false), "main.go:1"); n != 1 {
+		t.Fatalf("paste delivered %d times:\n%s", n, m.terms[0].View(false))
+	}
+	// A second termMsg (more output) must not re-arm anything.
+	if _, c := m.handleTermMsg(termMsg{t: m.terms[0], alive: true}); c == nil {
+		t.Fatal("listener not re-issued")
+	}
 }

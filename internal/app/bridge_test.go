@@ -313,3 +313,49 @@ func TestCoveCommand(t *testing.T) {
 		t.Fatalf("coveCommand = %q, want this executable %q", got, real)
 	}
 }
+
+// TestBridgeAgentToEditor: search sees unsaved buffers and honors globs;
+// open_file reveals a file at a line without moving focus; notify toasts.
+func TestBridgeAgentToEditor(t *testing.T) {
+	m, root := bridgeSetup(t)
+	m.openFile(filepath.Join(root, "main.go"))
+	m.doc().ed.InsertText("// needle-in-buffer\n")
+	m.focus = paneTerminal
+	stop := pumpBridge(&m)
+	out := call(t, m.bridgeH, "search", `{"query":"needle-in-buffer"}`)
+	if rows := out["matches"].([]any); len(rows) != 1 || rows[0].(map[string]any)["path"] != "main.go" {
+		t.Fatalf("search (unsaved buffer): %v", out)
+	}
+	out = call(t, m.bridgeH, "search", `{"query":"greet","exclude":"main.go"}`)
+	for _, r := range out["matches"].([]any) {
+		if r.(map[string]any)["path"] == "main.go" {
+			t.Fatalf("exclude ignored: %v", out)
+		}
+	}
+	if len(out["matches"].([]any)) == 0 {
+		t.Fatalf("search: %v", out)
+	}
+	res := call(t, m.bridgeH, "open_file", `{"path":"greet.go","line":3}`)
+	if res["text"] != "showing greet.go" {
+		t.Fatalf("open_file: %v", res)
+	}
+	stop()
+	if d := m.doc(); d == nil || !same(d.path, filepath.Join(root, "greet.go")) {
+		t.Fatalf("not opened: %v", m.doc())
+	}
+	if line, _ := m.doc().ed.Cursor(); line != 2 {
+		t.Fatalf("line = %d", line)
+	}
+	if m.focus != paneTerminal {
+		t.Fatalf("focus stolen: %d", m.focus)
+	}
+	stop = pumpBridge(&m)
+	call(t, m.bridgeH, "notify", `{"message":"tests pass\nsecond line ignored"}`)
+	stop()
+	if m.lastMsg != "agent: tests pass" || !m.msgToast {
+		t.Fatalf("toast = %q", m.lastMsg)
+	}
+	if _, err := m.bridgeH.Call(context.Background(), "open_file", json.RawMessage(`{"path":"nope.go"}`)); err == nil {
+		t.Fatal("missing file accepted")
+	}
+}

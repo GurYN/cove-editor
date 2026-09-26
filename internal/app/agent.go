@@ -21,16 +21,21 @@ import (
 // agentPasteMsg delivers text to the agent instance after a fresh spawn
 // has had time to come up (see sendToAgent).
 type agentPasteMsg struct {
-	text string
-	gen  int // spawn generation: a paste for an instance that died is dropped
+	text  string
+	gen   int  // spawn generation: a paste for an instance that died is dropped
+	armed bool // (pending only) the first-output grace tick has been scheduled
 }
 
-// agentSpawnDelay is how long a just-launched agent gets before the first
-// paste. Pasting into a PTY nobody reads yet works at the kernel level, but
-// the app hasn't enabled bracketed paste, so the newlines would submit
-// prematurely once it starts reading. ponytail: fixed delay; a slow
-// machine that takes longer to start the agent gets a raw paste.
-var agentSpawnDelay = 1500 * time.Millisecond
+// A paste into a just-launched agent waits for the agent to be up: the
+// app hasn't enabled bracketed paste yet, so an early paste's newlines
+// would submit prematurely once it starts reading. The trigger is the
+// agent's first output (its banner) plus agentPasteGrace for it to finish
+// initializing; agentSpawnDelay is the fallback for an agent that prints
+// nothing at startup.
+var (
+	agentPasteGrace = 300 * time.Millisecond
+	agentSpawnDelay = 3 * time.Second
+)
 
 // agentTerm returns the running agent instance, nil if none.
 func (m *Model) agentTerm() *term.Term {
@@ -69,9 +74,21 @@ func (m *Model) sendToAgent(text string) tea.Cmd {
 		return nil // spawnTerm already toasted the PTY error
 	}
 	gen := m.agentGen
+	m.agentPending = agentPasteMsg{text: text, gen: gen}
 	return tea.Batch(cmd, tea.Tick(agentSpawnDelay, func(time.Time) tea.Msg {
 		return agentPasteMsg{text: text, gen: gen}
 	}))
+}
+
+// agentOutputCmd is called on the agent's first output after a launch: the
+// pending paste goes out after a short grace, ahead of the fallback timer.
+func (m *Model) agentOutputCmd() tea.Cmd {
+	p := m.agentPending
+	if p.text == "" || p.gen != m.agentGen || p.armed {
+		return nil
+	}
+	m.agentPending.armed = true // one grace tick per launch; later output doesn't re-arm
+	return tea.Tick(agentPasteGrace, func(time.Time) tea.Msg { return p })
 }
 
 // agentLaunchCheckpoint takes the review baseline when the agent starts —
@@ -92,9 +109,12 @@ func (m *Model) agentLaunchCheckpoint() tea.Cmd {
 // agentPaste completes a deferred send once the freshly launched agent is up.
 func (m *Model) agentPaste(msg agentPasteMsg) {
 	t := m.agentTerm()
-	if t == nil || msg.gen != m.agentGen {
-		return // the agent exited before the paste landed: nothing to send to
+	// Two ticks race to deliver (first output + grace, or the fallback);
+	// whichever lands first clears the pending paste, the other is dropped.
+	if t == nil || msg.gen != m.agentGen || msg.text != m.agentPending.text || msg.gen != m.agentPending.gen {
+		return
 	}
+	m.agentPending = agentPasteMsg{}
 	t.Paste(msg.text)
 	m.review.typed = true
 }

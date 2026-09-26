@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/GurYN/cove-editor/internal/git"
+	"github.com/GurYN/cove-editor/internal/lsp"
 )
 
 // a.go as committed: A and B far enough apart that edits to each are
@@ -554,5 +555,66 @@ func TestReviewToggleFromTerminal(t *testing.T) {
 	m, _ = m.dispatchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r"), Alt: true})
 	if !m.review.view || m.focus != paneReview {
 		t.Fatalf("alt+r from terminal: view=%v focus=%d", m.review.view, m.focus)
+	}
+}
+
+// TestReviewSeg: the status bar shows pending hunks and the turn while a
+// review is active, nothing when it is clean or inactive.
+func TestReviewSeg(t *testing.T) {
+	m, root := reviewRepo(t, "")
+	if m.reviewSeg() != "" {
+		t.Fatalf("inactive: %q", m.reviewSeg())
+	}
+	checkpointNow(t, &m)
+	refreshNow(t, &m)
+	if m.reviewSeg() != "" {
+		t.Fatalf("clean: %q", m.reviewSeg())
+	}
+	os.WriteFile(filepath.Join(root, "a.go"), []byte(strings.Replace(aOrig, "func A() {}", "func A() { println(1) }", 1)), 0o644)
+	refreshNow(t, &m)
+	if got := m.reviewSeg(); got != "agent 1 hunk  " {
+		t.Fatalf("pending: %q", got)
+	}
+	m.review.turn = 2
+	if got := m.reviewSeg(); got != "agent 1 hunk (turn 2)  " {
+		t.Fatalf("with turn: %q", got)
+	}
+}
+
+// TestReviewNewErrors: a file whose error count rose since the turn began
+// is flagged in its header and in the status bar; errors that were
+// already there at the prompt are not.
+func TestReviewNewErrors(t *testing.T) {
+	m, root := reviewRepo(t, "[apps.claude]\ncommand = [\"cat\"]\nagent = true\n")
+	if cmd := m.reg.ByID("app.claude").Do(&m); cmd == nil {
+		t.Skip("PTY unavailable")
+	}
+	defer m.terms[0].Close()
+	abs := filepath.Join(root, "a.go")
+	diag := func(n int) {
+		var ds []lsp.Diagnostic
+		for i := 0; i < n; i++ {
+			ds = append(ds, lsp.Diagnostic{Severity: 1, Message: "boom"})
+		}
+		m.handleLSPEvent(lsp.Event{Kind: "diagnostics", URI: lsp.PathToURI(abs), Diagnostics: ds})
+	}
+	diag(1) // a pre-existing error
+	checkpointNow(t, &m)
+	agentEnter(t, &m) // turn 1 begins with 1 error known
+	os.WriteFile(abs, []byte(strings.Replace(aOrig, "func A() {}", "func A() { println(1) }", 1)), 0o644)
+	refreshNow(t, &m)
+	if v := m.reviewPanelView(); strings.Contains(v, "err") {
+		t.Fatalf("pre-existing error flagged:\n%s", v)
+	}
+	diag(3) // the agent's edit added two
+	if v := m.reviewPanelView(); !strings.Contains(v, "a.go · turn 1 · +2 err") {
+		t.Fatalf("new errors not flagged:\n%s", v)
+	}
+	if s := m.reviewSeg(); !strings.Contains(s, "+2 err") {
+		t.Fatalf("status bar: %q", s)
+	}
+	agentEnter(t, &m) // next prompt: the 3 errors are the new baseline
+	if v := m.reviewPanelView(); strings.Contains(v, "err") {
+		t.Fatalf("baseline not reset at the prompt:\n%s", v)
 	}
 }
