@@ -164,6 +164,15 @@ func (m *Model) projectSearchCmd(query string) tea.Cmd {
 	overrides := m.bufOverrides()
 	inc, exc := splitGlobs(m.search.inc), splitGlobs(m.search.exc)
 	return func() tea.Msg {
+		hits, truncated := searchProject(root, overrides, inc, exc, query)
+		return psearchMsg{query: query, hits: hits, truncated: truncated}
+	}
+}
+
+// searchProject is the search itself, safe to run off the UI thread:
+// overrides stand in for files the user has open (see bufOverrides).
+func searchProject(root string, overrides map[string][]byte, inc, exc []string, query string) ([]psearchHit, bool) {
+	{
 		fold := query == strings.ToLower(query)
 		q := []byte(query)
 		if fold {
@@ -214,7 +223,7 @@ func (m *Model) projectSearchCmd(query string) tea.Cmd {
 				break
 			}
 		}
-		return psearchMsg{query: query, hits: hits, truncated: truncated}
+		return hits, truncated
 	}
 }
 
@@ -244,7 +253,7 @@ func (m Model) openProjectSearch(msg psearchMsg) Model {
 
 // showSearchPanel swaps the search panel into the sidebar slot and focuses it.
 func (m *Model) showSearchPanel() {
-	m.search.view, m.git.view, m.sidebarOpen = true, false, true
+	m.search.view, m.git.view, m.review.view, m.sidebarOpen = true, false, false, true
 	m.focus = paneSearch
 	m.layout()
 }

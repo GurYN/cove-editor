@@ -43,8 +43,8 @@ type Term struct {
 }
 
 // New starts argv (default: $SHELL, fallback /bin/sh) in dir on a
-// cols×rows PTY.
-func New(dir string, argv []string, cols, rows int) (*Term, error) {
+// cols×rows PTY. env entries ("K=V") are added to the inherited environment.
+func New(dir string, argv []string, cols, rows int, env ...string) (*Term, error) {
 	if len(argv) == 0 {
 		shell := os.Getenv("SHELL")
 		if shell == "" {
@@ -58,6 +58,7 @@ func New(dir string, argv []string, cols, rows int) (*Term, error) {
 	// 38;2/48;2 and View re-emits it) — without it chalk/ink apps drop to
 	// 256 colors or none.
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
+	cmd.Env = append(cmd.Env, env...)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		return nil, err

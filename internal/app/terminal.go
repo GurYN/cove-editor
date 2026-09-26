@@ -53,12 +53,15 @@ func (m *Model) newTerm() tea.Cmd { return m.spawnTerm(nil, "") }
 
 // spawnTerm starts argv (nil = shell) as a new panel instance.
 func (m *Model) spawnTerm(argv []string, label string) tea.Cmd {
-	t, err := term.New(m.side.Root, argv, max(2, m.width-m.editorX()), m.termRows())
+	t, err := term.New(m.side.Root, argv, max(2, m.width-m.editorX()), m.termRows(), m.bridgeEnv()...)
 	if err != nil {
 		m.notifyErr("terminal: " + err.Error())
 		return nil
 	}
 	t.Label = label
+	if label != "" && label == m.agentApp {
+		m.agentGen++
+	}
 	m.terms = append(m.terms, t)
 	m.termActive = len(m.terms) - 1
 	m.termOpen = true
@@ -76,7 +79,9 @@ func (m *Model) cycleTerm(d int) {
 }
 
 // openApp focuses the named [apps.*] instance if it's already running,
-// otherwise launches it.
+// otherwise launches it. Launching the agent (agent = true) also takes the
+// review checkpoint, whichever way it was invoked: palette entry, its
+// keybinding, Agent: Open, or a send action.
 func (m *Model) openApp(name string, argv []string) tea.Cmd {
 	for i, t := range m.terms {
 		if t.Label == name {
@@ -86,7 +91,11 @@ func (m *Model) openApp(name string, argv []string) tea.Cmd {
 			return nil
 		}
 	}
-	return m.spawnTerm(argv, name)
+	cmd := m.spawnTerm(argv, name)
+	if cmd != nil && name == m.agentApp {
+		return tea.Batch(cmd, m.agentLaunchCheckpoint())
+	}
+	return cmd
 }
 
 // toggleTerm shows/hides the panel, starting the first shell on first open.
@@ -114,6 +123,9 @@ func (m Model) handleTermMsg(msg termMsg) (Model, tea.Cmd) {
 		// watchTick sweeps the tree/git/LSP state (no fs watcher — the
 		// focus-regain resync never fires while the action is in-app).
 		m.termDirty = true
+		if msg.t == m.agentTerm() {
+			return m, tea.Batch(listenTerm(msg.t), m.agentOutputCmd())
+		}
 		return m, listenTerm(msg.t)
 	}
 	// Shell exited: drop that instance; drop the panel when none remain.

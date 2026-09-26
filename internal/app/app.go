@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/GurYN/cove-editor/internal/action"
+	"github.com/GurYN/cove-editor/internal/bridge"
 	"github.com/GurYN/cove-editor/internal/config"
 	"github.com/GurYN/cove-editor/internal/editor"
 	"github.com/GurYN/cove-editor/internal/git"
@@ -84,6 +85,7 @@ const (
 	panePanelDivider // terminal panel title row: drag to resize
 	paneGit          // git panel occupying the sidebar slot
 	paneSearch       // project-search results panel, same slot
+	paneReview       // agent review panel, same slot
 	paneSplitDivider // border column between split editor panes: drag to resize
 )
 
@@ -167,6 +169,7 @@ type Model struct {
 
 	git    gitPanel
 	search searchPanel
+	review reviewPanel // agent review (see review.go)
 
 	lastMouse time.Time // last mouse event; gates the broken-report alt+[ drop
 
@@ -188,7 +191,20 @@ type Model struct {
 	updateToast   string               // new-release notice, shown as a toast until any key
 	mtimes        map[string]time.Time // last watched-files sweep (see syncWatched)
 	termDirty     bool                 // terminal output since last tick: an agent/shell may have touched files
-	lastCost      time.Duration
+	agentApp      string               // [apps.*] entry flagged agent = true; "" = none (see agent.go)
+	agentArgv     []string
+	agentGen      int           // bumped per agent spawn; a deferred paste for an older instance is dropped
+	agentPending  agentPasteMsg // paste waiting for the launched agent's first output
+
+	// MCP bridge (see bridge.go): the agent's window into the editor.
+	mcpEnabled      bool
+	agentCheckpoint bool // [agent] checkpoint_on_launch
+	bridgeH         *bridgeHandler
+	bridgeReqs      chan bridgeReqMsg
+	bridge          *bridge.Server                     // nil until Init's listen lands
+	diags           map[string][]lsp.Diagnostic        // last publish per absolute path, open or not
+	diagWait        map[string][]chan []lsp.Diagnostic // bridge calls waiting for a file's first publish
+	lastCost        time.Duration
 
 	confirmQuit bool // ctrl+q asks first; [editor] confirm_quit = false disables
 	updateCheck bool // launch new-release check; [update] check = false disables
@@ -253,6 +269,18 @@ func New(path string, data []byte) Model {
 		}
 		argv := a.Command
 		label := name
+		if a.Agent {
+			// Two flagged entries: keep the first by name so the pick is
+			// stable across launches, and say so.
+			if m.agentApp == "" || name < m.agentApp {
+				if m.agentApp != "" {
+					m.cfgWarns = append(m.cfgWarns, "apps."+m.agentApp+" and apps."+name+" both set agent = true; using "+name)
+				}
+				m.agentApp, m.agentArgv = name, argv
+			} else {
+				m.cfgWarns = append(m.cfgWarns, "apps."+m.agentApp+" and apps."+name+" both set agent = true; using "+m.agentApp)
+			}
+		}
 		m.reg.Register(action.Action{ID: "app." + name, Title: "App: " + name,
 			Key: a.Key, When: action.Global,
 			Do: func(app any) tea.Cmd { return app.(*Model).openApp(label, argv) }})
@@ -282,6 +310,14 @@ func New(path string, data []byte) Model {
 	}
 	m.lspm = lsp.NewManager(m.side.Root)
 	m.lspStatus = map[string]string{}
+	m.diags = map[string][]lsp.Diagnostic{}
+	m.diagWait = map[string][]chan []lsp.Diagnostic{}
+	m.mcpEnabled = cfg.MCP.Enabled
+	m.agentCheckpoint = cfg.Agent.CheckpointOnLaunch
+	m.review.follow = cfg.Agent.Follow
+	m.review.accepted, m.review.seen = map[string]bool{}, map[string]string{}
+	m.bridgeReqs = make(chan bridgeReqMsg)
+	m.bridgeH = &bridgeHandler{root: m.side.Root, lspm: m.lspm, reqs: m.bridgeReqs}
 	m.syncWatched() // baseline mtime sweep; later sweeps diff against it
 	sweepBackups()  // drop crash snapshots too old to still be a crash story
 	if d := m.doc(); d != nil {
@@ -304,7 +340,7 @@ func (m *Model) doc() *doc {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(listenLSP(m.lspm), watchTick(), m.maybeCheckUpdate())
+	return tea.Batch(listenLSP(m.lspm), watchTick(), m.maybeCheckUpdate(), m.startBridge())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -334,7 +370,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.side.Refresh()
 		m.refreshGit()
 		m.syncWatched() // language servers need the same resync (stale-diagnostics fix)
-		return m, nil
+		return m, m.reviewRefreshCmd()
 
 	case lspEventMsg:
 		m.handleLSPEvent(lsp.Event(msg))
@@ -343,6 +379,20 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, m.flushChange()
 	case aiTickMsg:
 		return m, m.aiRequest(msg.gen, false)
+	case agentPasteMsg:
+		m.agentPaste(msg)
+		return m, nil
+	case checkpointMsg:
+		return m, m.handleCheckpoint(msg)
+	case turnMsg:
+		return m, m.handleTurn(msg)
+	case reviewMsg:
+		return m, m.handleReviewMsg(msg)
+	case bridgeStartedMsg:
+		return m, m.handleBridgeStarted(msg)
+	case bridgeReqMsg:
+		msg.reply <- msg.fn(&m)
+		return m, listenBridge(m.bridgeReqs)
 	case aiComplMsg:
 		m.handleAIResult(msg)
 		return m, nil
@@ -357,13 +407,15 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.checkDiskChanges()
 		m.writeBackups() // crash-recovery snapshots ride the same tick
+		var review tea.Cmd
 		if m.termDirty { // in-app terminal activity: same resync as focus regain
 			m.termDirty = false
 			m.side.Refresh()
 			m.refreshGit()
 			m.syncWatched()
+			review = m.reviewRefreshCmd() // the agent may have written files
 		}
-		return m, tea.Batch(watchTick(), m.syncLSP())
+		return m, tea.Batch(watchTick(), m.syncLSP(), review)
 	case updateCheckMsg:
 		return m.handleUpdateCheck(msg), nil
 	case termMsg:
@@ -559,6 +611,8 @@ func (m *Model) keyCtx() action.Context {
 		return action.Git
 	case paneSearch:
 		return action.Search
+	case paneReview:
+		return action.Review
 	}
 	return action.Editor
 }
@@ -612,12 +666,25 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				act.ID == "app.quit" ||
 				act.ID == "focus.next" || act.ID == "focus.prev" ||
 				act.ID == "app.palette" || act.ID == "app.palette.f1" ||
-				act.ID == "sidebar.toggle" || act.ID == "git.toggle") {
+				act.ID == "sidebar.toggle" || act.ID == "git.toggle" || act.ID == "review.toggle") {
 			cmd := act.Do(&m)
 			m.layout()
 			return m, cmd
 		}
 		t.Send(msg)
+		// Prompt detection for the review's turns: an Enter that follows
+		// typed or pasted text submits a prompt. An Enter on its own
+		// answers a menu or a permission dialog and is not a turn;
+		// Alt+Enter is the multi-line newline chord.
+		if t == m.agentTerm() {
+			switch {
+			case msg.Type == tea.KeyRunes || msg.Paste:
+				m.review.typed = true
+			case msg.Type == tea.KeyEnter && !msg.Alt && m.review.typed:
+				m.review.typed = false
+				return m, m.agentTurnCmd()
+			}
+		}
 		return m, nil
 	}
 	if m.compl.active && m.focus == paneEditor {
@@ -642,7 +709,7 @@ func (m Model) dispatchKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// Panels bind single letters, but the input reader can coalesce quickly
 	// arriving runes (paste, PTY batching) into one KeyRunes msg. Replay
 	// them one at a time so "c" still means Commit after " c" arrives fused.
-	if (m.focus == paneSidebar || m.focus == paneGit || m.focus == paneSearch) && msg.Type == tea.KeyRunes && !msg.Alt && len(msg.Runes) > 1 {
+	if (m.focus == paneSidebar || m.focus == paneGit || m.focus == paneSearch || m.focus == paneReview) && msg.Type == tea.KeyRunes && !msg.Alt && len(msg.Runes) > 1 {
 		var cmds []tea.Cmd
 		for _, r := range msg.Runes {
 			var cmd tea.Cmd
@@ -1371,10 +1438,13 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		m.mouseDown = paneSidebar // no drag from a switcher click
 		for i, r := range m.sideSwitcherRanges() {
 			if msg.X >= r.start && msg.X < r.end {
-				m.git.view, m.search.view = i == 2, i == 1
+				m.git.view, m.search.view, m.review.view = i == 2, i == 1, i == 3
 				switch i {
 				case 1:
 					m.focus = paneSearch
+				case 3:
+					m.focus = paneReview
+					return m, m.showReviewPanel()
 				case 2:
 					m.focus = paneGit
 					m.refreshGit()
@@ -1401,6 +1471,8 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			target = paneGit
 		case m.search.view:
 			target = paneSearch
+		case m.review.view:
+			target = paneReview
 		}
 	case m.split && len(m.docs) > 0 && msg.Y <= m.contentRows() && msg.X == m.splitX():
 		target = paneSplitDivider
@@ -1527,6 +1599,17 @@ func (m Model) dispatchMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 			// A click is a preview (searchOpenSel keeps panel focus), so the
 			// panel's keys stay live — Enter jumps into the editor.
 			m.searchClick(msg.Y - off)
+		}
+	case paneReview:
+		const off = 3 // tab bar + header + hint line
+		switch {
+		case msg.Button == tea.MouseButtonWheelUp:
+			m.review.wheel(-3, m.reviewHeight())
+		case msg.Button == tea.MouseButtonWheelDown:
+			m.review.wheel(3, m.reviewHeight())
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
+			m.focus = paneReview
+			m.reviewClick(msg.Y - off)
 		}
 	case paneSidebar:
 		switch {
@@ -1668,6 +1751,8 @@ func (m Model) View() string {
 			side = m.gitPanelView()
 		case m.search.view:
 			side = m.searchPanelView()
+		case m.review.view:
+			side = m.reviewPanelView()
 		}
 		// switcher plus a spacer row so the buttons don't sit on the bottom bar
 		side += "\n" + m.sideSwitcher() + "\n" + strings.Repeat(" ", m.side.Width)
@@ -1722,7 +1807,7 @@ func (m Model) View() string {
 }
 
 // sideButtons are the panel-switcher labels at the bottom of the sidebar.
-var sideButtons = [3]string{"Files", "Search", "Git"}
+var sideButtons = [4]string{"Files", "Search", "Git", "Review"}
 
 // sideActive is the index into sideButtons of the panel showing in the slot.
 func (m Model) sideActive() int {
@@ -1731,6 +1816,8 @@ func (m Model) sideActive() int {
 		return 1
 	case m.git.view:
 		return 2
+	case m.review.view:
+		return 3
 	}
 	return 0
 }
@@ -1738,7 +1825,7 @@ func (m Model) sideActive() int {
 // sideSwitcherRanges returns each button's [start, end) x-range within the
 // sidebar, matching sideSwitcher exactly so render and hit-test can't drift.
 func (m Model) sideSwitcherRanges() [len(sideButtons)]struct{ start, end int } {
-	const margin = 2                                        // cells left and right of the control
+	const margin = 2                                         // cells left and right of the control
 	part := max(0, (m.side.Width-2*margin)/len(sideButtons)) // tiny windows: zero-width buttons, not negative
 	var out [len(sideButtons)]struct{ start, end int }
 	for i := range out {
@@ -1883,7 +1970,7 @@ func (m Model) bottomBar() string {
 	// Fixed-width cost cell (" 0.89ms"…"99.99ms") so the digit count can't
 	// change and shove the segments to its left around on every keystroke.
 	cost := fmt.Sprintf("%5.2fms", float64(m.lastCost.Microseconds())/1000)
-	right := fmt.Sprintf("%s%s%s  %dL  %s  ^P commands ", m.gitSeg(), m.aiSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
+	right := fmt.Sprintf("%s%s%s%s  %dL  %s  ^P commands ", m.reviewSeg(), m.gitSeg(), m.aiSeg(), m.lspStatusLine(d), d.ed.Buf.LineCount(), cost)
 	// The message slot: an in-progress message wins, else the blame
 	// annotation. Final outcomes render as a toast card instead (notify).
 	msg := ""
